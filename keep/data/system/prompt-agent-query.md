@@ -12,14 +12,12 @@ Answer questions using retrieved memory context.
 Question: {text}
 
 Use the retrieved context to answer the question.
-Investigate further as needed — retrieve specific items by ID,
-perform additional searches, or examine version history to
-build a complete answer.
 
 Context:
 {find:deep:3000}
 
 Question: {text}
 
-Answer based on what's available. Make reasonable inferences from the context,
-but clearly mark any uncertainty. If the context is insufficient, say so.
+Answer the question as precisely as possible.
+Do not add background or elaboration unless the question asks for them.
+If the context is insufficient, say so briefly.
