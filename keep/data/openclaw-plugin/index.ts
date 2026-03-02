@@ -11,22 +11,22 @@
  * This makes it safe to run on every compaction even with many files.
  */
 
-import { execSync } from "child_process";
+import { execFileSync } from "child_process";
 import path from "node:path";
 import fs from "node:fs";
 
 function keepAvailable(): boolean {
   try {
-    execSync("keep config", { timeout: 3000, stdio: "ignore" });
+    execFileSync("keep", ["config"], { timeout: 3000, stdio: "ignore" });
     return true;
   } catch {
     return false;
   }
 }
 
-function runKeep(args: string, input?: string): string | null {
+function runKeep(args: string[], input?: string): string | null {
   try {
-    return execSync(`keep ${args}`, {
+    return execFileSync("keep", args, {
       encoding: "utf-8",
       timeout: 5000,
       input: input ?? "",
@@ -36,9 +36,9 @@ function runKeep(args: string, input?: string): string | null {
   }
 }
 
-function runKeepLong(args: string, timeoutMs: number = 60000): string | null {
+function runKeepLong(args: string[], timeoutMs: number = 60000): string | null {
   try {
-    return execSync(`keep ${args}`, {
+    return execFileSync("keep", args, {
       encoding: "utf-8",
       timeout: timeoutMs,
       stdio: ["pipe", "pipe", "pipe"],
@@ -60,7 +60,6 @@ export default function register(api: any) {
     "before_prompt_build",
     async (event: any, ctx: any) => {
       const sid = ctx?.sessionId || ctx?.sessionKey;
-      const sessionTag = sid ? `-t session=${sid}` : "";
 
       // Separate conversation metadata from user text.
       // OpenClaw prompts may start with "Conversation info..." fenced block.
@@ -78,9 +77,11 @@ export default function register(api: any) {
       if (trimmed) {
         const truncated = trimmed.slice(0, 500);
         // Update + get context in one call (set_now outputs context with similar/meta)
-        now = runKeep(`now -n 10 ${sessionTag}`, truncated);
+        const args = ["now", "-n", "10"];
+        if (sid) args.push("-t", `session=${sid}`);
+        now = runKeep(args, truncated);
       } else {
-        now = runKeep("now -n 10");
+        now = runKeep(["now", "-n", "10"]);
       }
       if (!now) return;
 
@@ -110,13 +111,13 @@ export default function register(api: any) {
       // Index memory/ directory (all files, directory mode)
       if (fs.existsSync(memoryDir)) {
         api.logger?.debug("[keep] Indexing memory/ after compaction");
-        if (runKeepLong(`put "${memoryDir}/"`, 30000)) indexed++;
+        if (runKeepLong(["put", `${memoryDir}/`], 30000)) indexed++;
       }
 
       // Index MEMORY.md (single file)
       if (fs.existsSync(memoryMd)) {
         api.logger?.debug("[keep] Indexing MEMORY.md after compaction");
-        if (runKeepLong(`put "${memoryMd}"`, 10000)) indexed++;
+        if (runKeepLong(["put", memoryMd], 10000)) indexed++;
       }
 
       if (indexed > 0) {
@@ -134,7 +135,7 @@ export default function register(api: any) {
     async (event: any, ctx: any) => {
       const key = ctx?.sessionId || ctx?.sessionKey;
       if (!key) return;
-      runKeepLong(`move "session-${key}" -t session=${key}`);
+      runKeepLong(["move", `session-${key}`, "-t", `session=${key}`]);
     },
     { priority: 10 },
   );
