@@ -35,7 +35,15 @@ _URI_SCHEME_PATTERN = re.compile(r'^[a-zA-Z][a-zA-Z0-9+.-]*://')
 
 from .api import Keeper, _text_content_id
 from .config import get_tool_directory
-from .types import Item, ItemContext, PartRef, VersionRef, local_date
+from .types import (
+    SYSTEM_TAG_PREFIX,
+    Item,
+    ItemContext,
+    PartRef,
+    VersionRef,
+    local_date,
+    tag_values,
+)
 from .logging_config import configure_quiet_mode, enable_debug_mode
 
 # Maximum number of files to index from a directory at once
@@ -97,6 +105,13 @@ def _has_stdin_data() -> bool:
         return bool(ready)
     except (ValueError, OSError):
         return False
+
+
+def _tag_display_value(value) -> str:
+    """Render scalar/list tag values for compact display."""
+    if isinstance(value, list):
+        return "[" + ", ".join(str(v) for v in value) + "]"
+    return str(value)
 
 
 # Configure quiet mode by default (suppress verbose library output)
@@ -562,7 +577,7 @@ def render_find_context(
                              if not k.startswith(SYSTEM_TAG_PREFIX)}
                 if user_tags:
                     pairs = ", ".join(
-                        f"{k}: {v}" for k, v in sorted(user_tags.items()))
+                        f"{k}: {_tag_display_value(v)}" for k, v in sorted(user_tags.items()))
                     tl = f"  {{{pairs}}}"
                     block_lines.append(tl)
                     remaining -= _tok(tl)
@@ -629,7 +644,9 @@ def _render_frontmatter(ctx: ItemContext) -> str:
 
     display_tags = _filter_display_tags(item.tags)
     if display_tags:
-        tag_items = ", ".join(f"{k}: {v}" for k, v in sorted(display_tags.items()))
+        tag_items = ", ".join(
+            f"{k}: {_tag_display_value(v)}" for k, v in sorted(display_tags.items())
+        )
         lines.append(f"tags: {{{tag_items}}}")
 
     if item.score is not None:
@@ -787,7 +804,9 @@ def _format_summary_line(item: Item, id_width: int = 0, show_tags: bool = False)
         from .types import SYSTEM_TAG_PREFIX
         user_tags = {k: v for k, v in item.tags.items() if not k.startswith(SYSTEM_TAG_PREFIX)}
         if user_tags:
-            pairs = ", ".join(f"{k}: {v}" for k, v in sorted(user_tags.items()))
+            pairs = ", ".join(
+                f"{k}: {_tag_display_value(v)}" for k, v in sorted(user_tags.items())
+            )
             line += f"\n  {{{pairs}}}"
 
     return line
@@ -1090,11 +1109,11 @@ def _get_keeper(store: Optional[Path]) -> Keeper:
         raise typer.Exit(1)
 
 
-def _parse_tags(tags: Optional[list[str]]) -> dict[str, str]:
-    """Parse key=value tag list to dict."""
+def _parse_tags(tags: Optional[list[str]]) -> dict:
+    """Parse key=value tag list to multivalue dict."""
     if not tags:
         return {}
-    parsed = {}
+    parsed: dict[str, str | list[str]] = {}
     for tag in tags:
         if "=" not in tag:
             hint = f"Error: Invalid tag format '{tag}'."
@@ -1106,7 +1125,15 @@ def _parse_tags(tags: Optional[list[str]]) -> dict[str, str]:
             typer.echo(hint, err=True)
             raise typer.Exit(1)
         k, v = tag.split("=", 1)
-        parsed[k.casefold()] = v
+        key = k.casefold()
+        existing = parsed.get(key)
+        if existing is None:
+            parsed[key] = v
+        elif isinstance(existing, list):
+            if v not in existing:
+                existing.append(v)
+        elif existing != v:
+            parsed[key] = [existing, v]
     return parsed
 
 
@@ -1126,15 +1153,14 @@ def _filter_by_tags(items: list, tags: list[str]) -> list:
         if "=" in t:
             key, value = t.split("=", 1)
             key = key.casefold()
-            # Case-insensitive value comparison
             result = [item for item in result
-                      if (item.tags.get(key) or "").casefold() == value.casefold()]
+                      if value in tag_values(item.tags, key)]
         elif ":" in t:
             # Colon separator — treat as key=value (common mistake)
             key, value = t.split(":", 1)
             key = key.casefold()
             result = [item for item in result
-                      if (item.tags.get(key) or "").casefold() == value.casefold()]
+                      if value in tag_values(item.tags, key)]
         else:
             # Key only - check if key exists
             result = [item for item in result if t.casefold() in item.tags]
@@ -1378,16 +1404,20 @@ def list_recent(
     typer.echo(_format_items(results, as_json=_get_json_output()))
 
 
-@app.command("tag-update")
-def tag_update(
+@app.command("tag")
+def tag(
     ids: Annotated[list[str], typer.Argument(default=..., help="Note IDs to tag")],
     tags: Annotated[Optional[list[str]], typer.Option(
         "--tag", "-t",
-        help="Tag as key=value (empty value removes: key=)"
+        help="Tag to add/update as key=value"
     )] = None,
     remove: Annotated[Optional[list[str]], typer.Option(
         "--remove", "-r",
         help="Tag keys to remove"
+    )] = None,
+    remove_values: Annotated[Optional[list[str]], typer.Option(
+        "--remove-value", "-R",
+        help="Tag values to remove as key=value"
     )] = None,
     store: StoreOption = None,
 ):
@@ -1398,23 +1428,36 @@ def tag_update(
 
     \b
     Examples:
-        keep tag-update doc:1 --tag project=myapp
-        keep tag-update doc:1 doc:2 --tag status=reviewed
-        keep tag-update doc:1 --remove obsolete_tag
-        keep tag-update doc:1 --tag temp=  # Remove via empty value
+        keep tag doc:1 --tag project=myapp
+        keep tag doc:1 doc:2 --tag status=reviewed
+        keep tag doc:1 --remove obsolete_tag
+        keep tag doc:1 --remove-value speaker=Bob
     """
     kp = _get_keeper(store)
 
     # Parse tags from key=value format
     tag_changes = _parse_tags(tags)
+    remove_value_changes = _parse_tags(remove_values)
 
-    # Add explicit removals as empty strings
-    if remove:
-        for key in remove:
-            tag_changes[key] = ""
+    # Explicit deletion path: --remove for keys, --remove-value for values.
+    # Keep --tag key= for backwards compatibility, but steer callers to --remove.
+    for key in tag_changes:
+        if "" in tag_values(tag_changes, key):
+            typer.echo(
+                f"Error: Empty --tag value for '{key}'. Use --remove {key} instead.",
+                err=True,
+            )
+            raise typer.Exit(1)
+    for key in remove_value_changes:
+        if "" in tag_values(remove_value_changes, key):
+            typer.echo(
+                f"Error: Empty --remove-value for '{key}'. Use --remove {key} instead.",
+                err=True,
+            )
+            raise typer.Exit(1)
 
-    if not tag_changes:
-        typer.echo("Error: Specify at least one --tag or --remove", err=True)
+    if not tag_changes and not remove and not remove_value_changes:
+        typer.echo("Error: Specify at least one --tag, --remove, or --remove-value", err=True)
         raise typer.Exit(1)
 
     # Process each document (route parts to tag_part)
@@ -1425,13 +1468,24 @@ def tag_update(
             if match:
                 part_num = int(match.group(1))
                 base_id = doc_id[:match.start()]
-                part = kp.tag_part(base_id, part_num, tags=tag_changes)
+                part = kp.tag_part(
+                    base_id,
+                    part_num,
+                    tags=tag_changes or None,
+                    remove=remove,
+                    remove_values=remove_value_changes or None,
+                )
                 if part is None:
                     typer.echo(f"Part not found: {doc_id}", err=True)
                 else:
                     typer.echo(f"Updated {doc_id}")
             else:
-                item = kp.tag(doc_id, tags=tag_changes)
+                item = kp.tag(
+                    doc_id,
+                    tags=tag_changes or None,
+                    remove=remove,
+                    remove_values=remove_value_changes or None,
+                )
                 if item is None:
                     typer.echo(f"Not found: {doc_id}", err=True)
                 else:
@@ -1442,6 +1496,33 @@ def tag_update(
 
     if results:
         typer.echo(_format_items(results, as_json=_get_json_output()))
+
+
+@app.command("tag-update", hidden=True)
+def tag_update(
+    ids: Annotated[list[str], typer.Argument(default=..., help="Note IDs to tag")],
+    tags: Annotated[Optional[list[str]], typer.Option(
+        "--tag", "-t",
+        help="Tag to add/update as key=value"
+    )] = None,
+    remove: Annotated[Optional[list[str]], typer.Option(
+        "--remove", "-r",
+        help="Tag keys to remove"
+    )] = None,
+    remove_values: Annotated[Optional[list[str]], typer.Option(
+        "--remove-value", "-R",
+        help="Tag values to remove as key=value"
+    )] = None,
+    store: StoreOption = None,
+):
+    """Hidden compatibility alias for 'tag'."""
+    tag(
+        ids=ids,
+        tags=tags,
+        remove=remove,
+        remove_values=remove_values,
+        store=store,
+    )
 
 
 def _put_store(
@@ -1644,7 +1725,7 @@ def put(
             typer.echo("\nsuggested tags:")
             for tag, count in sorted_tags:
                 typer.echo(f"  -t {tag}  ({count})")
-            typer.echo(f"\napply with: keep tag-update {_shell_quote_id(item.id)} -t TAG")
+            typer.echo(f"\napply with: keep tag {_shell_quote_id(item.id)} -t TAG")
 
     if do_analyze:
         try:
@@ -1851,7 +1932,7 @@ def _find_now_version_by_tags(kp, tags: list[str], *, scope: Optional[str] = Non
     def matches_tags(item_tags: dict) -> bool:
         for key, value in tag_filters:
             if value is not None:
-                if item_tags.get(key) != value:
+                if value not in tag_values(item_tags, key):
                     return False
             else:
                 if key not in item_tags:
@@ -2200,7 +2281,9 @@ def _get_part_direct(kp: Keeper, actual_id: str, part_num: int) -> Optional[str]
     lines = ["---", f"id: {_shell_quote_id(actual_id)}@P{{{part_num}}}"]
     display_tags = _filter_display_tags(item.tags)
     if display_tags:
-        tag_items = ", ".join(f"{k}: {v}" for k, v in sorted(display_tags.items()))
+        tag_items = ", ".join(
+            f"{k}: {_tag_display_value(v)}" for k, v in sorted(display_tags.items())
+        )
         lines.append(f"tags: {{{tag_items}}}")
     if part_num > 1:
         lines.append("prev:")

@@ -119,7 +119,7 @@ keep put "Kate approved the vendor contract — signed copy in DocuSign" \
 Or update them later:
 
 ```bash
-keep tag-update %a7c3e1f4b902 -t status=done
+keep tag %a7c3e1f4b902 -t status=done
 ```
 
 Query by tag:

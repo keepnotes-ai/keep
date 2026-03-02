@@ -56,7 +56,7 @@ To customize classification behavior, edit the `## Prompt` sections. The classif
 keep put "I'll fix the auth bug by end of week" -t act=commitment -t status=open -t project=myapp
 
 # Mark it fulfilled
-keep tag-update ID --tag status=fulfilled
+keep tag ID --tag status=fulfilled
 
 # Query open items
 keep list -t act=commitment -t status=open
@@ -65,12 +65,12 @@ keep list -t act=request -t status=open
 # Track a request lifecycle
 keep put "Please review the PR" -t act=request -t status=open
 # Later, when reviewed:
-keep tag-update ID --tag status=fulfilled
+keep tag ID --tag status=fulfilled
 
 # Withdraw an offer
-keep tag-update ID --tag status=withdrawn
+keep tag ID --tag status=withdrawn
 
 # Renegotiate a commitment (mark old, create new)
-keep tag-update ID --tag status=renegotiated
+keep tag ID --tag status=renegotiated
 keep put "Revised: will fix auth bug next sprint instead" -t act=commitment -t status=open
 ```

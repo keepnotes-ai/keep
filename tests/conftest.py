@@ -10,6 +10,7 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+from keep.types import SYSTEM_TAG_PREFIX, tag_values
 
 
 class MockEmbeddingProvider:
@@ -79,6 +80,52 @@ class MockChromaStore:
         self._embedding_dimension = embedding_dimension or 384
         self.embedding_dimension = self._embedding_dimension
         self._data: dict[str, dict] = {}  # collection -> {id -> record}
+        self._tag_key_prefix = "_tk::"
+        self._tag_value_prefix = "_tv::"
+
+    def _tag_key_marker(self, key: str) -> str:
+        return f"{self._tag_key_prefix}{key}"
+
+    def _tag_value_marker(self, key: str, value: str) -> str:
+        digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:24]
+        return f"{self._tag_value_prefix}{key}::{digest}"
+
+    def build_tag_where(self, tags: dict) -> dict | None:
+        conditions: list[dict[str, Any]] = []
+        for raw_key in tags:
+            key = str(raw_key)
+            values = tag_values(tags, raw_key)
+            if not values:
+                continue
+            if key.startswith(SYSTEM_TAG_PREFIX):
+                for value in values:
+                    conditions.append({key: str(value)})
+            else:
+                key_cf = key.casefold()
+                conditions.append({self._tag_key_marker(key_cf): True})
+                for value in values:
+                    conditions.append({self._tag_value_marker(key_cf, value): True})
+        if not conditions:
+            return None
+        return conditions[0] if len(conditions) == 1 else {"$and": conditions}
+
+    def _to_metadata(self, tags: dict) -> dict[str, Any]:
+        metadata: dict[str, Any] = {}
+        for raw_key in tags:
+            key = str(raw_key)
+            values = tag_values(tags, raw_key)
+            if not values:
+                continue
+            if key.startswith(SYSTEM_TAG_PREFIX):
+                metadata[key] = str(values[-1])
+            else:
+                key_cf = key.casefold()
+                if len(values) == 1:
+                    metadata[key_cf] = values[0]
+                metadata[self._tag_key_marker(key_cf)] = True
+                for value in values:
+                    metadata[self._tag_value_marker(key_cf, value)] = True
+        return metadata
 
     def reset_embedding_dimension(self, dimension: int) -> None:
         self._embedding_dimension = dimension
@@ -91,6 +138,7 @@ class MockChromaStore:
         self._data[collection][id] = {
             "summary": summary,
             "tags": tags,
+            "metadata": self._to_metadata(tags),
             "embedding": embedding,
         }
 
@@ -129,7 +177,7 @@ class MockChromaStore:
             return []
         results = []
         for id, rec in list(self._data[collection].items()):
-            if self._match_where(rec["tags"], where):
+            if self._match_where(rec.get("metadata", {}), where):
                 results.append(StoreResult(
                     id=id, summary=rec["summary"], tags=rec["tags"], distance=0.1
                 ))
@@ -143,7 +191,7 @@ class MockChromaStore:
             return []
         results = []
         for id, rec in list(self._data[collection].items()):
-            if self._match_where(rec["tags"], where):
+            if self._match_where(rec.get("metadata", {}), where):
                 results.append(StoreResult(id=id, summary=rec["summary"], tags=rec["tags"]))
         return results[offset:offset + limit]
 
@@ -223,8 +271,22 @@ class MockChromaStore:
     def update_tags(self, collection: str, id: str, tags: dict) -> bool:
         if collection in self._data and id in self._data[collection]:
             self._data[collection][id]["tags"] = tags
+            self._data[collection][id]["metadata"] = self._to_metadata(tags)
             return True
         return False
+
+    def rewrite_tags(self, collection: str, id: str, tags: dict) -> bool:
+        """Rewrite metadata without semantic changes (migration helper)."""
+        return self.update_tags(collection, id, tags)
+
+    def has_tag_markers(self, collection: str, id: str) -> bool:
+        if collection not in self._data or id not in self._data[collection]:
+            return False
+        metadata = self._data[collection][id].get("metadata", {})
+        return any(
+            k.startswith(self._tag_key_prefix) or k.startswith(self._tag_value_prefix)
+            for k in metadata
+        )
 
     def delete_collection(self, name: str) -> bool:
         if name in self._data:
@@ -386,15 +448,17 @@ class MockDocumentStore:
         values = set()
         for rec in self._data.get(collection, {}).values():
             if key in rec["tags"]:
-                values.add(rec["tags"][key])
+                for value in tag_values(rec["tags"], key):
+                    values.add(value)
         return sorted(values)
 
     def tag_pair_counts(self, collection: str) -> dict[tuple[str, str], int]:
         counts: dict[tuple[str, str], int] = {}
         for rec in self._data.get(collection, {}).values():
-            for k, v in rec["tags"].items():
+            for k in rec["tags"]:
                 if not k.startswith("_"):
-                    counts[(k, v)] = counts.get((k, v), 0) + 1
+                    for value in set(tag_values(rec["tags"], k)):
+                        counts[(k, value)] = counts.get((k, value), 0) + 1
         return counts
 
     def max_version(self, collection: str, id: str) -> int:
@@ -434,6 +498,15 @@ class MockDocumentStore:
     def query_fts(self, collection: str, query: str, limit: int = 10,
                   tags: dict = None) -> list[tuple[str, str, float]]:
         """Mock FTS5 search — case-insensitive OR-token matching on summaries + parts."""
+        def _matches_filter(item_tags: dict, filt: dict | None) -> bool:
+            if not filt:
+                return True
+            for key in filt:
+                wanted = set(tag_values(filt, key))
+                if wanted and not wanted.issubset(set(tag_values(item_tags, key))):
+                    return False
+            return True
+
         tokens = [t.lower() for t in query.split()]
         if not tokens:
             return []
@@ -443,10 +516,9 @@ class MockDocumentStore:
             summary_lower = rec["summary"].lower()
             if not any(t in summary_lower for t in tokens):
                 continue
-            if tags:
-                rec_tags = rec.get("tags", {})
-                if not all(rec_tags.get(k) == v for k, v in tags.items()):
-                    continue
+            rec_tags = rec.get("tags", {})
+            if not _matches_filter(rec_tags, tags):
+                continue
             results.append((id, rec["summary"], -1.0))
         # Search parts (summary + content)
         for key, parts in self._parts.items():
@@ -458,9 +530,8 @@ class MockDocumentStore:
             for part in parts:
                 text = (part.summary + " " + part.content).lower()
                 if any(t in text for t in tokens):
-                    if tags:
-                        if not all(part.tags.get(k) == v for k, v in tags.items()):
-                            continue
+                    if not _matches_filter(part.tags, tags):
+                        continue
                     results.append((f"{parts_id}@p{part.part_num}", part.summary, -1.0))
         return results[:limit]
 
@@ -579,7 +650,7 @@ class MockDocumentStore:
         self._edges = [
             e for e in self._edges
             if not (e["source_id"] == source_id and e["collection"] == collection
-                    and e["predicate"] == predicate)
+                    and e["predicate"] == predicate and e["target_id"] == target_id)
         ]
         self._edges.append({
             "source_id": source_id, "collection": collection,
@@ -587,13 +658,16 @@ class MockDocumentStore:
             "inverse": inverse, "created": created,
         })
 
-    def delete_edge(self, collection: str, source_id: str, predicate: str) -> int:
+    def delete_edge(
+        self, collection: str, source_id: str, predicate: str, target_id: str | None = None
+    ) -> int:
         self.__init_edges()
         before = len(self._edges)
         self._edges = [
             e for e in self._edges
             if not (e["source_id"] == source_id and e["collection"] == collection
-                    and e["predicate"] == predicate)
+                    and e["predicate"] == predicate
+                    and (target_id is None or e["target_id"] == target_id))
         ]
         return before - len(self._edges)
 

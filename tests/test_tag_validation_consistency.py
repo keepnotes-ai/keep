@@ -5,6 +5,7 @@ import pytest
 from keep.api import Keeper
 from keep.config import ProviderConfig, StoreConfig
 from keep.providers.base import Document
+from keep.types import MAX_TAG_VALUES_PER_KEY
 
 
 def test_invalid_default_tag_key_rejected_on_init(mock_providers, tmp_path):
@@ -55,5 +56,19 @@ def test_move_rejects_invalid_filter_key(mock_providers, tmp_path):
     try:
         with pytest.raises(ValueError, match="invalid characters"):
             kp.move("dest", tags={"bad!key": "x"})
+    finally:
+        kp.close()
+
+
+def test_tag_update_rejects_too_many_values_with_source_context(
+    mock_providers, tmp_path,
+):
+    """Tag mutation overflow errors include source context for CLI/API parity."""
+    kp = Keeper(store_path=tmp_path)
+    try:
+        kp.put("x", id="doc:overflow")
+        values = [f"v{i}" for i in range(MAX_TAG_VALUES_PER_KEY + 1)]
+        with pytest.raises(ValueError, match="Tags: Too many distinct values"):
+            kp.tag("doc:overflow", tags={"topic": values})
     finally:
         kp.close()

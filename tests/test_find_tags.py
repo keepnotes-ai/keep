@@ -49,17 +49,33 @@ class TestFindTagsFilter:
         assert "bob:work" not in ids
         assert "alice:pets" not in ids
 
-    def test_find_tags_case_insensitive(self, kp):
-        """Tags are casefolded before filtering."""
+    def test_find_tags_key_case_insensitive_value_case_sensitive(self, kp):
+        """Keys are case-insensitive; values remain case-sensitive."""
         results = kp.find("pets", tags={"User": "Alice"})
         ids = {r.id for r in results}
-        assert "alice:pets" in ids
-        assert "bob:pets" not in ids
+        assert "alice:pets" not in ids
+        exact = kp.find("pets", tags={"User": "alice"})
+        assert "alice:pets" in {r.id for r in exact}
 
     def test_find_tags_no_match(self, kp):
         """find() with non-matching tags returns empty."""
         results = kp.find("pets", tags={"user": "charlie"})
         assert len(results) == 0
+
+    def test_put_same_key_adds_distinct_values(self, kp):
+        """Repeated writes with same key keep distinct values."""
+        kp.put("alice with two topics", id="alice:pets", tags={"topic": "animals"})
+        item = kp.get("alice:pets")
+        assert item is not None
+        assert set(item.tags["topic"]) == {"pets", "animals"}
+
+    def test_find_matches_each_value_for_multivalue_key(self, kp):
+        """Tag filters match any stored value for the key."""
+        kp.put("alice with two topics", id="alice:pets", tags={"topic": "animals"})
+        by_pets = {r.id for r in kp.find("alice", tags={"topic": "pets"})}
+        by_animals = {r.id for r in kp.find("alice", tags={"topic": "animals"})}
+        assert "alice:pets" in by_pets
+        assert "alice:pets" in by_animals
 
     def test_find_hybrid_with_tags(self, kp):
         """find() hybrid search also respects tags filter."""

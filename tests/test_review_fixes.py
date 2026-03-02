@@ -10,6 +10,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch, MagicMock
 
 from keep.document_store import DocumentStore
+from keep.types import tag_values
 
 
 # ---------------------------------------------------------------------------
@@ -437,7 +438,7 @@ class TestTagPart:
         # Update tags
         result = kp.tag_part("test-doc", 1, tags={"topic": "updated", "project": "myapp"})
         assert result is not None
-        assert result.tags["topic"] == "updated"
+        assert set(result.tags["topic"]) == {"original", "updated"}
         assert result.tags["project"] == "myapp"
 
     def test_tag_part_delete_with_empty_string(self, mock_providers, tmp_path):
@@ -482,7 +483,90 @@ class TestTagPart:
         result = kp.tag_part("test-doc3", 1, tags={"_part_num": "99", "topic": "updated"})
         assert result is not None
         assert result.tags["_part_num"] == "1"  # unchanged
-        assert result.tags["topic"] == "updated"
+        assert set(result.tags["topic"]) == {"auth", "updated"}
+
+    def test_tag_part_remove_single_value(self, mock_providers, tmp_path):
+        from keep.api import Keeper
+        from keep.document_store import PartInfo
+        kp = Keeper(store_path=tmp_path)
+
+        kp.put("test content", id="test-doc4")
+        doc_coll = kp._resolve_doc_collection()
+        part = PartInfo(
+            part_num=1,
+            summary="test part",
+            tags={"speaker": ["Alice", "Bob"]},
+            content="test content",
+            created_at="2026-01-01T00:00:00",
+        )
+        kp._document_store.upsert_parts(doc_coll, "test-doc4", [part])
+
+        result = kp.tag_part("test-doc4", 1, remove_values={"speaker": "Bob"})
+        assert result is not None
+        assert tag_values(result.tags, "speaker") == ["Alice"]
+
+
+class TestTagMutations:
+    """Value-level tag mutation behavior for Keeper.tag()."""
+
+    def test_tag_remove_single_value(self, mock_providers, tmp_path):
+        from keep.api import Keeper
+        kp = Keeper(store_path=tmp_path)
+
+        kp.put("meeting notes", id="doc:tag:1", tags={"speaker": ["Alice", "Bob"]})
+        result = kp.tag("doc:tag:1", remove_values={"speaker": "Bob"})
+        assert result is not None
+        assert tag_values(result.tags, "speaker") == ["Alice"]
+
+    def test_tag_remove_and_add_in_one_call(self, mock_providers, tmp_path):
+        from keep.api import Keeper
+        kp = Keeper(store_path=tmp_path)
+
+        kp.put("meeting notes", id="doc:tag:2", tags={"speaker": ["Alice", "Bob"]})
+        result = kp.tag(
+            "doc:tag:2",
+            tags={"speaker": "Carol"},
+            remove_values={"speaker": "Bob"},
+        )
+        assert result is not None
+        assert set(tag_values(result.tags, "speaker")) == {"Alice", "Carol"}
+
+    def test_tag_add_literal_dash_prefix_value(self, mock_providers, tmp_path):
+        from keep.api import Keeper
+        kp = Keeper(store_path=tmp_path)
+
+        kp.put("meeting notes", id="doc:tag:3", tags={"speaker": "Alice"})
+        result = kp.tag("doc:tag:3", tags={"speaker": "-Bob"})
+        assert result is not None
+        assert set(tag_values(result.tags, "speaker")) == {"Alice", "-Bob"}
+
+    def test_tag_removal_skips_constrained_validation(self, mock_providers, tmp_path):
+        from keep.api import Keeper
+        from keep.types import utc_now
+        kp = Keeper(store_path=tmp_path)
+        doc_coll = kp._resolve_doc_collection()
+        now = utc_now()
+
+        # Constrained tag setup: only status=open is valid.
+        kp._document_store.upsert(
+            doc_coll, ".tag/status", summary="status",
+            tags={"_constrained": "true", "_created": now, "_updated": now, "_source": "inline"},
+        )
+        kp._document_store.upsert(
+            doc_coll, ".tag/status/open", summary="open",
+            tags={"_created": now, "_updated": now, "_source": "inline"},
+        )
+
+        kp.put("item", id="doc:tag:4", tags={"status": "open"})
+
+        # Removing a value should not require the removed token to be a valid constrained value.
+        result = kp.tag("doc:tag:4", remove_values={"status": "closed"})
+        assert result is not None
+        assert tag_values(result.tags, "status") == ["open"]
+
+        # Adding an invalid constrained value should still fail.
+        with pytest.raises(ValueError, match="Invalid value for constrained tag"):
+            kp.tag("doc:tag:4", tags={"status": "closed"})
 
 
 class TestVersionContextNavigation:
@@ -522,6 +606,100 @@ class TestVersionContextNavigation:
         assert [v.summary for v in ctx.prev] == ["older"]
         assert [v.offset for v in ctx.next] == [1]
         assert [v.summary for v in ctx.next] == ["newer"]
+
+
+class TestTagMarkerMigration:
+    """Legacy Chroma key/value metadata is rewritten to marker metadata."""
+
+    def test_migrates_legacy_tag_metadata_in_place(self, mock_providers, tmp_path):
+        from keep.api import Keeper
+        from keep.types import casefold_tags_for_index
+
+        kp = Keeper(store_path=tmp_path)
+        try:
+            kp.put("hello world", id="doc:legacy", tags={"topic": "auth"})
+            doc_coll = kp._resolve_doc_collection()
+            chroma_coll = kp._resolve_chroma_collection()
+            doc = kp._document_store.get(doc_coll, "doc:legacy")
+            assert doc is not None
+            # Ensure a searchable row exists in the vector index.
+            kp._store.upsert(
+                chroma_coll,
+                "doc:legacy",
+                kp._get_embedding_provider().embed(doc.summary),
+                doc.summary,
+                casefold_tags_for_index(doc.tags),
+            )
+
+            # Force legacy metadata shape (no _tk::_tv:: markers).
+            legacy_meta = {"topic": "auth", "_source": "inline"}
+            kp._store._data[chroma_coll]["doc:legacy"]["metadata"] = legacy_meta
+
+            assert not kp._store.has_tag_markers(chroma_coll, "doc:legacy")
+
+            assert kp._needs_chroma_tag_marker_migration(chroma_coll, doc_coll)
+            stats = kp._migrate_chroma_tag_markers(chroma_coll, doc_coll)
+            assert stats["docs"] >= 1
+            assert kp._store.has_tag_markers(chroma_coll, "doc:legacy")
+
+            # Tag-filtered semantic path should work again.
+            results = kp.find(
+                similar_to="doc:legacy",
+                tags={"topic": "auth"},
+                include_self=True,
+                limit=5,
+            )
+            assert any(r.id == "doc:legacy" for r in results)
+        finally:
+            kp.close()
+
+    def test_detects_legacy_marker_gap_on_versions_and_parts(
+        self, mock_providers, tmp_path,
+    ):
+        from keep.api import Keeper
+        from keep.document_store import PartInfo
+        from keep.types import casefold_tags_for_index, utc_now
+
+        kp = Keeper(store_path=tmp_path)
+        try:
+            # Current document has no user tags.
+            kp.put("body", id="doc:history")
+
+            doc_coll = kp._resolve_doc_collection()
+            chroma_coll = kp._resolve_chroma_collection()
+
+            # Add one indexed part with user tags and then force legacy shape.
+            part = PartInfo(
+                part_num=1,
+                summary="part summary",
+                tags={"topic": "auth"},
+                content="part body",
+                created_at=utc_now(),
+            )
+            kp._document_store.upsert_parts(doc_coll, "doc:history", [part])
+            part_id = "doc:history@p1"
+            part_tags = {"topic": "auth", "_part_num": "1", "_base_id": "doc:history"}
+            kp._store.upsert(
+                chroma_coll,
+                part_id,
+                kp._get_embedding_provider().embed(part.summary),
+                part.summary,
+                casefold_tags_for_index(part_tags),
+            )
+            kp._store._data[chroma_coll][part_id]["metadata"] = {
+                "topic": "auth",
+                "_part_num": "1",
+                "_base_id": "doc:history",
+                "_source": "inline",
+            }
+
+            # Current doc has no user tags; part row should still trigger migration.
+            current = kp.get("doc:history")
+            assert current is not None
+            assert "topic" not in current.tags
+            assert kp._needs_chroma_tag_marker_migration(chroma_coll, doc_coll)
+        finally:
+            kp.close()
 
 
 class TestNegativeVersionSelectors:

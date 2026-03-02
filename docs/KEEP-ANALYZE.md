@@ -132,8 +132,8 @@ They are treated as derived data — immutable except for tag corrections.
 - Read, search, list — parts appear in `get`, `find`, `list` normally
 - Tag editing — correct or override analyzer tagging decisions:
   ```bash
-  keep tag-update "doc:1@P{2}" -t topic=oauth2    # Fix a tag
-  keep tag-update "doc:1@P{2}" -r topic            # Remove a tag
+  keep tag "doc:1@P{2}" -t topic=oauth2    # Fix a tag
+  keep tag "doc:1@P{2}" -r topic            # Remove a tag
   ```
 - Re-analyze — `analyze` replaces all parts atomically
 - Delete parent — removing the parent document removes its parts

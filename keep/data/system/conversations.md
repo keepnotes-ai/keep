@@ -83,7 +83,7 @@ At any point: Withdraw, Decline, Renegotiate.
 keep put "I'll implement the auth flow" -t act=commitment -t status=open -t project=myapp
 
 # At satisfaction (step 4)
-keep tag-update ID --tag status=fulfilled
+keep tag ID --tag status=fulfilled
 ```
 
 **Conditions of satisfaction** are negotiated agreements — not objective goals. They are what the customer and performer agree constitutes "done." When conditions are left implicit, breakdowns follow.

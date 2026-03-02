@@ -86,7 +86,7 @@ class TestCliBasics:
 
     def test_command_help(self, cli):
         """Individual commands have help."""
-        for cmd in ["find", "put", "get", "list"]:
+        for cmd in ["find", "put", "get", "list", "tag"]:
             result = cli(cmd, "--help")
             assert result.returncode == 0, f"{cmd} --help failed"
             assert "Usage" in result.stdout or "usage" in result.stdout.lower()
@@ -689,17 +689,18 @@ class TestCommandAliases:
     """Tests that old command names still work as hidden aliases."""
 
     def test_help_shows_put_not_update(self, cli):
-        """Main help shows 'put' and 'del', not 'update' or 'delete'."""
+        """Main help shows canonical command names."""
         result = cli("--help")
         assert result.returncode == 0
         assert "put" in result.stdout
         assert "del" in result.stdout
+        assert "tag" in result.stdout
         # Old names should be hidden
         lines = result.stdout.split("\n")
         visible_commands = [l for l in lines if l.strip() and not l.strip().startswith("--")]
         visible_text = "\n".join(visible_commands)
-        # 'update' and 'delete' should not appear as visible commands
-        # (they may appear in descriptions, so check command column only)
+        assert "tag-update" not in visible_text
+        # 'update' and 'delete' should not appear as visible commands.
 
     def test_update_alias_works(self, cli):
         """'update' still works as a hidden alias for 'put'."""
@@ -709,6 +710,11 @@ class TestCommandAliases:
     def test_delete_alias_works(self, cli):
         """'delete' still works as a hidden alias for 'del'."""
         result = cli("delete", "--help")
+        assert result.returncode == 0
+
+    def test_tag_update_alias_works(self, cli):
+        """'tag-update' still works as a hidden alias for 'tag'."""
+        result = cli("tag-update", "--help")
         assert result.returncode == 0
 
     def test_del_help(self, cli):

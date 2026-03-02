@@ -2,7 +2,16 @@
 
 import pytest
 
-from keep.types import normalize_id, _normalize_http_uri, _decode_unreserved, _resolve_dot_segments
+from keep.types import (
+    MAX_TAG_VALUES_PER_KEY,
+    validate_id,
+    normalize_id,
+    normalize_tag_map,
+    tag_values,
+    _normalize_http_uri,
+    _decode_unreserved,
+    _resolve_dot_segments,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -217,6 +226,30 @@ class TestNormalizeId:
         with pytest.raises(ValueError):
             normalize_id("bad<id>")
 
+    def test_leading_whitespace_rejected(self):
+        with pytest.raises(ValueError, match="leading or trailing whitespace"):
+            normalize_id(" note")
+
+    def test_trailing_whitespace_rejected(self):
+        with pytest.raises(ValueError, match="leading or trailing whitespace"):
+            normalize_id("note ")
+
+    def test_nfc_normalization_applied(self):
+        # "Cafe" + combining acute accent on e
+        decomposed = "Cafe\u0301"
+        assert normalize_id(decomposed) == "Café"
+
+
+class TestValidateId:
+    def test_blocked_char_check_runs_on_nfc_form(self, monkeypatch):
+        import re
+        import keep.types as types
+
+        # Contrived matcher so we can observe normalization-before-check.
+        monkeypatch.setattr(types, "_ID_BLOCKED_RE", re.compile("é"))
+        with pytest.raises(ValueError, match="invalid characters"):
+            validate_id("Cafe\u0301")
+
 
 # ---------------------------------------------------------------------------
 # Integration tests with Keeper
@@ -279,3 +312,58 @@ class TestNormalizationIntegration:
         """Non-URI IDs are not affected."""
         item = keeper.put(content="test", id="my-note")
         assert item.id == "my-note"
+
+    def test_put_rejects_id_with_surrounding_whitespace(self, keeper):
+        with pytest.raises(ValueError, match="leading or trailing whitespace"):
+            keeper.put(content="test", id=" my-note ")
+
+
+class TestTagValueUriNormalization:
+    """HTTP/HTTPS tag values are URI-normalized like IDs."""
+
+    def test_tag_values_fold_http_equivalents(self):
+        tags = normalize_tag_map({
+            "ref": [
+                "HTTPS://Example.COM:443/a/../b/%41?q=1",
+                "https://example.com/b/A?q=1",
+            ],
+        })
+        assert tag_values(tags, "ref") == ["https://example.com/b/A?q=1"]
+
+    def test_non_http_values_unchanged(self):
+        tags = normalize_tag_map({"ref": ["file:///A/B", "file:///A/B"]})
+        # Non-HTTP schemes do not get URI folding.
+        assert tag_values(tags, "ref") == ["file:///A/B"]
+
+    def test_values_trim_surrounding_whitespace(self):
+        tags = normalize_tag_map({"topic": ["  hello world  ", "hello world"]})
+        assert tag_values(tags, "topic") == ["hello world"]
+
+    def test_values_preserve_internal_whitespace(self):
+        tags = normalize_tag_map({"topic": ["hello   world"]})
+        assert tag_values(tags, "topic") == ["hello   world"]
+
+    def test_uri_values_trim_then_normalize(self):
+        tags = normalize_tag_map(
+            {"ref": ["  HTTPS://Example.COM:443/a/../b/%41?q=1  "]}
+        )
+        assert tag_values(tags, "ref") == ["https://example.com/b/A?q=1"]
+
+    def test_values_nfc_normalized_and_deduped(self):
+        tags = normalize_tag_map({"speaker": ["Cafe\u0301", "Café"]})
+        assert tag_values(tags, "speaker") == ["Café"]
+
+    def test_max_tag_values_per_key_allows_limit(self):
+        values = [f"v{i}" for i in range(MAX_TAG_VALUES_PER_KEY)]
+        tags = normalize_tag_map({"topic": values})
+        assert len(tag_values(tags, "topic")) == MAX_TAG_VALUES_PER_KEY
+
+    def test_max_tag_values_per_key_rejects_overflow(self):
+        values = [f"v{i}" for i in range(MAX_TAG_VALUES_PER_KEY + 1)]
+        with pytest.raises(ValueError, match="Too many distinct values"):
+            normalize_tag_map({"topic": values})
+
+    def test_max_tag_values_per_key_counts_distinct_only(self):
+        values = ["x"] * (MAX_TAG_VALUES_PER_KEY + 100)
+        tags = normalize_tag_map({"topic": values})
+        assert tag_values(tags, "topic") == ["x"]

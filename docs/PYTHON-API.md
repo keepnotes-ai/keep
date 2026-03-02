@@ -194,7 +194,7 @@ kp.revert(id) → Item | None
 Fields:
 - `id` (str) — Document identifier
 - `summary` (str) — Human-readable summary
-- `tags` (dict[str, str]) — Key-value tags
+- `tags` (dict[str, str | list[str]]) — Key-value tags (single or multi-value per key)
 - `score` (float | None) — Similarity score (search results only)
 
 Properties (from tags):
@@ -207,7 +207,7 @@ Properties (from tags):
 Fields for version history listings:
 - `version` (int) — Version offset (0=current, 1=previous, etc.)
 - `summary` (str) — Summary of this version
-- `tags` (dict[str, str]) — Tags at this version
+- `tags` (dict[str, str | list[str]]) — Tags at this version
 - `created_at` (str) — ISO timestamp when this version was created
 - `content_hash` (str | None) — Content hash for deduplication
 
@@ -216,7 +216,7 @@ Fields for version history listings:
 Fields for structural parts (from `analyze()`):
 - `part_num` (int) — Part number (1-indexed)
 - `summary` (str) — Summary of this part
-- `tags` (dict[str, str]) — Tags on this part
+- `tags` (dict[str, str | list[str]]) — Tags on this part
 - `content` (str) — Full text of this part
 - `created_at` (str) — ISO timestamp when this part was created
 
@@ -232,9 +232,9 @@ When indexing, tags merge in priority order (later wins):
 
 ### Tag Rules
 
-- **One value per key**: Setting a tag overwrites existing value
+- **Multi-value keys**: Adding a value for an existing key keeps prior distinct values
 - **System tags** (prefixed `_`) cannot be set by users
-- **Empty string deletes**: `kp.tag(id, {"key": ""})` removes the tag
+- **Empty string deletes key**: `kp.tag(id, {"key": ""})` removes all values for that key
 
 ### Environment Tags
 

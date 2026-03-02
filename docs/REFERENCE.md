@@ -19,7 +19,7 @@
 | `keep prompt` | Render agent prompt with context | [KEEP-PROMPT.md](KEEP-PROMPT.md) |
 | `keep mcp` | Start MCP stdio server for AI agents | [KEEP-MCP.md](KEEP-MCP.md) |
 | `keep del` | Remove item or revert to previous version | — |
-| `keep tag-update` | Add, update, or remove tags | [TAGGING.md](TAGGING.md) |
+| `keep tag` | Add, update, or remove tags | [TAGGING.md](TAGGING.md) |
 | `keep data export` | Export store to JSON for backup or migration | [KEEP-DATA.md](KEEP-DATA.md) |
 | `keep data import` | Import documents from JSON export file | [KEEP-DATA.md](KEEP-DATA.md) |
 | `keep pending` | Process pending tasks (summarize, embed, OCR, analyze, reindex) | — |
@@ -85,7 +85,7 @@ Part numbers are **1-indexed**: @P{1} = first part, @P{2} = second part, etc.
 ```bash
 keep --ids find "auth" | xargs keep get              # Get full details for all matches
 keep --ids list -n 5 | xargs keep get                # Get details for recent items
-keep --ids list --tag project=foo | xargs keep tag-update --tag status=done
+keep --ids list --tag project=foo | xargs keep tag --tag status=done
 keep --json --ids find "query"                       # JSON array: ["id@V{0}", ...]
 
 # Version history composition
@@ -134,9 +134,9 @@ keep list --tag project=myapp        # Filter by tag
 keep list --tags=                    # List all tag keys
 
 # Modify
-keep tag-update ID --tag key=value   # Add/update tag
-keep tag-update ID --remove key      # Remove tag
-keep tag-update "ID@P{1}" -t topic=x # Edit tags on a part
+keep tag ID --tag key=value   # Add/update tag
+keep tag ID --remove key      # Remove tag
+keep tag "ID@P{1}" -t topic=x # Edit tags on a part
 keep del ID                          # Remove item or revert to previous version
 
 # Analyze (skips if parts are already current)

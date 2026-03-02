@@ -41,14 +41,14 @@ class TestDocumentStoreEdges:
         assert edges[0] == ("said", "conv1@v12", "2025-01-02T00:00:00")
         assert edges[1] == ("said", "conv1@v5", "2025-01-01T00:00:00")
 
-    def test_upsert_edge_replaces_on_same_pk(self, store):
+    def test_upsert_edge_keeps_multiple_targets_per_predicate(self, store):
         store.upsert_edge("default", "doc1", "speaker", "alice", "said", "2025-01-01T00:00:00")
         store.upsert_edge("default", "doc1", "speaker", "bob", "said", "2025-01-02T00:00:00")
 
-        # PK is (source_id, collection, predicate) — only one row
+        # PK includes target_id — both edges coexist.
         edges_alice = store.get_inverse_edges("default", "alice")
         edges_bob = store.get_inverse_edges("default", "bob")
-        assert len(edges_alice) == 0
+        assert len(edges_alice) == 1
         assert len(edges_bob) == 1
 
     def test_delete_edges_for_source(self, store):
@@ -140,6 +140,39 @@ class TestEdgeIntegration:
         assert len(ctx.edges["said"]) == 1
         assert ctx.edges["said"][0].source_id == "conv1"
 
+    def test_edge_target_uri_value_is_normalized(self, kp):
+        """Edge target values that are HTTP URIs use canonical ID normalization."""
+        self._create_tagdoc(kp, "speaker", "said")
+
+        raw_target = "HTTPS://Example.COM:443/a/../b/%41?q=1"
+        canonical_target = "https://example.com/b/A?q=1"
+        kp.put(content="URI target edge", id="conv1", summary="Edge to URI",
+               tags={"speaker": raw_target})
+
+        # Target doc is auto-vivified under canonical URI ID.
+        assert kp.get(canonical_target) is not None
+
+        # Inverse edge lookup uses canonical target ID.
+        ctx = kp.get_context(canonical_target)
+        assert "said" in ctx.edges
+        assert len(ctx.edges["said"]) == 1
+        assert ctx.edges["said"][0].source_id == "conv1"
+
+    def test_edge_target_unicode_nfc_is_normalized(self, kp):
+        """Edge target values normalize to the same NFC canonical form as IDs."""
+        self._create_tagdoc(kp, "speaker", "said")
+
+        raw_target = "Cafe\u0301"  # decomposed
+        canonical_target = "Café"   # composed NFC
+        kp.put(content="Unicode target edge", id="conv2", summary="Edge to unicode",
+               tags={"speaker": raw_target})
+
+        assert kp.get(canonical_target) is not None
+        ctx = kp.get_context(canonical_target)
+        assert "said" in ctx.edges
+        assert len(ctx.edges["said"]) == 1
+        assert ctx.edges["said"][0].source_id == "conv2"
+
     def test_auto_vivification(self, kp):
         """Target that doesn't exist is created as empty doc."""
         self._create_tagdoc(kp, "speaker", "said")
@@ -194,8 +227,8 @@ class TestEdgeIntegration:
         ctx = kp.get_context("nate")
         assert ctx.edges.get("said", []) == []
 
-    def test_tag_value_change_updates_edge(self, kp):
-        """Changing tag value removes old edge and creates new one."""
+    def test_tag_value_change_adds_second_edge_value(self, kp):
+        """Changing tag value via put() adds a second edge value."""
         self._create_tagdoc(kp, "speaker", "said")
 
         kp.put(content="Someone said hello", id="conv1", summary="Greeting",
@@ -209,11 +242,11 @@ class TestEdgeIntegration:
         kp.put(content="Someone said hello", id="conv1", summary="Greeting",
                tags={"speaker": "bob"})
 
-        # bob gets the edge, alice loses it
+        # Both edges are now present for this source+predicate.
         ctx_bob = kp.get_context("bob")
         assert len(ctx_bob.edges.get("said", [])) == 1
         ctx_alice = kp.get_context("alice")
-        assert ctx_alice.edges.get("said", []) == []
+        assert len(ctx_alice.edges.get("said", [])) == 1
 
     def test_removing_one_edge_tag_preserves_others(self, kp):
         """Removing one edge tag must not delete edges from other predicates."""

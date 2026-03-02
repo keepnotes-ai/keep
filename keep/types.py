@@ -3,9 +3,10 @@ Data types for reflective memory.
 """
 
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Literal, Optional
+from typing import Any, Iterable, Literal, Optional
 from urllib.parse import urlparse, urlunparse
 
 
@@ -68,6 +69,12 @@ _TAG_KEY_RE = re.compile(r'^[a-zA-Z_][a-zA-Z0-9_-]*$')
 MAX_ID_LENGTH = 1024
 MAX_TAG_KEY_LENGTH = 128
 MAX_TAG_VALUE_LENGTH = 4096
+# Guardrail for tag cardinality explosion in storage/index metadata.
+MAX_TAG_VALUES_PER_KEY = 512
+
+
+TagValue = str | list[str]
+TagMap = dict[str, TagValue]
 
 # IDs: printable characters minus control chars and a small blocklist.
 # Blocked: null bytes (\x00), control chars (\x01-\x1f), DEL (\x7f),
@@ -100,8 +107,11 @@ def validate_id(id: str) -> None:
     """Validate a document ID — length and no dangerous characters."""
     if not id or len(id) > MAX_ID_LENGTH:
         raise ValueError(f"ID must be 1-{MAX_ID_LENGTH} characters")
-    if _ID_BLOCKED_RE.search(id):
-        raise ValueError(f"ID contains invalid characters: {id!r}")
+    if id != id.strip():
+        raise ValueError("ID cannot have leading or trailing whitespace")
+    normalized_id = unicodedata.normalize("NFC", id)
+    if _ID_BLOCKED_RE.search(normalized_id):
+        raise ValueError(f"ID contains invalid characters: {normalized_id!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -198,38 +208,142 @@ def normalize_id(id: str) -> str:
     Raises ValueError for invalid IDs.
     """
     validate_id(id)
+    id = unicodedata.normalize("NFC", id)
     if id[:8].lower().startswith(('http://', 'https://')):
         id = _normalize_http_uri(id)
     return id
 
 
-def casefold_tags(tags: dict[str, str]) -> dict[str, str]:
+def _normalize_tag_value(value: Any) -> list[str]:
+    """Normalize a tag value to a deduplicated list of strings."""
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        raw: Iterable[Any] = value
+    else:
+        raw = [value]
+    out: list[str] = []
+    seen: set[str] = set()
+    for v in raw:
+        if v is None:
+            continue
+        # Normalize surrounding whitespace while preserving internal whitespace.
+        sv = unicodedata.normalize("NFC", str(v).strip())
+        if sv[:8].lower().startswith(("http://", "https://")):
+            # Apply the same URI folding strategy used by normalize_id(),
+            # but do not reject non-ID-safe strings here.
+            try:
+                sv = _normalize_http_uri(sv)
+            except ValueError:
+                pass
+        if sv in seen:
+            continue
+        seen.add(sv)
+        out.append(sv)
+    return out
+
+
+def _pack_tag_values(values: list[str]) -> TagValue | None:
+    """Pack normalized values as scalar-or-list for compact storage."""
+    if not values:
+        return None
+    if len(values) == 1:
+        return values[0]
+    return values
+
+
+def tag_values(tags: dict[str, Any], key: str) -> list[str]:
+    """Return normalized values for one key from a mixed tag map."""
+    return _normalize_tag_value(tags.get(key))
+
+
+def set_tag_values(tags: dict[str, Any], key: str, values: list[str]) -> None:
+    """Set a key to normalized values (scalar/list), or remove if empty."""
+    normalized = _normalize_tag_value(values)
+    if len(normalized) > MAX_TAG_VALUES_PER_KEY:
+        raise ValueError(
+            f"Too many distinct values for tag key {key!r} (max {MAX_TAG_VALUES_PER_KEY})"
+        )
+    packed = _pack_tag_values(normalized)
+    if packed is None:
+        tags.pop(key, None)
+    else:
+        tags[key] = packed
+
+
+def normalize_tag_map(tags: dict[str, Any]) -> TagMap:
+    """Normalize a tag map while preserving key spelling.
+
+    - Coerces keys/values to strings
+    - Flattens scalar/list inputs
+    - Deduplicates values per key, preserving first-seen order
+    - Drops keys with no values
+    - Stores single values as scalars, multiple as lists
+    """
+    normalized: dict[str, list[str]] = {}
+    seen_by_key: dict[str, set[str]] = {}
+    for raw_k, raw_v in tags.items():
+        key = str(raw_k)
+        vals = _normalize_tag_value(raw_v)
+        if not vals:
+            continue
+        bucket = normalized.setdefault(key, [])
+        seen = seen_by_key.setdefault(key, set())
+        for v in vals:
+            if v in seen:
+                continue
+            if len(bucket) >= MAX_TAG_VALUES_PER_KEY:
+                raise ValueError(
+                    f"Too many distinct values for tag key {key!r} (max {MAX_TAG_VALUES_PER_KEY})"
+                )
+            seen.add(v)
+            bucket.append(v)
+    result: TagMap = {}
+    for k, vals in normalized.items():
+        packed = _pack_tag_values(vals)
+        if packed is not None:
+            result[k] = packed
+    return result
+
+
+def iter_tag_pairs(tags: dict[str, Any], *, include_system: bool = True) -> Iterable[tuple[str, str]]:
+    """Yield flattened (key, value) pairs from mixed scalar/list tag maps."""
+    for key in tags:
+        if not include_system and key.startswith(SYSTEM_TAG_PREFIX):
+            continue
+        for value in tag_values(tags, key):
+            yield key, value
+
+
+def casefold_tags(tags: dict[str, Any]) -> TagMap:
     """Casefold tag keys for case-insensitive lookup, preserving values.
 
     System tags (prefixed with '_') are left untouched.
     Tag values retain their original case for display fidelity
     (e.g. artist=AC/DC, album=Bashed Out).
     """
-    return {
-        (k.casefold() if not k.startswith(SYSTEM_TAG_PREFIX) else k): v
-        for k, v in tags.items()
-    }
+    normalized: dict[str, Any] = {}
+    for k, raw_v in normalize_tag_map(tags).items():
+        key = str(k)
+        folded = key.casefold() if not key.startswith(SYSTEM_TAG_PREFIX) else key
+        existing = _normalize_tag_value(normalized.get(folded))
+        incoming = _normalize_tag_value(raw_v)
+        if not incoming:
+            continue
+        set_tag_values(normalized, folded, existing + incoming)
+    return normalized
 
 
-def casefold_tags_for_index(tags: dict[str, str]) -> dict[str, str]:
-    """Casefold both tag keys and values for index storage (ChromaDB).
+def casefold_tags_for_index(tags: dict[str, Any]) -> TagMap:
+    """Casefold tag keys for index storage, preserving value case.
 
-    Used for the search index where case-insensitive where-clause
-    matching is needed.  The canonical (display) tags live in SQLite.
+    Keys remain case-insensitive. Values are preserved verbatim to
+    keep matching case-sensitive.
     """
-    return {
-        (k.casefold() if not k.startswith(SYSTEM_TAG_PREFIX) else k):
-        (v.casefold() if not k.startswith(SYSTEM_TAG_PREFIX) else v)
-        for k, v in tags.items()
-    }
+    return casefold_tags(tags)
 
 
-def filter_non_system_tags(tags: dict[str, str]) -> dict[str, str]:
+def filter_non_system_tags(tags: dict[str, Any]) -> TagMap:
     """
     Filter out any system tags (those starting with '_').
 
@@ -268,7 +382,7 @@ class Item:
     """
     id: str
     summary: str
-    tags: dict[str, str] = field(default_factory=dict)
+    tags: dict[str, Any] = field(default_factory=dict)
     score: Optional[float] = None
     changed: Optional[bool] = None  # True if content changed on put(), None for queries
     
@@ -335,7 +449,7 @@ class PartRef:
     """A part reference for display."""
     part_num: int
     summary: str
-    tags: dict[str, str] = field(default_factory=dict)
+    tags: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -435,7 +549,7 @@ class EvidenceUnit:
     score_focus: float = 0.0
     score_coherence: float = 0.0
     score_total: float = 0.0
-    provenance: dict[str, str] = field(default_factory=dict)
+    provenance: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

@@ -21,13 +21,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-from .types import utc_now
+from .types import normalize_tag_map, tag_values, utc_now
 
 logger = logging.getLogger(__name__)
 
 
 # Schema version for migrations
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 
 @dataclass
@@ -39,7 +39,7 @@ class VersionInfo:
     """
     version: int  # 1=oldest archived, increasing
     summary: str
-    tags: dict[str, str]
+    tags: dict[str, Any]
     created_at: str
     content_hash: Optional[str] = None
 
@@ -55,7 +55,7 @@ class PartInfo:
     """
     part_num: int           # 1-indexed
     summary: str
-    tags: dict[str, str]
+    tags: dict[str, Any]
     content: str            # extracted section text
     created_at: str
 
@@ -70,7 +70,7 @@ class DocumentRecord:
     id: str
     collection: str
     summary: str
-    tags: dict[str, str]
+    tags: dict[str, Any]
     created_at: str
     updated_at: str
     content_hash: Optional[str] = None
@@ -180,10 +180,17 @@ class DocumentStore:
         - Version 3 → 4: Create document_parts table
         - Version 6 → 7: FTS5 index + triggers (documents)
         - Version 7 → 8: FTS5 indexes + triggers (parts, versions)
+        - Version 10 → 11: edge primary keys include target_id (multivalue)
         """
         current_version = self._execute(
             "PRAGMA user_version"
         ).fetchone()[0]
+
+        if current_version > SCHEMA_VERSION:
+            raise sqlite3.DatabaseError(
+                f"Store schema version {current_version} is newer than supported "
+                f"({SCHEMA_VERSION}). Please upgrade keep."
+            )
 
         if current_version >= SCHEMA_VERSION:
             return  # Already up to date — no writes needed
@@ -195,6 +202,13 @@ class DocumentStore:
             current_version = self._execute(
                 "PRAGMA user_version"
             ).fetchone()[0]
+
+            if current_version > SCHEMA_VERSION:
+                self._conn.rollback()
+                raise sqlite3.DatabaseError(
+                    f"Store schema version {current_version} is newer than supported "
+                    f"({SCHEMA_VERSION}). Please upgrade keep."
+                )
 
             if current_version >= SCHEMA_VERSION:
                 self._conn.rollback()
@@ -514,17 +528,74 @@ class DocumentStore:
                         v.id,
                         v.version,
                         j.key,
-                        CAST(j.value AS TEXT),
+                        CAST(vv.value AS TEXT),
                         p.inverse,
                         v.created_at
                     FROM document_versions v
                     JOIN json_each(v.tags_json) j
+                    JOIN json_each(
+                        CASE
+                            WHEN j.type = 'array' THEN j.value
+                            ELSE json_array(j.value)
+                        END
+                    ) vv
                     JOIN predicates p
                       ON p.collection = v.collection
                      AND p.predicate = j.key
-                    WHERE j.value IS NOT NULL
-                      AND TRIM(CAST(j.value AS TEXT)) != ''
-                      AND SUBSTR(CAST(j.value AS TEXT), 1, 1) != '.'
+                    WHERE vv.value IS NOT NULL
+                      AND TRIM(CAST(vv.value AS TEXT)) != ''
+                      AND SUBSTR(CAST(vv.value AS TEXT), 1, 1) != '.'
+                    """)
+
+            # Version 10 → 11: allow multiple targets per predicate
+            if current_version < 11:
+                self._execute("""
+                    CREATE TABLE IF NOT EXISTS edges_new (
+                        source_id   TEXT NOT NULL,
+                        collection  TEXT NOT NULL,
+                        predicate   TEXT NOT NULL,
+                        target_id   TEXT NOT NULL,
+                        inverse     TEXT NOT NULL,
+                        created     TEXT NOT NULL,
+                        PRIMARY KEY (source_id, collection, predicate, target_id)
+                    )
+                """)
+                self._execute("""
+                    INSERT OR REPLACE INTO edges_new
+                        (source_id, collection, predicate, target_id, inverse, created)
+                    SELECT source_id, collection, predicate, target_id, inverse, created
+                    FROM edges
+                """)
+                self._execute("DROP TABLE IF EXISTS edges")
+                self._execute("ALTER TABLE edges_new RENAME TO edges")
+                self._execute("""
+                    CREATE INDEX IF NOT EXISTS idx_edges_target
+                    ON edges (target_id, collection, inverse, created)
+                """)
+
+                self._execute("""
+                    CREATE TABLE IF NOT EXISTS version_edges_new (
+                        collection  TEXT NOT NULL,
+                        source_id   TEXT NOT NULL,
+                        version     INTEGER NOT NULL,
+                        predicate   TEXT NOT NULL,
+                        target_id   TEXT NOT NULL,
+                        inverse     TEXT NOT NULL,
+                        created     TEXT NOT NULL,
+                        PRIMARY KEY (collection, source_id, version, predicate, target_id)
+                    )
+                """)
+                self._execute("""
+                    INSERT OR REPLACE INTO version_edges_new
+                        (collection, source_id, version, predicate, target_id, inverse, created)
+                    SELECT collection, source_id, version, predicate, target_id, inverse, created
+                    FROM version_edges
+                """)
+                self._execute("DROP TABLE IF EXISTS version_edges")
+                self._execute("ALTER TABLE version_edges_new RENAME TO version_edges")
+                self._execute("""
+                    CREATE INDEX IF NOT EXISTS idx_version_edges_target
+                    ON version_edges (target_id, collection, inverse, created)
                 """)
 
             self._execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -652,7 +723,7 @@ class DocumentStore:
         collection: str,
         id: str,
         summary: str,
-        tags: dict[str, str],
+        tags: dict[str, Any],
         content_hash: Optional[str] = None,
         content_hash_full: Optional[str] = None,
         created_at: Optional[str] = None,
@@ -679,6 +750,7 @@ class DocumentStore:
             False if only tags/summary changed or if new document.
         """
         now = self._now()
+        tags = normalize_tag_map(tags)
         tags_json = json.dumps(tags, ensure_ascii=False)
 
         with self._lock:
@@ -765,6 +837,7 @@ class DocumentStore:
             version_tags.setdefault("_created", current.created_at)
         if current.updated_at:
             version_tags["_updated"] = current.updated_at
+        version_tags = normalize_tag_map(version_tags)
 
         self._execute("""
             INSERT INTO document_versions
@@ -849,7 +922,7 @@ class DocumentStore:
         collection: str,
         source_id: str,
         version: int,
-        tags: dict[str, str],
+        tags: dict[str, Any],
         created: str,
     ) -> None:
         """Materialize version edge rows for one archived version."""
@@ -864,25 +937,24 @@ class DocumentStore:
         if not predicate_map:
             return
 
-        for key, value in tags.items():
+        for key in tags:
             if key.startswith("_"):
-                continue
-            if value is None:
-                continue
-            target_id = str(value).strip()
-            if not target_id or target_id.startswith("."):
                 continue
             inverse = predicate_map.get(key)
             if not inverse:
                 continue
-            self._execute(
-                """
-                INSERT OR REPLACE INTO version_edges
-                    (collection, source_id, version, predicate, target_id, inverse, created)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (collection, source_id, version, key, target_id, inverse, created),
-            )
+            for value in tag_values(tags, key):
+                target_id = str(value).strip()
+                if not target_id or target_id.startswith("."):
+                    continue
+                self._execute(
+                    """
+                    INSERT OR REPLACE INTO version_edges
+                        (collection, source_id, version, predicate, target_id, inverse, created)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (collection, source_id, version, key, target_id, inverse, created),
+                )
 
     def _rebuild_version_edges_for_source_unlocked(
         self, collection: str, source_id: str
@@ -906,28 +978,27 @@ class DocumentStore:
         ).fetchall()
         for row in rows:
             tags = json.loads(row["tags_json"]) if row["tags_json"] else {}
-            for key, value in tags.items():
+            for key in tags:
                 if key.startswith("_"):
-                    continue
-                if value is None:
-                    continue
-                target_id = str(value).strip()
-                if not target_id or target_id.startswith("."):
                     continue
                 inverse = predicate_map.get(key)
                 if not inverse:
                     continue
-                self._execute(
-                    """
-                    INSERT OR REPLACE INTO version_edges
-                        (collection, source_id, version, predicate, target_id, inverse, created)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        collection, source_id, row["version"], key,
-                        target_id, inverse, row["created_at"],
-                    ),
-                )
+                for value in tag_values(tags, key):
+                    target_id = str(value).strip()
+                    if not target_id or target_id.startswith("."):
+                        continue
+                    self._execute(
+                        """
+                        INSERT OR REPLACE INTO version_edges
+                            (collection, source_id, version, predicate, target_id, inverse, created)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            collection, source_id, row["version"], key,
+                            target_id, inverse, row["created_at"],
+                        ),
+                    )
     
     def update_summary(self, collection: str, id: str, summary: str) -> bool:
         """
@@ -981,7 +1052,7 @@ class DocumentStore:
         self,
         collection: str,
         id: str,
-        tags: dict[str, str],
+        tags: dict[str, Any],
     ) -> bool:
         """
         Update tags of an existing document.
@@ -995,6 +1066,7 @@ class DocumentStore:
             True if document was found and updated, False otherwise
         """
         now = self._now()
+        tags = normalize_tag_map(tags)
         tags_json = json.dumps(tags, ensure_ascii=False)
 
         with self._lock:
@@ -1066,7 +1138,7 @@ class DocumentStore:
 
                 version = row["version"]
                 summary = row["summary"]
-                tags = json.loads(row["tags_json"])
+                tags = normalize_tag_map(json.loads(row["tags_json"]))
                 content_hash = row["content_hash"]
                 created_at = row["created_at"]
 
@@ -1224,8 +1296,15 @@ class DocumentStore:
         Raises:
             ValueError: If source_id doesn't exist or no versions match.
         """
-        def _tags_match(tags: dict[str, str], filt: dict[str, str]) -> bool:
-            return all(tags.get(k) == v for k, v in filt.items())
+        def _tags_match(tags: dict, filt: dict) -> bool:
+            for key in filt:
+                wanted = set(tag_values(filt, key))
+                if not wanted:
+                    continue
+                stored = set(tag_values(tags, key))
+                if not wanted.issubset(stored):
+                    return False
+            return True
 
         with self._lock:
             self._execute("BEGIN IMMEDIATE")
@@ -1324,7 +1403,7 @@ class DocumentStore:
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     target_id, collection, target_current.summary,
-                    json.dumps(target_current.tags, ensure_ascii=False),
+                    json.dumps(normalize_tag_map(target_current.tags), ensure_ascii=False),
                     existing_target.created_at if existing_target else target_current.created_at,
                     now, target_current.content_hash, now,
                 ))
@@ -1337,7 +1416,7 @@ class DocumentStore:
                         VALUES (?, ?, ?, ?, ?, ?, ?)
                     """, (
                         target_id, collection, seq, vi.summary,
-                        json.dumps(vi.tags, ensure_ascii=False),
+                        json.dumps(normalize_tag_map(vi.tags), ensure_ascii=False),
                         vi.content_hash, vi.created_at,
                     ))
 
@@ -1356,7 +1435,7 @@ class DocumentStore:
                             WHERE id = ? AND collection = ?
                         """, (
                             promote.summary,
-                            json.dumps(promote.tags, ensure_ascii=False),
+                            json.dumps(normalize_tag_map(promote.tags), ensure_ascii=False),
                             promote.created_at, promote.content_hash, now,
                             source_id, collection,
                         ))
@@ -1660,7 +1739,7 @@ class DocumentStore:
                 return self.get(collection, to_id)
             # Copy with original timestamps
             import json
-            tags_json = json.dumps(source.tags, ensure_ascii=False)
+            tags_json = json.dumps(normalize_tag_map(source.tags), ensure_ascii=False)
             self._execute("""
                 INSERT OR REPLACE INTO documents
                 (id, collection, summary, tags_json, created_at, updated_at,
@@ -2064,9 +2143,14 @@ class DocumentStore:
         """
         doc_params: list[Any] = [fts_query, collection]
         if tags:
-            for k, v in tags.items():
-                doc_sql += " AND LOWER(json_extract(d.tags_json, ?)) = ?"
-                doc_params.extend([f"$.{k}", v])
+            for k in tags:
+                for v in tag_values(tags, k):
+                    doc_sql += (
+                        " AND EXISTS ("
+                        "SELECT 1 FROM json_each(d.tags_json, ?) jv "
+                        "WHERE CAST(jv.value AS TEXT) = ?)"
+                    )
+                    doc_params.extend([f"$.{k}", v])
         doc_sql += " ORDER BY f.rank LIMIT ?"
         doc_params.append(limit)
         doc_rows = self._execute(doc_sql, doc_params).fetchall()
@@ -2081,9 +2165,14 @@ class DocumentStore:
         """
         part_params: list[Any] = [fts_query, collection]
         if tags:
-            for k, v in tags.items():
-                part_sql += " AND LOWER(json_extract(p.tags_json, ?)) = ?"
-                part_params.extend([f"$.{k}", v])
+            for k in tags:
+                for v in tag_values(tags, k):
+                    part_sql += (
+                        " AND EXISTS ("
+                        "SELECT 1 FROM json_each(p.tags_json, ?) jv "
+                        "WHERE CAST(jv.value AS TEXT) = ?)"
+                    )
+                    part_params.extend([f"$.{k}", v])
         part_sql += " ORDER BY f.rank LIMIT ?"
         part_params.append(limit)
         part_rows = self._execute(part_sql, part_params).fetchall()
@@ -2098,9 +2187,14 @@ class DocumentStore:
         """
         ver_params: list[Any] = [fts_query, collection]
         if tags:
-            for k, v in tags.items():
-                ver_sql += " AND LOWER(json_extract(v.tags_json, ?)) = ?"
-                ver_params.extend([f"$.{k}", v])
+            for k in tags:
+                for v in tag_values(tags, k):
+                    ver_sql += (
+                        " AND EXISTS ("
+                        "SELECT 1 FROM json_each(v.tags_json, ?) jv "
+                        "WHERE CAST(jv.value AS TEXT) = ?)"
+                    )
+                    ver_params.extend([f"$.{k}", v])
         ver_sql += " ORDER BY f.rank LIMIT ?"
         ver_params.append(limit)
         ver_rows = self._execute(ver_sql, ver_params).fetchall()
@@ -2145,9 +2239,14 @@ class DocumentStore:
         """
         doc_params: list[Any] = [fts_query, collection, *ids]
         if tags:
-            for k, v in tags.items():
-                doc_sql += " AND LOWER(json_extract(d.tags_json, ?)) = ?"
-                doc_params.extend([f"$.{k}", v])
+            for k in tags:
+                for v in tag_values(tags, k):
+                    doc_sql += (
+                        " AND EXISTS ("
+                        "SELECT 1 FROM json_each(d.tags_json, ?) jv "
+                        "WHERE CAST(jv.value AS TEXT) = ?)"
+                    )
+                    doc_params.extend([f"$.{k}", v])
         doc_sql += " ORDER BY f.rank LIMIT ?"
         doc_params.append(limit)
         doc_rows = self._execute(doc_sql, doc_params).fetchall()
@@ -2163,9 +2262,14 @@ class DocumentStore:
         """
         part_params: list[Any] = [fts_query, collection, *ids]
         if tags:
-            for k, v in tags.items():
-                part_sql += " AND LOWER(json_extract(p.tags_json, ?)) = ?"
-                part_params.extend([f"$.{k}", v])
+            for k in tags:
+                for v in tag_values(tags, k):
+                    part_sql += (
+                        " AND EXISTS ("
+                        "SELECT 1 FROM json_each(p.tags_json, ?) jv "
+                        "WHERE CAST(jv.value AS TEXT) = ?)"
+                    )
+                    part_params.extend([f"$.{k}", v])
         part_sql += " ORDER BY f.rank LIMIT ?"
         part_params.append(limit)
         part_rows = self._execute(part_sql, part_params).fetchall()
@@ -2181,9 +2285,14 @@ class DocumentStore:
         """
         ver_params: list[Any] = [fts_query, collection, *ids]
         if tags:
-            for k, v in tags.items():
-                ver_sql += " AND LOWER(json_extract(v.tags_json, ?)) = ?"
-                ver_params.extend([f"$.{k}", v])
+            for k in tags:
+                for v in tag_values(tags, k):
+                    ver_sql += (
+                        " AND EXISTS ("
+                        "SELECT 1 FROM json_each(v.tags_json, ?) jv "
+                        "WHERE CAST(jv.value AS TEXT) = ?)"
+                    )
+                    ver_params.extend([f"$.{k}", v])
         ver_sql += " ORDER BY f.rank LIMIT ?"
         ver_params.append(limit)
         ver_rows = self._execute(ver_sql, ver_params).fetchall()
@@ -2291,7 +2400,7 @@ class DocumentStore:
                         VALUES (?, ?, ?, ?, ?, ?, ?)
                     """, (
                         id, collection, part.part_num, part.summary,
-                        json.dumps(part.tags, ensure_ascii=False),
+                        json.dumps(normalize_tag_map(part.tags), ensure_ascii=False),
                         part.content, part.created_at,
                     ))
 
@@ -2325,7 +2434,7 @@ class DocumentStore:
                 VALUES (?, ?, ?, ?, ?, ?, ?)
             """, (
                 id, collection, part.part_num, part.summary,
-                json.dumps(part.tags, ensure_ascii=False),
+                json.dumps(normalize_tag_map(part.tags), ensure_ascii=False),
                 part.content, part.created_at,
             ))
             self._conn.commit()
@@ -2430,7 +2539,7 @@ class DocumentStore:
         collection: str,
         id: str,
         part_num: int,
-        tags: dict[str, str],
+        tags: dict[str, Any],
     ) -> bool:
         """
         Update tags on a single part.
@@ -2449,7 +2558,7 @@ class DocumentStore:
                 UPDATE document_parts
                 SET tags_json = ?
                 WHERE id = ? AND collection = ? AND part_num = ?
-            """, (json.dumps(tags, ensure_ascii=False), id, collection, part_num))
+            """, (json.dumps(normalize_tag_map(tags), ensure_ascii=False), id, collection, part_num))
             self._conn.commit()
         return cursor.rowcount > 0
 
@@ -2486,12 +2595,12 @@ class DocumentStore:
             Sorted list of distinct values
         """
         cursor = self._execute("""
-            SELECT DISTINCT json_extract(tags_json, '$.' || ?) AS val
-            FROM documents
-            WHERE collection = ?
-              AND json_extract(tags_json, '$.' || ?) IS NOT NULL
+            SELECT DISTINCT CAST(jv.value AS TEXT) AS val
+            FROM documents d
+            JOIN json_each(d.tags_json, '$.' || ?) jv
+            WHERE d.collection = ?
             ORDER BY val
-        """, (key, collection, key))
+        """, (key, collection))
 
         return [row[0] for row in cursor]
 
@@ -2501,11 +2610,18 @@ class DocumentStore:
         Used for IDF weighting in deep tag-follow scoring.
         """
         cursor = self._execute("""
-            SELECT j.key, j.value, COUNT(*) as cnt
-            FROM documents, json_each(tags_json) AS j
-            WHERE collection = ?
+            SELECT j.key, CAST(v.value AS TEXT) AS val, COUNT(DISTINCT d.id) as cnt
+            FROM documents d
+            JOIN json_each(d.tags_json) AS j
+            JOIN json_each(
+                CASE
+                    WHEN j.type = 'array' THEN j.value
+                    ELSE json_array(j.value)
+                END
+            ) AS v
+            WHERE d.collection = ?
               AND j.key NOT LIKE '\\_%' ESCAPE '\\'
-            GROUP BY j.key, j.value
+            GROUP BY j.key, val
         """, (collection,))
         return {(row[0], row[1]): row[2] for row in cursor}
 
@@ -2687,7 +2803,10 @@ class DocumentStore:
             try:
                 touched_with_versions: set[str] = set()
                 for doc in documents:
-                    tags_json = json.dumps(doc.get("tags", {}), ensure_ascii=False)
+                    tags_json = json.dumps(
+                        normalize_tag_map(doc.get("tags", {})),
+                        ensure_ascii=False,
+                    )
                     self._execute("""
                         INSERT OR REPLACE INTO documents
                         (id, collection, summary, tags_json, created_at,
@@ -2702,7 +2821,10 @@ class DocumentStore:
                     doc_count += 1
 
                     for ver in doc.get("versions", []):
-                        ver_tags_json = json.dumps(ver.get("tags", {}), ensure_ascii=False)
+                        ver_tags_json = json.dumps(
+                            normalize_tag_map(ver.get("tags", {})),
+                            ensure_ascii=False,
+                        )
                         self._execute("""
                             INSERT OR REPLACE INTO document_versions
                             (id, collection, version, summary, tags_json,
@@ -2717,7 +2839,10 @@ class DocumentStore:
                         touched_with_versions.add(doc["id"])
 
                     for part in doc.get("parts", []):
-                        part_tags_json = json.dumps(part.get("tags", {}), ensure_ascii=False)
+                        part_tags_json = json.dumps(
+                            normalize_tag_map(part.get("tags", {})),
+                            ensure_ascii=False,
+                        )
                         self._execute("""
                             INSERT OR REPLACE INTO document_parts
                             (id, collection, part_num, summary, tags_json,
@@ -2766,12 +2891,27 @@ class DocumentStore:
         )
         self._conn.commit()
 
-    def delete_edge(self, collection: str, source_id: str, predicate: str) -> int:
-        """Delete a single edge by its primary key (source, collection, predicate)."""
-        cur = self._execute(
-            "DELETE FROM edges WHERE source_id = ? AND collection = ? AND predicate = ?",
-            (source_id, collection, predicate),
-        )
+    def delete_edge(
+        self,
+        collection: str,
+        source_id: str,
+        predicate: str,
+        target_id: Optional[str] = None,
+    ) -> int:
+        """Delete edge rows for source/predicate, optionally one target."""
+        if target_id is None:
+            cur = self._execute(
+                "DELETE FROM edges WHERE source_id = ? AND collection = ? AND predicate = ?",
+                (source_id, collection, predicate),
+            )
+        else:
+            cur = self._execute(
+                """
+                DELETE FROM edges
+                WHERE source_id = ? AND collection = ? AND predicate = ? AND target_id = ?
+                """,
+                (source_id, collection, predicate, target_id),
+            )
         self._conn.commit()
         return cur.rowcount
 
@@ -2877,16 +3017,22 @@ class DocumentStore:
                         v.id,
                         v.version,
                         ?,
-                        CAST(j.value AS TEXT),
+                        CAST(vv.value AS TEXT),
                         ?,
                         v.created_at
                     FROM document_versions v
                     JOIN json_each(v.tags_json) j
                       ON j.key = ?
+                    JOIN json_each(
+                        CASE
+                            WHEN j.type = 'array' THEN j.value
+                            ELSE json_array(j.value)
+                        END
+                    ) vv
                     WHERE v.collection = ?
-                      AND j.value IS NOT NULL
-                      AND TRIM(CAST(j.value AS TEXT)) != ''
-                      AND SUBSTR(CAST(j.value AS TEXT), 1, 1) != '.'
+                      AND vv.value IS NOT NULL
+                      AND TRIM(CAST(vv.value AS TEXT)) != ''
+                      AND SUBSTR(CAST(vv.value AS TEXT), 1, 1) != '.'
                     """,
                     (predicate, inverse, predicate, collection),
                 )

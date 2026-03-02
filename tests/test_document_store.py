@@ -3,11 +3,32 @@ Tests for the document store module.
 """
 
 import json
+import sqlite3
 import pytest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from keep.document_store import DocumentStore, DocumentRecord
+
+
+class TestSchemaCompatibility:
+    """Schema compatibility guards."""
+
+    def test_rejects_store_from_future(self) -> None:
+        """Opening a DB with newer user_version fails fast."""
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "documents.db"
+            with DocumentStore(db_path):
+                pass
+            conn = sqlite3.connect(db_path)
+            try:
+                conn.execute("PRAGMA user_version = 999")
+                conn.commit()
+            finally:
+                conn.close()
+
+            with pytest.raises(sqlite3.DatabaseError, match="newer than supported"):
+                DocumentStore(db_path)
 
 
 class TestDocumentStoreBasics:
@@ -254,6 +275,113 @@ class TestUpdateOperations:
         updated = store.update_tags("default", "nonexistent", {})
         assert updated is False
 
+
+class TestTagDedupOnWritePaths:
+    """Tag values are deduplicated on all document-level write paths."""
+
+    @pytest.fixture
+    def store(self):
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "documents.db"
+            with DocumentStore(db_path) as store:
+                yield store
+
+    def test_upsert_deduplicates_tag_values(self, store: DocumentStore) -> None:
+        """upsert() stores scalar-or-list tags without duplicate values."""
+        store.upsert(
+            "default",
+            "doc:1",
+            "Summary",
+            {"k": ["v1", "v1", "v2"], "single": ["x", "x"]},
+        )
+
+        doc = store.get("default", "doc:1")
+        assert doc is not None
+        assert doc.tags == {"k": ["v1", "v2"], "single": "x"}
+
+    def test_update_tags_deduplicates_tag_values(self, store: DocumentStore) -> None:
+        """update_tags() also deduplicates values before persisting."""
+        store.upsert("default", "doc:1", "Summary", {"k": "v1"})
+
+        updated = store.update_tags(
+            "default",
+            "doc:1",
+            {"k": ["v1", "v1", "v2"], "single": ["x", "x"]},
+        )
+        assert updated is True
+
+        doc = store.get("default", "doc:1")
+        assert doc is not None
+        assert doc.tags == {"k": ["v1", "v2"], "single": "x"}
+
+    def test_restore_latest_version_deduplicates_tags(self, store: DocumentStore) -> None:
+        """restore_latest_version() normalizes tags from version rows."""
+        store.upsert("default", "doc:1", "Current", {"status": "current"})
+        store._execute(
+            """
+            INSERT INTO document_versions
+                (id, collection, version, summary, tags_json, content_hash, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "doc:1",
+                "default",
+                1,
+                "Archived",
+                json.dumps({"k": ["v1", "v1", "v2"], "single": ["x", "x"]}),
+                None,
+                "2026-01-01T00:00:00",
+            ),
+        )
+        store._conn.commit()
+
+        restored = store.restore_latest_version("default", "doc:1")
+        assert restored is not None
+        assert restored.tags == {"k": ["v1", "v2"], "single": "x"}
+
+        doc = store.get("default", "doc:1")
+        assert doc is not None
+        assert doc.tags == {"k": ["v1", "v2"], "single": "x"}
+
+    def test_import_batch_deduplicates_tags_everywhere(self, store: DocumentStore) -> None:
+        """import_batch() deduplicates document/version/part tag values."""
+        stats = store.import_batch(
+            "default",
+            [{
+                "id": "doc:1",
+                "summary": "Summary",
+                "tags": {"k": ["v1", "v1", "v2"]},
+                "created_at": "2026-01-01T00:00:00",
+                "updated_at": "2026-01-02T00:00:00",
+                "versions": [{
+                    "version": 1,
+                    "summary": "V1",
+                    "tags": {"k": ["a", "a", "b"]},
+                    "content_hash": None,
+                    "created_at": "2026-01-01T00:00:00",
+                }],
+                "parts": [{
+                    "part_num": 1,
+                    "summary": "P1",
+                    "tags": {"k": ["p", "p", "q"]},
+                    "content": "Body",
+                    "created_at": "2026-01-02T00:00:00",
+                }],
+            }],
+        )
+        assert stats == {"documents": 1, "versions": 1, "parts": 1}
+
+        doc = store.get("default", "doc:1")
+        assert doc is not None
+        assert doc.tags == {"k": ["v1", "v2"]}
+
+        versions = store.list_versions("default", "doc:1")
+        assert len(versions) == 1
+        assert versions[0].tags == {"k": ["a", "b"]}
+
+        parts = store.list_parts("default", "doc:1")
+        assert len(parts) == 1
+        assert parts[0].tags == {"k": ["p", "q"]}
 
 class TestCollectionIsolation:
     """Documents in different collections are isolated."""

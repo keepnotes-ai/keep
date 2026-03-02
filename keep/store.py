@@ -9,13 +9,14 @@ For now, ChromaDb is the only implementation — and that's fine.
 
 import logging
 import threading
+import hashlib
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
 from .model_lock import ModelLock
-from .types import Item, utc_now
+from .types import Item, SYSTEM_TAG_PREFIX, tag_values, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -238,20 +239,40 @@ class ChromaStore:
             self._collections[name] = coll
         return self._collections[name]
     
-    def _tags_to_metadata(self, tags: dict[str, str]) -> dict[str, Any]:
+    def _tags_to_metadata(self, tags: dict[str, Any]) -> dict[str, Any]:
         """
         Convert tags to Chroma metadata format.
         
-        Chroma metadata values must be str, int, float, or bool.
-        We store everything as strings for consistency.
+        User tags are encoded as marker booleans so multivalue tags can be
+        queried without list metadata support in Chroma.
         """
-        return {k: str(v) for k, v in tags.items()}
+        metadata: dict[str, Any] = {}
+        for raw_key in tags:
+            key = str(raw_key)
+            values = tag_values(tags, raw_key)
+            if not values:
+                continue
+            if key.startswith(SYSTEM_TAG_PREFIX):
+                metadata[key] = str(values[-1])
+                continue
+            key_cf = key.casefold()
+            if len(values) == 1:
+                metadata[key_cf] = values[0]
+            metadata[self._tag_key_marker(key_cf)] = True
+            for value in values:
+                metadata[self._tag_value_marker(key_cf, value)] = True
+        return metadata
     
     def _metadata_to_tags(self, metadata: dict[str, Any] | None) -> dict[str, str]:
         """Convert Chroma metadata back to tags."""
         if metadata is None:
             return {}
-        return {k: str(v) for k, v in metadata.items()}
+        out: dict[str, str] = {}
+        for k, v in metadata.items():
+            if k.startswith(self._TAG_KEY_MARKER_PREFIX) or k.startswith(self._TAG_VALUE_MARKER_PREFIX):
+                continue
+            out[k] = str(v)
+        return out
     
     # -------------------------------------------------------------------------
     # Write Operations
@@ -263,7 +284,7 @@ class ChromaStore:
         id: str,
         embedding: list[float],
         summary: str,
-        tags: dict[str, str],
+        tags: dict[str, Any],
     ) -> None:
         """
         Insert or update an item in the store.
@@ -323,7 +344,7 @@ class ChromaStore:
         version: int,
         embedding: list[float],
         summary: str,
-        tags: dict[str, str],
+        tags: dict[str, Any],
     ) -> None:
         """
         Store an archived version with a versioned ID.
@@ -375,7 +396,7 @@ class ChromaStore:
         part_num: int,
         embedding: list[float],
         summary: str,
-        tags: dict[str, str],
+        tags: dict[str, Any],
     ) -> None:
         """
         Store a document part with a part-numbered ID.
@@ -534,7 +555,7 @@ class ChromaStore:
                 self._bump_epoch()
                 return True
 
-    def update_tags(self, collection: str, id: str, tags: dict[str, str]) -> bool:
+    def update_tags(self, collection: str, id: str, tags: dict[str, Any]) -> bool:
         """
         Update tags of an existing item without changing embedding or summary.
 
@@ -568,6 +589,28 @@ class ChromaStore:
                 coll.update(
                     ids=[id],
                     metadatas=[metadata],
+                )
+                self._bump_epoch()
+                return True
+
+    def rewrite_tags(self, collection: str, id: str, tags: dict[str, Any]) -> bool:
+        """Rewrite metadata tags in-place without mutating timestamps.
+
+        Used for metadata-shape migrations (e.g., legacy key/value metadata
+        to marker-based tag metadata) where embeddings and summary stay the same.
+        """
+        with self._state_lock:
+            with self._write_guard():
+                self._check_freshness()
+                coll = self._get_collection(collection)
+
+                existing = coll.get(ids=[id], include=["metadatas"])
+                if not existing["ids"]:
+                    return False
+
+                coll.update(
+                    ids=[id],
+                    metadatas=[self._tags_to_metadata(tags)],
                 )
                 self._bump_epoch()
                 return True
@@ -716,7 +759,9 @@ class ChromaStore:
                 "include": ["documents", "metadatas", "distances"],
             }
             if where:
-                query_params["where"] = where
+                normalized_where = self._normalize_where(where)
+                if normalized_where:
+                    query_params["where"] = normalized_where
 
             result = coll.query(**query_params)
 
@@ -754,8 +799,9 @@ class ChromaStore:
             self._check_freshness()
             coll = self._get_collection(collection)
 
+            normalized_where = self._normalize_where(where)
             result = coll.get(
-                where=where,
+                where=normalized_where,
                 limit=limit,
                 offset=offset,
                 include=["documents", "metadatas"],
@@ -859,7 +905,7 @@ class ChromaStore:
         ids: list[str],
         embeddings: list[list[float]],
         summaries: list[str],
-        tags: list[dict[str, str]],
+        tags: list[dict[str, Any]],
     ) -> None:
         """
         Batch upsert entries with embeddings.
@@ -934,3 +980,85 @@ class ChromaStore:
             self.close()
         except Exception:
             pass  # Suppress errors during garbage collection
+    _TAG_KEY_MARKER_PREFIX = "_tk::"
+    _TAG_VALUE_MARKER_PREFIX = "_tv::"
+
+    @classmethod
+    def _tag_key_marker(cls, key: str) -> str:
+        return f"{cls._TAG_KEY_MARKER_PREFIX}{key}"
+
+    @classmethod
+    def _tag_value_marker(cls, key: str, value: str) -> str:
+        digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:24]
+        return f"{cls._TAG_VALUE_MARKER_PREFIX}{key}::{digest}"
+
+    def build_tag_where(self, tags: dict[str, Any]) -> dict[str, Any] | None:
+        """Build Chroma where-clause from multivalue tag filters."""
+        conditions: list[dict[str, Any]] = []
+        for raw_key in tags:
+            raw_key_str = str(raw_key)
+            key = raw_key_str.casefold()
+            values = tag_values(tags, raw_key)
+            if not values:
+                continue
+            if raw_key_str.startswith(SYSTEM_TAG_PREFIX):
+                for value in values:
+                    conditions.append({raw_key_str: str(value)})
+            else:
+                conditions.append({self._tag_key_marker(key): True})
+                for value in values:
+                    conditions.append({self._tag_value_marker(key, value): True})
+        if not conditions:
+            return None
+        return conditions[0] if len(conditions) == 1 else {"$and": conditions}
+
+    def _normalize_where(self, where: dict[str, Any] | None) -> dict[str, Any] | None:
+        """Translate legacy key=value filters to marker-based filters."""
+        if where is None:
+            return None
+        if "$and" in where:
+            clauses = [self._normalize_where(clause) for clause in where["$and"]]
+            clauses = [c for c in clauses if c]
+            if not clauses:
+                return None
+            return clauses[0] if len(clauses) == 1 else {"$and": clauses}
+        if "$or" in where:
+            clauses = [self._normalize_where(clause) for clause in where["$or"]]
+            clauses = [c for c in clauses if c]
+            if not clauses:
+                return None
+            return clauses[0] if len(clauses) == 1 else {"$or": clauses}
+        if len(where) != 1:
+            return where
+
+        key, value = next(iter(where.items()))
+        if key.startswith(SYSTEM_TAG_PREFIX):
+            return {key: value}
+        if key.startswith(self._TAG_KEY_MARKER_PREFIX) or key.startswith(self._TAG_VALUE_MARKER_PREFIX):
+            return {key: value}
+        if isinstance(value, dict):
+            return {key: value}
+
+        key_cf = key.casefold()
+        val = str(value)
+        return {
+            "$and": [
+                {self._tag_key_marker(key_cf): True},
+                {self._tag_value_marker(key_cf, val): True},
+            ]
+        }
+
+    def has_tag_markers(self, collection: str, id: str) -> bool:
+        """Check whether an indexed item's metadata includes tag markers."""
+        with self._state_lock:
+            self._check_freshness()
+            coll = self._get_collection(collection)
+            result = coll.get(ids=[id], include=["metadatas"])
+            if not result["ids"]:
+                return False
+            metadata = result["metadatas"][0] or {}
+            return any(
+                k.startswith(self._TAG_KEY_MARKER_PREFIX)
+                or k.startswith(self._TAG_VALUE_MARKER_PREFIX)
+                for k in metadata
+            )

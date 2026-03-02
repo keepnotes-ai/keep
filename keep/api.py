@@ -14,7 +14,7 @@ import re
 import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Any, Iterator, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -146,6 +146,8 @@ def _enrich_updated_date(items: list, doc_store, doc_coll: str) -> None:
 def _is_hidden(item) -> bool:
     """System notes (dot-prefix IDs like .conversations) are hidden by default."""
     base_id = item.tags.get("_base_id", item.id)
+    if isinstance(base_id, list):
+        base_id = base_id[0] if base_id else item.id
     return base_id.startswith(".")
 
 
@@ -218,6 +220,7 @@ from .types import (
     EvidenceUnit, ContextWindow,
     PromptResult, PromptInfo,
     casefold_tags, casefold_tags_for_index, filter_non_system_tags,
+    iter_tag_pairs, set_tag_values, tag_values,
     SYSTEM_TAG_PREFIX, local_date, utc_now,
     parse_utc_timestamp, validate_tag_key, validate_id, normalize_id, is_part_id,
     MAX_TAG_VALUE_LENGTH,
@@ -269,7 +272,7 @@ _META_PREREQ_KEY = re.compile(r'^([a-zA-Z_][a-zA-Z0-9_]*)=\*$')
 # Markdown extensions that may contain YAML frontmatter
 _MARKDOWN_EXTENSIONS = {".md", ".markdown", ".mdx"}
 
-def _extract_markdown_frontmatter(content: str) -> tuple[str, dict[str, str]]:
+def _extract_markdown_frontmatter(content: str) -> tuple[str, dict]:
     """
     Extract YAML frontmatter from markdown content.
 
@@ -298,7 +301,7 @@ def _extract_markdown_frontmatter(content: str) -> tuple[str, dict[str, str]]:
     if not isinstance(frontmatter, dict):
         return body, {}
 
-    tags: dict[str, str] = {}
+    tags: dict[str, str | list[str]] = {}
 
     for key, value in frontmatter.items():
         key_str = str(key)
@@ -314,9 +317,17 @@ def _extract_markdown_frontmatter(content: str) -> tuple[str, dict[str, str]]:
                     continue
                 if isinstance(tv, (str, int, float, bool)):
                     tags[tk_str] = str(tv)
+                elif isinstance(tv, list):
+                    vals = [str(v) for v in tv if isinstance(v, (str, int, float, bool))]
+                    if vals:
+                        tags[tk_str] = vals
         elif isinstance(value, (str, int, float, bool)):
             # Top-level scalar: title, author, date, etc. → tag
             tags[key_str] = str(value)
+        elif isinstance(value, list):
+            vals = [str(v) for v in value if isinstance(v, (str, int, float, bool))]
+            if vals:
+                tags[key_str] = vals
         elif hasattr(value, "isoformat"):
             # datetime.date / datetime.datetime (YAML auto-parses dates)
             tags[key_str] = value.isoformat()
@@ -409,9 +420,100 @@ def _user_tags_changed(old_tags: dict, new_tags: dict) -> bool:
     Returns:
         True if user (non-system) tags differ
     """
-    old_user = {k: v for k, v in old_tags.items() if not k.startswith('_')}
-    new_user = {k: v for k, v in new_tags.items() if not k.startswith('_')}
+    old_user = {
+        (k, v)
+        for k, v in iter_tag_pairs(old_tags, include_system=False)
+    }
+    new_user = {
+        (k, v)
+        for k, v in iter_tag_pairs(new_tags, include_system=False)
+    }
     return old_user != new_user
+
+
+def _merge_tags_additive(dst: dict, src: dict, *, replace_system: bool = False) -> None:
+    """Merge tags by adding distinct values per key.
+
+    Non-system keys are additive set union. System keys are replaced.
+    """
+    for raw_key in src:
+        key = str(raw_key)
+        vals = tag_values(src, raw_key)
+        if not vals:
+            continue
+        if key.startswith(SYSTEM_TAG_PREFIX):
+            if replace_system:
+                dst[key] = vals[-1]
+            continue
+        existing = tag_values(dst, key)
+        seen = set(existing)
+        merged = list(existing)
+        for value in vals:
+            if value not in seen:
+                merged.append(value)
+                seen.add(value)
+        set_tag_values(dst, key, merged)
+
+
+def _split_tag_additions(tags: dict[str, Any]) -> tuple[set[str], dict[str, list[str]]]:
+    """Split additive tag changes and legacy empty-value key deletions."""
+    delete_keys: set[str] = set()
+    add_by_key: dict[str, list[str]] = {}
+    for key in tags:
+        values = tag_values(tags, key)
+        if not values:
+            continue
+        if "" in values:
+            delete_keys.add(key)
+            values = [v for v in values if v != ""]
+        if values:
+            add_by_key[key] = values
+    for key in delete_keys:
+        add_by_key.pop(key, None)
+    return delete_keys, add_by_key
+
+
+def _normalize_remove_keys(keys: Optional[list[str]]) -> set[str]:
+    """Normalize and validate explicit key removals."""
+    out: set[str] = set()
+    if not keys:
+        return out
+    for raw_key in keys:
+        key = str(raw_key).casefold()
+        if key.startswith(SYSTEM_TAG_PREFIX):
+            continue
+        validate_tag_key(key)
+        out.add(key)
+    return out
+
+
+def _apply_tag_mutations(
+    base_tags: dict[str, Any],
+    add_by_key: dict[str, Any],
+    *,
+    remove_keys: Optional[set[str]] = None,
+    remove_by_key: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Apply explicit tag adds/removals and return updated tags."""
+    merged = dict(base_tags)
+    for key in (remove_keys or set()):
+        merged.pop(key, None)
+
+    remove_map = remove_by_key or {}
+    for key in remove_map:
+        current_vals = tag_values(merged, key)
+        if not current_vals:
+            continue
+        remove_set = set(tag_values(remove_map, key))
+        if not remove_set:
+            continue
+        kept = [v for v in current_vals if v not in remove_set]
+        set_tag_values(merged, key, kept)
+
+    if add_by_key:
+        _merge_tags_additive(merged, add_by_key)
+
+    return merged
 
 
 def _text_content_id(content: str) -> str:
@@ -576,9 +678,34 @@ class Keeper:
                 )
             needs_reconcile = False  # reindex will handle everything
 
+        chroma_coll = self._resolve_chroma_collection()
+        doc_coll = self._resolve_doc_collection()
+
+        # Legacy metadata migration: old key=value Chroma metadata does not
+        # satisfy marker-based tag filters. Rewrite metadata in-place.
+        if self._needs_chroma_tag_marker_migration(chroma_coll, doc_coll):
+            import sys
+            try:
+                stats = self._migrate_chroma_tag_markers(chroma_coll, doc_coll)
+                logger.info(
+                    "Tag marker migration complete: %d docs, %d versions, %d parts",
+                    stats["docs"], stats["versions"], stats["parts"],
+                )
+                print(
+                    "Search metadata migrated to multivalue tag markers "
+                    f"({stats['docs']} docs, {stats['versions']} versions, {stats['parts']} parts).",
+                    file=sys.stderr,
+                )
+            except Exception as e:
+                logger.warning("Tag marker migration failed: %s", e)
+                print(
+                    "WARNING: tag metadata migration failed; "
+                    "tag-filtered semantic search may be incomplete.\n"
+                    "Run: keep pending --reindex",
+                    file=sys.stderr,
+                )
+
         if needs_reconcile:
-            chroma_coll = self._resolve_chroma_collection()
-            doc_coll = self._resolve_doc_collection()
             self._reconcile_thread = threading.Thread(
                 target=self._auto_reconcile_safe, args=(chroma_coll, doc_coll), daemon=True,
             )
@@ -635,6 +762,104 @@ class Keeper:
         except Exception as e:
             logger.debug("Store consistency check failed: %s", e)
         return False
+
+    def _needs_chroma_tag_marker_migration(
+        self, chroma_coll: str, doc_coll: str,
+    ) -> bool:
+        """Detect legacy Chroma metadata without multivalue tag markers."""
+        has_tag_markers = getattr(self._store, "has_tag_markers", None)
+        if not callable(has_tag_markers):
+            return False
+
+        def _has_user_tags(tags: dict[str, Any]) -> bool:
+            return any(
+                not key.startswith(SYSTEM_TAG_PREFIX) and tag_values(tags, key)
+                for key in tags
+            )
+
+        try:
+            indexed_ids = set(self._store.list_ids(chroma_coll))
+            if not indexed_ids:
+                return False
+            for doc_id in self._document_store.list_ids(doc_coll):
+                doc = self._document_store.get(doc_coll, doc_id)
+                if doc is not None and doc_id in indexed_ids:
+                    if _has_user_tags(doc.tags) and not has_tag_markers(chroma_coll, doc_id):
+                        return True
+
+                for vi in self._document_store.list_versions(
+                    doc_coll, doc_id, limit=1_000_000,
+                ):
+                    version_id = f"{doc_id}@v{vi.version}"
+                    if version_id not in indexed_ids:
+                        continue
+                    ver_tags = dict(vi.tags)
+                    ver_tags["_version"] = str(vi.version)
+                    ver_tags["_base_id"] = doc_id
+                    if _has_user_tags(ver_tags) and not has_tag_markers(chroma_coll, version_id):
+                        return True
+
+                for part in self._document_store.list_parts(doc_coll, doc_id):
+                    part_id = f"{doc_id}@p{part.part_num}"
+                    if part_id not in indexed_ids:
+                        continue
+                    part_tags = dict(part.tags)
+                    part_tags["_part_num"] = str(part.part_num)
+                    part_tags["_base_id"] = doc_id
+                    if _has_user_tags(part_tags) and not has_tag_markers(chroma_coll, part_id):
+                        return True
+        except Exception as e:
+            logger.debug("Tag marker migration check failed: %s", e)
+        return False
+
+    def _migrate_chroma_tag_markers(
+        self, chroma_coll: str, doc_coll: str,
+    ) -> dict[str, int]:
+        """Rewrite legacy Chroma metadata to marker-based tag encoding."""
+        rewrite_tags = getattr(self._store, "rewrite_tags", None)
+        if not callable(rewrite_tags):
+            return {"docs": 0, "versions": 0, "parts": 0}
+
+        indexed_ids = set(self._store.list_ids(chroma_coll))
+        if not indexed_ids:
+            return {"docs": 0, "versions": 0, "parts": 0}
+
+        docs = versions = parts = 0
+        for doc_id in self._document_store.list_ids(doc_coll):
+            if doc_id in indexed_ids:
+                doc = self._document_store.get(doc_coll, doc_id)
+                if doc is not None and rewrite_tags(
+                    chroma_coll, doc_id, casefold_tags_for_index(doc.tags),
+                ):
+                    docs += 1
+
+            for vi in self._document_store.list_versions(
+                doc_coll, doc_id, limit=1_000_000,
+            ):
+                version_id = f"{doc_id}@v{vi.version}"
+                if version_id not in indexed_ids:
+                    continue
+                ver_tags = dict(vi.tags)
+                ver_tags["_version"] = str(vi.version)
+                ver_tags["_base_id"] = doc_id
+                if rewrite_tags(
+                    chroma_coll, version_id, casefold_tags_for_index(ver_tags),
+                ):
+                    versions += 1
+
+            for part in self._document_store.list_parts(doc_coll, doc_id):
+                part_id = f"{doc_id}@p{part.part_num}"
+                if part_id not in indexed_ids:
+                    continue
+                part_tags = dict(part.tags)
+                part_tags["_part_num"] = str(part.part_num)
+                part_tags["_base_id"] = doc_id
+                if rewrite_tags(
+                    chroma_coll, part_id, casefold_tags_for_index(part_tags),
+                ):
+                    parts += 1
+
+        return {"docs": docs, "versions": versions, "parts": parts}
 
     def _auto_reconcile_safe(self, chroma_coll: str, doc_coll: str) -> None:
         """Background-safe wrapper for auto-reconcile. Logs failures."""
@@ -988,7 +1213,7 @@ class Keeper:
 
             # Check if any query line fully matches doc_tags
             for query in query_lines:
-                if all(doc_tags.get(k) == v for k, v in query.items()):
+                if all(v in tag_values(doc_tags, k) for k, v in query.items()):
                     specificity = len(query)
                     if specificity > best_specificity:
                         best_specificity = specificity
@@ -1035,8 +1260,8 @@ class Keeper:
 
             # Count matching tags (OR: at least one must match)
             matching = sum(
-                1 for k, v in tags.items()
-                if item.tags.get(k) == v
+                1 for k, v in iter_tag_pairs(tags, include_system=False)
+                if v in tag_values(item.tags, k)
             )
             if matching == 0:
                 continue  # No tag overlap, skip
@@ -1428,6 +1653,19 @@ class Keeper:
     def _resolve_doc_collection(self) -> str:
         """DocumentStore collection — always 'default'."""
         return "default"
+
+    def _build_tag_where(self, tags: dict) -> dict | None:
+        """Build backend where-clause for tag filters."""
+        builder = getattr(self._store, "build_tag_where", None)
+        if callable(builder):
+            return builder(tags)
+        conditions: list[dict[str, str]] = []
+        for key in tags:
+            for value in tag_values(tags, key):
+                conditions.append({key: value})
+        if not conditions:
+            return None
+        return conditions[0] if len(conditions) == 1 else {"$and": conditions}
     
     # -------------------------------------------------------------------------
     # Tag Validation
@@ -1435,36 +1673,40 @@ class Keeper:
 
     def _validate_tag_map(
         self,
-        tags: dict[str, str],
+        tags: dict,
         *,
         source: str,
         check_constraints: bool,
-    ) -> dict[str, str]:
+    ) -> dict:
         """Casefold and validate tag keys/values for non-system tags."""
-        normalized = casefold_tags({str(k): str(v) for k, v in tags.items()})
-        for key, value in normalized.items():
+        try:
+            normalized = casefold_tags(tags)
+        except ValueError as e:
+            raise ValueError(f"{source}: {e}") from e
+        for key in normalized:
             if key.startswith(SYSTEM_TAG_PREFIX):
                 continue
             try:
                 validate_tag_key(key)
             except ValueError as e:
                 raise ValueError(f"{source}: {e}") from e
-            if len(value) > MAX_TAG_VALUE_LENGTH:
-                raise ValueError(
-                    f"{source}: Tag value too long (max {MAX_TAG_VALUE_LENGTH}): {key!r}"
-                )
+            for value in tag_values(normalized, key):
+                if len(value) > MAX_TAG_VALUE_LENGTH:
+                    raise ValueError(
+                        f"{source}: Tag value too long (max {MAX_TAG_VALUE_LENGTH}): {key!r}"
+                    )
         if check_constraints:
             self._validate_constrained_tags(normalized)
         return normalized
 
-    def _validate_write_tags(self, tags: dict[str, str]) -> dict[str, str]:
+    def _validate_write_tags(self, tags: dict) -> dict:
         """Casefold, validate keys/lengths, and check constrained values.
 
         Returns the casefolded tags dict.  Used by put(), tag(), tag_part().
         """
         return self._validate_tag_map(tags, source="Tags", check_constraints=True)
 
-    def _validate_constrained_tags(self, tags: dict[str, str]) -> None:
+    def _validate_constrained_tags(self, tags: dict) -> None:
         """Check constrained tag values against sub-doc existence.
 
         For each user tag, looks up `.tag/KEY`. If that doc exists and has
@@ -1472,25 +1714,28 @@ class Keeper:
         ValueError with valid values listed if not.
         """
         doc_coll = self._resolve_doc_collection()
-        for key, value in tags.items():
+        for key in tags:
             if key.startswith(SYSTEM_TAG_PREFIX):
                 continue
-            if value == "":
-                continue  # deletion, no validation needed
+            values = tag_values(tags, key)
+            if not values:
+                continue
             parent_id = f".tag/{key}"
             parent = self._document_store.get(doc_coll, parent_id)
             if parent is None:
                 continue  # no tag doc → unconstrained
             if parent.tags.get("_constrained") != "true":
                 continue  # tag doc exists but not constrained
-            # Check sub-doc existence
-            value_id = f".tag/{key}/{value}"
-            if not self._document_store.get(doc_coll, value_id):
-                valid = self._list_constrained_values(key)
-                raise ValueError(
-                    f"Invalid value for constrained tag '{key}': {value!r}. "
-                    f"Valid values: {', '.join(sorted(valid))}"
-                )
+            for value in values:
+                if value == "":
+                    continue  # deletion, no validation needed
+                value_id = f".tag/{key}/{value}"
+                if not self._document_store.get(doc_coll, value_id):
+                    valid = self._list_constrained_values(key)
+                    raise ValueError(
+                        f"Invalid value for constrained tag '{key}': {value!r}. "
+                        f"Valid values: {', '.join(sorted(valid))}"
+                    )
 
     def _list_constrained_values(self, key: str) -> list[str]:
         """List valid values for a constrained tag by finding sub-docs."""
@@ -1528,10 +1773,12 @@ class Keeper:
 
         # Determine which keys to check: union of current and previous
         current_keys = {
-            k for k in merged_tags if not k.startswith(SYSTEM_TAG_PREFIX) and merged_tags[k]
+            k for k in merged_tags
+            if not k.startswith(SYSTEM_TAG_PREFIX) and tag_values(merged_tags, k)
         }
         previous_keys = {
-            k for k in existing_tags if not k.startswith(SYSTEM_TAG_PREFIX) and existing_tags[k]
+            k for k in existing_tags
+            if not k.startswith(SYSTEM_TAG_PREFIX) and tag_values(existing_tags, k)
         }
         all_keys = current_keys | previous_keys
         if not all_keys:
@@ -1554,18 +1801,36 @@ class Keeper:
             if not inverse:
                 continue
 
-            current_value = merged_tags.get(key, "")
-            previous_value = existing_tags.get(key, "")
+            current_values = set(tag_values(merged_tags, key))
+            previous_values = set(tag_values(existing_tags, key))
 
-            # Tag removed → delete the edge for this specific predicate
-            if previous_value and not current_value:
-                self._document_store.delete_edge(doc_coll, id, key)
+            removed_values = previous_values - current_values
+            added_values = current_values - previous_values
+
+            # Tag values removed → delete old edges for this predicate/target.
+            for removed in removed_values:
+                target_id = removed
+                try:
+                    target_id = normalize_id(removed)
+                except ValueError:
+                    # Best-effort cleanup for legacy/non-canonical rows.
+                    pass
+                self._document_store.delete_edge(doc_coll, id, key, target_id)
 
             # Tag present → upsert edge + auto-vivify target.
             # Skip sysdoc targets (names starting with '.'): this prevents
             # non-system writes from indirectly creating/updating system docs.
-            if current_value and not current_value.startswith("."):
-                target_id = current_value
+            for current_value in sorted(added_values):
+                if not current_value:
+                    continue
+                try:
+                    target_id = normalize_id(current_value)
+                except ValueError as e:
+                    raise ValueError(
+                        f"Invalid edge target for tag '{key}': {current_value!r}. {e}"
+                    ) from e
+                if target_id.startswith("."):
+                    continue
                 # Auto-vivify: create target as empty doc if it doesn't exist
                 # Only writes to document store — embedding is deferred to
                 # avoid loading the model on the write path.
@@ -1714,7 +1979,7 @@ class Keeper:
         id: str,
         content: str,
         *,
-        tags: Optional[dict[str, str]] = None,
+        tags: Optional[dict] = None,
         summary: Optional[str] = None,
         system_tags: dict[str, str],
         created_at: Optional[str] = None,
@@ -1751,21 +2016,26 @@ class Keeper:
         # Compute content hash for change detection
         new_hash = _content_hash(content)
 
-        # Build tags: existing → config → env → user → system
+        # Build tags: existing + config + env + user, then replace system tags.
         merged_tags = {**existing_tags}
 
         if self._default_tags:
-            merged_tags.update(self._default_tags)
+            _merge_tags_additive(merged_tags, self._default_tags)
 
-        merged_tags.update(self._env_tags)
+        _merge_tags_additive(merged_tags, self._env_tags)
 
         if tags:
             user_tags = casefold_tags(filter_non_system_tags(tags))
-            merged_tags.update(user_tags)
+            for key in user_tags:
+                values = tag_values(user_tags, key)
+                if values == [""]:
+                    merged_tags.pop(key, None)
+                else:
+                    _merge_tags_additive(merged_tags, {key: values})
             # Validate constrained tags (only user-provided, not existing/env)
             self._validate_constrained_tags(user_tags)
 
-        merged_tags.update(system_tags)
+        _merge_tags_additive(merged_tags, system_tags, replace_system=True)
 
         # Change detection (before embedding to allow early return)
         content_unchanged = (
@@ -2264,9 +2534,8 @@ class Keeper:
         # 1. Collect non-system tag pairs, tracking which primary has each
         tag_to_sources: dict[tuple[str, str], set[str]] = {}
         for item in primary_items[:top_k]:
-            for k, v in item.tags.items():
-                if not k.startswith(SYSTEM_TAG_PREFIX):
-                    tag_to_sources.setdefault((k, v), set()).add(item.id)
+            for k, v in iter_tag_pairs(item.tags, include_system=False):
+                tag_to_sources.setdefault((k, v), set()).add(item.id)
         if not tag_to_sources:
             return {}
         # Drop tag pairs shared by ALL top primaries (non-distinctive)
@@ -2285,7 +2554,7 @@ class Keeper:
         pair_counts = self._document_store.tag_pair_counts(doc_coll)
         idf: dict[tuple[str, str], float] = {}
         for (k, v), df in pair_counts.items():
-            idf[(k.casefold(), v.casefold())] = math.log(total_docs / df)
+            idf[(k.casefold(), v)] = math.log(total_docs / df)
 
         # 2. Metadata-only queries — find items sharing each tag,
         #    collapsing versions/parts to parent IDs immediately.
@@ -2305,13 +2574,16 @@ class Keeper:
         candidate_sem: dict[str, float] = {}    # parent_id -> best semantic score
 
         for (k, v), source_ids in tag_to_sources.items():
+            where = self._build_tag_where({k: v})
+            if where is None:
+                continue
             if embedding is not None:
                 results = self._store.query_embedding(
-                    chroma_coll, embedding, limit=per_tag_fetch, where={k: v},
+                    chroma_coll, embedding, limit=per_tag_fetch, where=where,
                 )
             else:
                 results = self._store.query_metadata(
-                    chroma_coll, where={k: v}, limit=per_tag_fetch,
+                    chroma_coll, where=where, limit=per_tag_fetch,
                 )
             seen_parents_this_tag: set[str] = set()
             for r in results:
@@ -2355,9 +2627,8 @@ class Keeper:
         primary_tag_sets: dict[str, set] = {}
         for item in primary_items[:top_k]:
             primary_tag_sets[item.id] = {
-                (k, v) for k, v in item.tags.items()
-                if not k.startswith(SYSTEM_TAG_PREFIX)
-                and (k, v) in followed_keys
+                (k, v) for k, v in iter_tag_pairs(item.tags, include_system=False)
+                if (k, v) in followed_keys
             }
 
         groups: dict[str, list[Item]] = {}
@@ -2365,8 +2636,7 @@ class Keeper:
             # Use the candidate's HEAD doc tags for scoring (casefolded
             # to match ChromaDB's casefolded primary_tag_sets)
             head_tags = {
-                (k.casefold(), v.casefold()) for k, v in item.tags.items()
-                if not k.startswith(SYSTEM_TAG_PREFIX)
+                (k.casefold(), v) for k, v in iter_tag_pairs(item.tags, include_system=False)
             }
             sources = candidate_sources.get(cid, set())
 
@@ -2815,15 +3085,13 @@ class Keeper:
 
         # Build where clause from tags filter
         where = None
-        casefolded_tags: Optional[dict[str, str]] = None
+        casefolded_tags: Optional[dict] = None
         if tags:
-            casefolded_tags = {}
-            for k, v in tags.items():
-                key = str(k).casefold()
-                validate_tag_key(key)
-                casefolded_tags[key] = str(v).casefold()
-            conditions = [{k: v} for k, v in casefolded_tags.items()]
-            where = conditions[0] if len(conditions) == 1 else {"$and": conditions}
+            casefolded_tags = casefold_tags(tags)
+            for k in casefolded_tags:
+                if not k.startswith(SYSTEM_TAG_PREFIX):
+                    validate_tag_key(k)
+            where = self._build_tag_where(casefolded_tags)
 
         if similar_to:
             # Similar-to mode: use stored embedding from existing item
@@ -2880,6 +3148,29 @@ class Keeper:
                 doc_coll, query, limit=fetch_limit, tags=casefolded_tags,
             )
             items = [Item(id=r[0], summary=r[1]) for r in fts_rows]
+
+        # Hydrate search hits from canonical SQLite tags so user tags remain
+        # available even when Chroma metadata stores marker fields only.
+        hydrated: list[Item] = []
+        for item in items:
+            base_id = item.tags.get(
+                "_base_id",
+                item.id.split("@")[0] if "@" in item.id else item.id,
+            )
+            head = self._document_store.get(doc_coll, base_id)
+            if head is None:
+                hydrated.append(item)
+                continue
+            head_item = _record_to_item(head, score=item.score)
+            merged_tags = dict(head_item.tags)
+            merged_tags.update(item.tags or {})
+            hydrated.append(Item(
+                id=item.id,
+                summary=item.summary or head_item.summary,
+                tags=merged_tags,
+                score=item.score,
+            ))
+        items = hydrated
 
         # Deep follow: prefer edge-following when edges exist in the store,
         # fall back to tag-following for stores without edges.
@@ -4197,7 +4488,7 @@ class Keeper:
 
         # Casefold tag filters so they match casefolded storage
         if tags:
-            tags = casefold_tags({str(k): str(v) for k, v in tags.items()})
+            tags = casefold_tags(tags)
             for key in tags:
                 validate_tag_key(key)
 
@@ -4215,9 +4506,12 @@ class Keeper:
 
         # Identify which versions will be extracted (for ChromaDB cleanup)
         def _tags_match(item_tags: dict, filt: dict) -> bool:
-            for k, v in filt.items():
-                stored = item_tags.get(k)
-                if stored is None or stored.casefold() != v.casefold():
+            for k in filt:
+                wanted = set(tag_values(filt, k))
+                if not wanted:
+                    continue
+                stored_values = set(tag_values(item_tags, k))
+                if not wanted.issubset(stored_values):
                     return False
             return True
 
@@ -4360,7 +4654,9 @@ class Keeper:
     def tag(
         self,
         id: str,
-        tags: Optional[dict[str, str]] = None,
+        tags: Optional[dict[str, Any]] = None,
+        remove: Optional[list[str]] = None,
+        remove_values: Optional[dict[str, Any]] = None,
     ) -> Optional[Item]:
         """
         Update tags on an existing document without re-processing.
@@ -4369,12 +4665,16 @@ class Keeper:
 
         Tag behavior:
         - Provided tags are merged with existing user tags
-        - Empty string value ("") deletes that tag
+        - `remove=["key"]` removes full keys
+        - `remove_values={"key": "value"}` removes specific values
+        - Empty string value ("") still deletes that key (legacy compatibility)
         - System tags (_prefixed) cannot be modified via this method
 
         Args:
             id: Document identifier
-            tags: Tags to add/update/delete (empty string = delete)
+            tags: Tags to add/update
+            remove: Tag keys to delete
+            remove_values: Specific tag values to remove per key
 
         Returns:
             Updated Item if found, None if document doesn't exist
@@ -4392,8 +4692,29 @@ class Keeper:
 
         # Validate inputs
         id = normalize_id(id)
+        add_changes: dict[str, Any] = {}
+        legacy_delete_keys: set[str] = set()
         if tags:
-            tags = self._validate_write_tags(tags)
+            # For tag mutations, constrained-tag validation applies only to
+            # additive values, not removals.
+            tags = self._validate_tag_map(
+                tags, source="Tags", check_constraints=False,
+            )
+            user_changes = {
+                k: tags[k] for k in tags if not k.startswith(SYSTEM_TAG_PREFIX)
+            }
+            legacy_delete_keys, add_changes = _split_tag_additions(user_changes)
+        remove_keys = _normalize_remove_keys(remove) | legacy_delete_keys
+        remove_value_changes: dict[str, Any] = {}
+        if remove_values:
+            remove_values = self._validate_tag_map(
+                remove_values, source="Tags", check_constraints=False,
+            )
+            remove_value_changes = {
+                k: remove_values[k]
+                for k in remove_values
+                if not k.startswith(SYSTEM_TAG_PREFIX)
+            }
 
         # Get existing item (prefer document store, fall back to ChromaDB)
         existing = self.get(id)
@@ -4408,15 +4729,15 @@ class Keeper:
                      if not k.startswith(SYSTEM_TAG_PREFIX)}
 
         # Apply tag changes (filter out system tags from input)
-        if tags:
-            for key, value in tags.items():
-                if key.startswith(SYSTEM_TAG_PREFIX):
-                    continue  # Cannot modify system tags
-                if value == "":
-                    # Empty string = delete
-                    user_tags.pop(key, None)
-                else:
-                    user_tags[key] = value
+        if add_changes:
+            self._validate_constrained_tags(add_changes)
+        if add_changes or remove_keys or remove_value_changes:
+            user_tags = _apply_tag_mutations(
+                user_tags,
+                add_changes,
+                remove_keys=remove_keys,
+                remove_by_key=remove_value_changes,
+            )
 
         # Merge back: user tags + system tags
         final_tags = {**user_tags, **system_tags}
@@ -4432,7 +4753,9 @@ class Keeper:
         self,
         id: str,
         part_num: int,
-        tags: Optional[dict[str, str]] = None,
+        tags: Optional[dict[str, Any]] = None,
+        remove: Optional[list[str]] = None,
+        remove_values: Optional[dict[str, Any]] = None,
     ) -> Optional[PartInfo]:
         """
         Update user tags on a part without re-analyzing.
@@ -4440,12 +4763,17 @@ class Keeper:
         Parts are machine-generated, so summaries and content are immutable.
         Tags can be edited to correct or override analyzer tagging decisions.
 
-        System tags (_prefixed) cannot be modified. Empty string deletes a tag.
+        System tags (_prefixed) cannot be modified.
+        `remove=["key"]` removes full keys.
+        `remove_values={"key": "value"}` removes specific values.
+        Empty string still deletes a key (legacy compatibility).
 
         Args:
             id: Parent document ID (not the part ID)
             part_num: Part number (1-indexed)
-            tags: Tags to add/update/delete (empty string = delete)
+            tags: Tags to add/update
+            remove: Tag keys to delete
+            remove_values: Specific tag values to remove per key
 
         Returns:
             Updated PartInfo if found, None if part doesn't exist
@@ -4460,15 +4788,36 @@ class Keeper:
 
         # Merge: existing tags + new tags, empty string = delete
         merged = dict(part.tags)
+        add_changes: dict[str, Any] = {}
+        legacy_delete_keys: set[str] = set()
         if tags:
-            tags = self._validate_write_tags(tags)
-            for key, value in tags.items():
-                if key.startswith(SYSTEM_TAG_PREFIX):
-                    continue
-                if value == "":
-                    merged.pop(key, None)
-                else:
-                    merged[key] = value
+            tags = self._validate_tag_map(
+                tags, source="Tags", check_constraints=False,
+            )
+            user_changes = {
+                k: tags[k] for k in tags if not k.startswith(SYSTEM_TAG_PREFIX)
+            }
+            legacy_delete_keys, add_changes = _split_tag_additions(user_changes)
+        remove_keys = _normalize_remove_keys(remove) | legacy_delete_keys
+        remove_value_changes: dict[str, Any] = {}
+        if remove_values:
+            remove_values = self._validate_tag_map(
+                remove_values, source="Tags", check_constraints=False,
+            )
+            remove_value_changes = {
+                k: remove_values[k]
+                for k in remove_values
+                if not k.startswith(SYSTEM_TAG_PREFIX)
+            }
+        if add_changes:
+            self._validate_constrained_tags(add_changes)
+        if add_changes or remove_keys or remove_value_changes:
+            merged = _apply_tag_mutations(
+                merged,
+                add_changes,
+                remove_keys=remove_keys,
+                remove_by_key=remove_value_changes,
+            )
 
         # Dual-write: SQLite gets original values, ChromaDB gets casefolded
         self._document_store.update_part_tags(doc_coll, id, part_num, merged)
@@ -4843,7 +5192,7 @@ class Keeper:
 
         # Casefold tag filters to match casefolded storage
         if tags:
-            tags = {k.casefold(): v.casefold() for k, v in tags.items()}
+            tags = casefold_tags(tags)
             for k in tags:
                 validate_tag_key(k)
         if tag_keys:
@@ -4867,23 +5216,23 @@ class Keeper:
             # --------------------------------------------------------------
             if tags:
                 # Key=value tags: use ChromaDB metadata query
-                where_conditions = [{k: v} for k, v in tags.items()]
-                if len(where_conditions) == 1:
-                    where = where_conditions[0]
+                where = self._build_tag_where(tags)
+                if where is None:
+                    batch = []
+                    raw_count = 0
                 else:
-                    where = {"$and": where_conditions}
-                results = self._store.query_metadata(
-                    chroma_coll, where, limit=page_size, offset=offset,
-                )
-                # Enrich from SQLite for original-case tag values
-                batch = []
-                for r in results:
-                    doc = self._document_store.get(doc_coll, r.id)
-                    if doc:
-                        batch.append(_record_to_item(doc))
-                    else:
-                        batch.append(r.to_item())
-                raw_count = len(results)
+                    results = self._store.query_metadata(
+                        chroma_coll, where, limit=page_size, offset=offset,
+                    )
+                    # Enrich from SQLite for original-case tag values
+                    batch = []
+                    for r in results:
+                        doc = self._document_store.get(doc_coll, r.id)
+                        if doc:
+                            batch.append(_record_to_item(doc))
+                        else:
+                            batch.append(r.to_item())
+                    raw_count = len(results)
 
             elif tag_keys:
                 # Key-only: use SQLite tag key query (first key as primary,
@@ -5598,32 +5947,42 @@ class Keeper:
                 break
             offset += len(docs)
             for doc in docs:
-                target_id = doc.tags.get(predicate)
-                if not target_id or target_id.startswith("."):
-                    continue
-                # Auto-vivify target (doc store only — embedding via reindex queue)
-                if not self._document_store.exists(doc_coll, target_id):
-                    now = utc_now()
-                    self._document_store.upsert(
-                        doc_coll, target_id,
-                        summary="",
-                        tags={"_created": now, "_updated": now, "_source": "auto-vivify"},
+                for raw_target in tag_values(doc.tags, predicate):
+                    if not raw_target:
+                        continue
+                    try:
+                        target_id = normalize_id(raw_target)
+                    except ValueError:
+                        logger.warning(
+                            "Skipping invalid backfill edge target %r for %s:%s",
+                            raw_target, doc.id, predicate,
+                        )
+                        continue
+                    if target_id.startswith("."):
+                        continue
+                    # Auto-vivify target (doc store only — embedding via reindex queue)
+                    if not self._document_store.exists(doc_coll, target_id):
+                        now = utc_now()
+                        self._document_store.upsert(
+                            doc_coll, target_id,
+                            summary="",
+                            tags={"_created": now, "_updated": now, "_source": "auto-vivify"},
+                        )
+                        self._pending_queue.enqueue(
+                            target_id, doc_coll, target_id,
+                            task_type="reindex",
+                            metadata={"tags": {"_created": now, "_updated": now, "_source": "auto-vivify"}},
+                        )
+                    created = doc.tags.get("_created") or doc.tags.get("_updated") or utc_now()
+                    self._document_store.upsert_edge(
+                        collection=doc_coll,
+                        source_id=doc.id,
+                        predicate=predicate,
+                        target_id=target_id,
+                        inverse=inverse,
+                        created=created,
                     )
-                    self._pending_queue.enqueue(
-                        target_id, doc_coll, target_id,
-                        task_type="reindex",
-                        metadata={"tags": {"_created": now, "_updated": now, "_source": "auto-vivify"}},
-                    )
-                created = doc.tags.get("_created") or doc.tags.get("_updated") or utc_now()
-                self._document_store.upsert_edge(
-                    collection=doc_coll,
-                    source_id=doc.id,
-                    predicate=predicate,
-                    target_id=target_id,
-                    inverse=inverse,
-                    created=created,
-                )
-                edge_count += 1
+                    edge_count += 1
         # Materialize archived-version edges for this predicate too.
         self._document_store.backfill_version_edges_for_predicate(
             doc_coll, predicate, inverse,

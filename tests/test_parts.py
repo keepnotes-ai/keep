@@ -137,6 +137,48 @@ class TestDocumentStoreParts:
         assert store.part_count("default", "doc:1") == 0
         assert store.part_count("default", "doc:2") == 1
 
+    def test_upsert_parts_deduplicates_tag_values(self, store):
+        """upsert_parts() deduplicates multivalue tags per key."""
+        now = utc_now()
+        store.upsert_parts(
+            "default",
+            "doc:1",
+            [PartInfo(1, "Part", {"k": ["a", "a", "b"]}, "Body", now)],
+        )
+
+        part = store.get_part("default", "doc:1", 1)
+        assert part is not None
+        assert part.tags == {"k": ["a", "b"]}
+
+    def test_upsert_single_part_deduplicates_tag_values(self, store):
+        """upsert_single_part() deduplicates multivalue tags per key."""
+        now = utc_now()
+        store.upsert_single_part(
+            "default",
+            "doc:1",
+            PartInfo(1, "Part", {"k": ["a", "a", "b"]}, "Body", now),
+        )
+
+        part = store.get_part("default", "doc:1", 1)
+        assert part is not None
+        assert part.tags == {"k": ["a", "b"]}
+
+    def test_update_part_tags_deduplicates_tag_values(self, store):
+        """update_part_tags() deduplicates multivalue tags per key."""
+        now = utc_now()
+        store.upsert_parts(
+            "default",
+            "doc:1",
+            [PartInfo(1, "Part", {"k": "a"}, "Body", now)],
+        )
+
+        updated = store.update_part_tags("default", "doc:1", 1, {"k": ["a", "a", "b"]})
+        assert updated is True
+
+        part = store.get_part("default", "doc:1", 1)
+        assert part is not None
+        assert part.tags == {"k": ["a", "b"]}
+
 
 # ---------------------------------------------------------------------------
 # Schema migration test

@@ -2,16 +2,17 @@
 
 Tags are key-value pairs attached to every item. They enable filtering, organization, and commitment tracking.
 
-**One value per key.** Setting a tag overwrites any existing value for that key.
+Multiple values per key are allowed. Setting an additional value for the same key adds it (deduplicated), rather than overwriting.
+Each key supports up to 512 distinct values.
 
 ## Setting tags
 
 ```bash
 keep put "note" -t project=myapp -t topic=auth    # On create
 keep now "working on auth" -t project=myapp        # On now update
-keep tag-update ID --tag key=value                 # Add/update tag on existing item
-keep tag-update ID --remove key                    # Remove a tag
-keep tag-update ID1 ID2 --tag status=done          # Tag multiple items
+keep tag ID --tag key=value                 # Add/update tag on existing item
+keep tag ID --remove key                    # Remove a tag
+keep tag ID1 ID2 --tag status=done          # Tag multiple items
 ```
 
 ## Tag merge order
@@ -134,7 +135,7 @@ keep list -t act=commitment -t status=open
 keep list -t act=request -t status=open
 
 # Mark fulfilled
-keep tag-update ID --tag status=fulfilled
+keep tag ID --tag status=fulfilled
 
 # Record an assertion or assessment (no lifecycle)
 keep put "The tests pass" -t act=assertion

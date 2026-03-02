@@ -153,7 +153,7 @@ keep list -t act=commitment -t status=open
 keep list -t act=request -t status=open
 
 # Mark fulfilled when done
-keep tag-update ID --tag status=fulfilled
+keep tag ID --tag status=fulfilled
 ```
 
 **Temporal queries using system tags:**

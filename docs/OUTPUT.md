@@ -86,7 +86,7 @@ When viewing an old version, a suffix appears: `id: %a1b2c3d4@V{1}`
 
 ### 2. `tags:` — Metadata
 
-Key-value pairs in YAML flow format. One value per key.
+Key-value pairs in YAML flow format. A key can hold one value or a list of values.
 
 ```yaml
 tags: {project: myapp, topic: auth, act: commitment, status: open}
