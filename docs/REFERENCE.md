@@ -56,7 +56,9 @@ Full details with tags, similar items, and version navigation:
 ```yaml
 ---
 id: %a1b2c3d4
-tags: {project: myapp, status: reviewed}
+tags:
+  project: "myapp"
+  status: "reviewed"
 similar:
   - %e5f6a7b8@V{0} (0.89) 2026-01-14 Related authentication...
 meta/todo:

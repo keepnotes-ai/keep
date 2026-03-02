@@ -1,12 +1,4 @@
 
-* edge-tags: query-time union
-    One slightly odd behavior:
-        - create foo: inverse bar
-        - tag a bunch of things with foo:X
-        - tag X ecplicitly with bar:Z - you can only do once
-    and, which node gets the "multi-valued-ness" of the implicit inverse?
-        (they both do, really - it really *is* N:N not 1:N, but only halfway)
-
 * "reflective callback" queue
 
 * more edge tags for linking "artifacts" with "notes"
@@ -43,19 +35,6 @@
       e.g. URLs and files that were captured recently
 
 * check - what is your emotional response when encountering this project the first time?
-
-* let's explore some semantic relationships that are important
-    the thing we're talking about is related to (many of):
-    - a meeting or other event
-    - people
-    - places
-    - events in the world
-    do we want to go down the whole "entity extraction" thing? really?
-    but we absolutely do need to handle "hey, note about XYZ, ...." whare XYZ is a capital-E Entity;
-    or "I just talked to Z and T"
-    maybe the entity-extraction is done by the AGENT, huh?
-    - so the agent should tag "entities" in a consistent way, but it's just a convention, not rules
-        -t class=Person entity=Daniel
 
 * let's explore the macOS native entities (not just the filesystem things):
     - contacts
@@ -258,4 +237,6 @@ x check for CLI compatibility with windows (WLS should work but no plan to valid
 . "deep query" prompt
 . tags that name an inverse generate edges to nodes (and the inverse tag)
 . nodes referenced by edges will be whisked into existence
-. Benchmark results
+. benchmark results
+. multi-valued edges outbound, as well as inverse
+. edge-tags: query-time union

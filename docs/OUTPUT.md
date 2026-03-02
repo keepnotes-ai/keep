@@ -8,7 +8,12 @@ When you run `keep get` or `keep now`, items are displayed in YAML frontmatter f
 ```yaml
 ---
 id: %a1b2c3d4                                            # 1. Identity
-tags: {project: myapp, topic: auth, act: commitment, status: open}  # 2. Tags
+tags:                                                     # 2. Tags
+  act: "commitment"
+  project: "myapp"
+  said: conv1 [2026-01-12] "Deborah said let's ship it"
+  status: "open"
+  topic: "auth"
 score: 0.823                                              # 3. Relevance
 similar:                                                  # 4. Similar items
   - %e5f6a7b8         (0.89) 2026-01-14 OAuth2 token refresh pattern...
@@ -84,12 +89,34 @@ The document's unique identifier.
 
 When viewing an old version, a suffix appears: `id: %a1b2c3d4@V{1}`
 
-### 2. `tags:` — Metadata
+### 2. `tags:` — Metadata and Edge References
 
-Key-value pairs in YAML flow format. A key can hold one value or a list of values.
+Key-value pairs in YAML block format. All scalar values are quoted. A key can hold one value or a list of values.
 
 ```yaml
-tags: {project: myapp, topic: auth, act: commitment, status: open}
+tags:
+  act: "commitment"
+  project: "myapp"
+  status: "open"
+  topic: "auth"
+```
+
+Edge tags (tags whose values reference other items) are rendered inline with the target's date and summary:
+
+```yaml
+tags:
+  said: conv1 [2026-01-12] "Deborah said let's ship it"
+  speaker: "Deborah"
+```
+
+Both regular tags and resolved edge references appear in the same `tags:` block, sorted by key. When an edge tag has multiple values, they render as a list:
+
+```yaml
+tags:
+  said:
+    - conv1 [2026-01-12] "Deborah said let's ship it"
+    - conv2 [2026-01-15] "Great, the tests pass now"
+  status: "open"
 ```
 
 Tags you set are shown here. System tags (prefixed `_`) are hidden from display but accessible via `--json`.
@@ -98,6 +125,7 @@ Key tag patterns:
 - **`project`** / **`topic`** — organize by bounded work vs cross-cutting subject. See [TAGGING.md](TAGGING.md#organizing-by-project-and-topic).
 - **`act`** / **`status`** — speech-act tracking (commitment, request, assertion + lifecycle). See [TAGGING.md](TAGGING.md#speech-act-tags).
 - **`type`** — content classification (learning, breakdown, reference, teaching)
+- **Edge tags** — tags with `_inverse` definitions render as resolved references. See [EDGE-TAGS.md](EDGE-TAGS.md).
 
 ### 3. `score:` — Relevance
 

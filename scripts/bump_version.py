@@ -19,6 +19,8 @@ TARGETS = [
     ("SKILL.md",                                       r'(version:\s*)\S+'),
     ("keep/data/openclaw-plugin/openclaw.plugin.json", r'("version":\s*)"[^"]+"'),
     ("keep/data/openclaw-plugin/package.json",         r'("version":\s*)"[^"]+"'),
+    # Keep uv.lock's editable package version in sync with pyproject.
+    ("uv.lock",                                        r'(\[\[package\]\]\s+name\s*=\s*"keep-skill"\s+version\s*=\s*)"[^"]+"'),
 ]
 
 

@@ -60,7 +60,8 @@ Parts include prev/next navigation:
 ```yaml
 ---
 id: doc:1@P{2}
-tags: {topic: analysis}
+tags:
+  topic: "analysis"
 prev:
   - @P{1}
 next:

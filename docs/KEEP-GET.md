@@ -34,7 +34,10 @@ Single-item commands (`get`, `now`) default to full YAML frontmatter format:
 ```yaml
 ---
 id: %a1b2c3d4
-tags: {project: myapp, topic: auth, type: learning}
+tags:
+  project: "myapp"
+  topic: "auth"
+  type: "learning"
 similar:
   - %e5f6a7b8 (0.89) 2026-01-14 Related authentication...
   - %c9d0e1f2 (0.85) 2026-01-13 Token handling notes...

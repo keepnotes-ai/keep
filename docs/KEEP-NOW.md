@@ -56,7 +56,9 @@ When updating (`keep now "..."`), the output surfaces similar items and meta sec
 ```yaml
 ---
 id: now
-tags: {project: myapp, topic: auth}
+tags:
+  project: "myapp"
+  topic: "auth"
 similar:
   - %a1b2c3d4 OAuth2 token refresh pattern...
 meta/todo:

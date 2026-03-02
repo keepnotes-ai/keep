@@ -37,6 +37,7 @@ from .api import Keeper, _text_content_id
 from .config import get_tool_directory
 from .types import (
     SYSTEM_TAG_PREFIX,
+    EdgeRef,
     Item,
     ItemContext,
     PartRef,
@@ -112,6 +113,63 @@ def _tag_display_value(value) -> str:
     if isinstance(value, list):
         return "[" + ", ".join(str(v) for v in value) + "]"
     return str(value)
+
+
+def _quote_scalar_tag_value(value) -> str:
+    """Render a tag scalar as a quoted JSON/YAML-compatible string."""
+    return json.dumps(str(value))
+
+
+def _render_edge_ref_value(ref: EdgeRef) -> str:
+    """Render an edge reference as: id [date] \"summary\"."""
+    ref_id = _shell_quote_id(ref.source_id)
+    date_part = f" [{ref.date}]" if ref.date else ""
+    summary_part = _quote_scalar_tag_value(ref.summary or "")
+    return f"{ref_id}{date_part} {summary_part}"
+
+
+def _render_tags_frontmatter(
+    tags: dict,
+    edge_refs: Optional[dict[str, list[EdgeRef]]] = None,
+) -> list[str]:
+    """Render unified tags block with quoted scalars and edge references."""
+    edge_refs = edge_refs or {}
+    keys = sorted(set(tags) | set(edge_refs))
+    if not keys:
+        return []
+
+    lines = ["tags:"]
+    for key in keys:
+        refs = edge_refs.get(key, [])
+        if refs:
+            rendered_refs: list[str] = []
+            seen_refs: set[str] = set()
+            for ref in refs:
+                rv = _render_edge_ref_value(ref)
+                if rv in seen_refs:
+                    continue
+                seen_refs.add(rv)
+                rendered_refs.append(rv)
+            if not rendered_refs:
+                continue
+            if len(rendered_refs) == 1:
+                lines.append(f"  {key}: {rendered_refs[0]}")
+            else:
+                lines.append(f"  {key}:")
+                for rv in rendered_refs:
+                    lines.append(f"    - {rv}")
+            continue
+
+        values = tag_values(tags, key)
+        if not values:
+            continue
+        if len(values) == 1:
+            lines.append(f"  {key}: {_quote_scalar_tag_value(values[0])}")
+        else:
+            lines.append(f"  {key}:")
+            for v in values:
+                lines.append(f"    - {_quote_scalar_tag_value(v)}")
+    return lines
 
 
 # Configure quiet mode by default (suppress verbose library output)
@@ -643,11 +701,7 @@ def _render_frontmatter(ctx: ItemContext) -> str:
     lines = ["---", f"id: {_shell_quote_id(item.id)}{version_suffix}"]
 
     display_tags = _filter_display_tags(item.tags)
-    if display_tags:
-        tag_items = ", ".join(
-            f"{k}: {_tag_display_value(v)}" for k, v in sorted(display_tags.items())
-        )
-        lines.append(f"tags: {{{tag_items}}}")
+    lines.extend(_render_tags_frontmatter(display_tags, ctx.edges))
 
     if item.score is not None:
         lines.append(f"score: {item.score:.2f}")
@@ -680,19 +734,6 @@ def _render_frontmatter(ctx: ItemContext) -> str:
                 prefix_len = 4 + actual_id_len + 1
                 summary_preview = _truncate(ref.summary, prefix_len)
                 lines.append(f"  - {mid.ljust(id_width)} {summary_preview}")
-
-    # Inverse edges (tag-driven relationships)
-    if ctx.edges:
-        for inverse_name, refs in ctx.edges.items():
-            edge_ids = [_shell_quote_id(r.source_id) for r in refs]
-            id_width = min(max(len(s) for s in edge_ids), 24)
-            lines.append(f"tags/{inverse_name}:")
-            for ref, eid in zip(refs, edge_ids):
-                actual_id_len = max(len(eid), id_width)
-                prefix_len = 4 + actual_id_len + 1 + 13  # date + space
-                summary_preview = _truncate(ref.summary, prefix_len)
-                date_str = f"[{ref.date}] " if ref.date else ""
-                lines.append(f"  - {eid.ljust(id_width)} {date_str}{summary_preview}")
 
     # Parts manifest
     if ctx.parts:
@@ -2280,11 +2321,7 @@ def _get_part_direct(kp: Keeper, actual_id: str, part_num: int) -> Optional[str]
     total = int(item.tags.get("_total_parts", 0))
     lines = ["---", f"id: {_shell_quote_id(actual_id)}@P{{{part_num}}}"]
     display_tags = _filter_display_tags(item.tags)
-    if display_tags:
-        tag_items = ", ".join(
-            f"{k}: {_tag_display_value(v)}" for k, v in sorted(display_tags.items())
-        )
-        lines.append(f"tags: {{{tag_items}}}")
+    lines.extend(_render_tags_frontmatter(display_tags))
     if part_num > 1:
         lines.append("prev:")
         lines.append(f"  - @P{{{part_num - 1}}}")

@@ -248,6 +248,86 @@ class TestEdgeIntegration:
         ctx_alice = kp.get_context("alice")
         assert len(ctx_alice.edges.get("said", [])) == 1
 
+    def test_multivalue_edge_tag_creates_all_edges(self, kp):
+        """A single put with multiple tag values creates one edge per value."""
+        self._create_tagdoc(kp, "speaker", "said")
+
+        kp.put(content="Group discussion", id="conv1", summary="Meeting",
+               tags={"speaker": ["alice", "bob", "carol"]})
+
+        # Each target is auto-vivified
+        for name in ("alice", "bob", "carol"):
+            item = kp.get(name)
+            assert item is not None, f"{name} should be auto-vivified"
+            assert item.tags.get("_source") == "auto-vivify"
+
+        # Each target has an inverse edge back to conv1
+        for name in ("alice", "bob", "carol"):
+            ctx = kp.get_context(name)
+            assert "said" in ctx.edges, f"{name} missing 'said' edges"
+            assert len(ctx.edges["said"]) == 1
+            assert ctx.edges["said"][0].source_id == "conv1"
+
+    def test_multivalue_edge_tag_add_and_remove_values(self, kp):
+        """Adding/removing values from a multivalue edge tag updates edges."""
+        self._create_tagdoc(kp, "speaker", "said")
+
+        kp.put(content="Meeting", id="conv1", summary="Meeting",
+               tags={"speaker": ["alice", "bob"]})
+
+        # Both have edges
+        for name in ("alice", "bob"):
+            ctx = kp.get_context(name)
+            assert len(ctx.edges.get("said", [])) == 1
+
+        # Update: remove bob, add carol
+        kp.put(content="Meeting", id="conv1", summary="Meeting",
+               tags={"speaker": ["alice", "carol"]})
+
+        # alice still has edge, carol now has edge
+        for name in ("alice", "carol"):
+            ctx = kp.get_context(name)
+            assert len(ctx.edges.get("said", [])) == 1, f"{name} should have edge"
+
+        # bob's edge was added previously and persists (edge tags are additive)
+        ctx_bob = kp.get_context("bob")
+        assert len(ctx_bob.edges.get("said", [])) == 1
+
+    def test_get_context_unions_explicit_and_inverse_edge_refs(self, kp):
+        """Query-time edge refs include both explicit and inverse values per key."""
+        self._create_tagdoc(kp, "speaker", "said")
+        self._create_tagdoc(kp, "said", "speaker")
+
+        kp.put(content="Bob profile", id="bob", summary="Bob entity")
+        kp.put(content="Alice profile", id="alice", summary="Alice entity",
+               tags={"said": "bob"})
+        kp.put(content="Conversation", id="conv1", summary="Gina said hello",
+               tags={"speaker": "alice"})
+
+        ctx = kp.get_context("alice")
+        refs = ctx.edges.get("said", [])
+        by_id = {r.source_id: r for r in refs}
+
+        assert "bob" in by_id      # explicit edge-tag value on alice
+        assert "conv1" in by_id    # inverse edge from speaker=alice
+        assert by_id["bob"].summary == "Bob entity"
+        assert by_id["conv1"].summary == "Gina said hello"
+
+    def test_get_context_dedups_union_refs_by_source_id(self, kp):
+        """When explicit+inverse refs collide on key/source_id, context dedups."""
+        self._create_tagdoc(kp, "knows", "knows")
+
+        kp.put(content="Alice profile", id="alice", summary="Alice entity",
+               tags={"knows": "bob"})
+        kp.put(content="Bob profile", id="bob", summary="Bob entity",
+               tags={"knows": "alice"})
+
+        ctx = kp.get_context("alice")
+        refs = ctx.edges.get("knows", [])
+        bob_refs = [r for r in refs if r.source_id == "bob"]
+        assert len(bob_refs) == 1
+        assert bob_refs[0].summary == "Bob entity"
+
     def test_removing_one_edge_tag_preserves_others(self, kp):
         """Removing one edge tag must not delete edges from other predicates."""
         self._create_tagdoc(kp, "speaker", "said")

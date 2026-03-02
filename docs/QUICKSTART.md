@@ -180,7 +180,9 @@ keep put "different note"              # Different ID (new document)
 ```
 ---
 id: %2a792222e4b9
-tags: {_created: 2026-02-22T16:00:00, _updated: 2026-02-22T16:00:00}
+tags:
+  _created: "2026-02-22T16:00:00"
+  _updated: "2026-02-22T16:00:00"
 similar:
   - %5b7756afdf72 (0.51) 2026-02-22 Kate mentioned she is training for the Boston Marathon in April
   - %da0362b8bc19 (0.48) 2026-02-22 Kate loves the window table at Osteria Francescana...

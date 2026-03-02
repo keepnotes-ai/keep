@@ -611,6 +611,31 @@ class TestVersionContextNavigation:
 class TestTagMarkerMigration:
     """Legacy Chroma key/value metadata is rewritten to marker metadata."""
 
+    def test_reports_migration_start_before_completion(
+        self, mock_providers, tmp_path, monkeypatch, capsys,
+    ):
+        from keep.api import Keeper
+
+        monkeypatch.setattr(Keeper, "_check_store_consistency", lambda self: False)
+        monkeypatch.setattr(
+            Keeper,
+            "_needs_chroma_tag_marker_migration",
+            lambda self, _chroma_coll, _doc_coll: True,
+        )
+        monkeypatch.setattr(
+            Keeper,
+            "_migrate_chroma_tag_markers",
+            lambda self, _chroma_coll, _doc_coll: {"docs": 1, "versions": 2, "parts": 3},
+        )
+
+        kp = Keeper(store_path=tmp_path)
+        try:
+            stderr = capsys.readouterr().err
+            assert "Migrating search metadata to multivalue tag markers" in stderr
+            assert "Search metadata migrated to multivalue tag markers (1 docs, 2 versions, 3 parts)." in stderr
+        finally:
+            kp.close()
+
     def test_migrates_legacy_tag_metadata_in_place(self, mock_providers, tmp_path):
         from keep.api import Keeper
         from keep.types import casefold_tags_for_index

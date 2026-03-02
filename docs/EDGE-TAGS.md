@@ -2,7 +2,7 @@
 
 Edge tags turn ordinary tags into navigable relationships.  Usually if a note has tag `speaker: Kate`, this is just a label.  But when `speaker` is an _edge tag_, this becomes a reference (a graph edge) between the note and another note "Kate".  Moreover, that note "Kate" has edges pointing back to all the notes where it was tagged.
 
-This behavior is defined by the _tagdoc_: the note that defines the tag, which has id like `.tag/*`.  When a `.tag/KEY` document declares `_inverse: VERB`, any document tagged with `KEY=target` creates a link to the target — and the target gets an automatic inverse listing under `tags/VERB:`.
+This behavior is defined by the _tagdoc_: the note that defines the tag, which has id like `.tag/*`.  When a `.tag/KEY` document declares `_inverse: VERB`, any document tagged with `KEY=target` creates a link to the target — and the target gets an automatic inverse listing under the `VERB` key in the unified `tags:` block.
 
 Edge definitions are user-editable on purpose. They let you decide which relationships matter enough to become first-class navigation for you and your agent.
 
@@ -26,13 +26,13 @@ Output:
 
 ```yaml
 id: Deborah
-tags: {_source: auto-vivify}
-tags/said:
-  - conv1@P{5}   [2025-03-15]  I think we should refactor the auth module
-  - conv2@P{3}   [2025-03-18]  The API needs rate limiting...
+tags:
+  said:
+    - conv1@P{5} [2025-03-15] "I think we should refactor the auth module"
+    - conv2@P{3} [2025-03-18] "The API needs rate limiting..."
 ```
 
-The `tags/said:` section is computed from the edges table — it's not stored as a tag on `Deborah`. Each entry links back to the source document, shown with its date and summary.
+The `said` entries under `tags:` are computed from the edges table — they're not stored as tags on `Deborah`. Each entry links back to the source document, rendered as `id [date] "summary"`.
 
 ## Auto-vivification
 
@@ -42,7 +42,7 @@ If the target doesn't exist, it's created as an empty document automatically. In
 keep put "Deborah is the tech lead on project X" --id Deborah
 ```
 
-The inverse edges survive — `tags/said:` still shows everything Deborah said.
+The inverse edges survive — the `said` entries under `tags:` still show everything Deborah said.
 
 ## Creating edge tags
 
@@ -64,7 +64,7 @@ EOF
 )" --id .tag/contains
 ```
 
-Now `contains=item-B` on document A creates an edge, and `get item-B` shows `tags/contents: A`.
+Now `contains=item-B` on document A creates an edge, and `get item-B` shows `contents: A [date] "summary"` in its `tags:` block.
 
 ### Symmetric tagdocs
 
@@ -78,12 +78,12 @@ When you add `_inverse` to an existing tagdoc, keep automatically backfills edge
 
 | Tag | `_inverse` | Example | Meaning |
 |-----|-----------|---------|---------|
-| `speaker` | `said` | `speaker: Deborah` on a turn | `get Deborah` → `tags/said: [turns...]` |
+| `speaker` | `said` | `speaker: Deborah` on a turn | `get Deborah` → `said:` entries in `tags:` |
 
 ## Rules
 
 - **Case-sensitive values**: `speaker: Deborah` and `speaker: deborah` link to different targets. Be consistent.
-- **Single-valued**: Each document can have one value per edge tag (e.g., one `speaker`). Multiple documents can point at the same target.
+- **Multi-valued**: A document can have multiple values per edge tag (e.g., `speaker: [alice, bob]`). Each value creates a separate edge. Multiple documents can point at the same target.
 - **System doc targets skipped**: Tag values starting with `.` (like `.meta/todo`) don't create edges.
 - **Removal**: Setting a tag to empty (`-t speaker=`) deletes that edge without affecting other edges on the document.
 
@@ -112,7 +112,7 @@ Outbound edges are normal tags, so `keep find` works:
 keep find -t speaker=Deborah    # All docs where Deborah is the speaker
 ```
 
-Inverse edges (`tags/said:`) are only visible through `keep get` on the target.
+Inverse edges (the resolved `said:` entries in `tags:`) are only visible through `keep get` on the target.
 
 ## See Also
 

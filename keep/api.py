@@ -686,6 +686,12 @@ class Keeper:
         if self._needs_chroma_tag_marker_migration(chroma_coll, doc_coll):
             import sys
             try:
+                print(
+                    "Migrating search metadata to multivalue tag markers "
+                    "(this may take a while on larger stores)...",
+                    file=sys.stderr,
+                    flush=True,
+                )
                 stats = self._migrate_chroma_tag_markers(chroma_coll, doc_coll)
                 logger.info(
                     "Tag marker migration complete: %d docs, %d versions, %d parts",
@@ -3582,10 +3588,93 @@ class Keeper:
                     tags=dict(p.tags),
                 ))
 
-        # Inverse edges (only for current version)
+        # Edge references (only for current version)
+        # - Inverse refs: current item is edge target (existing behavior)
+        # - Explicit refs: current item has edge-tag values (query-time union)
+        # Dedup key: (edge key, source_id). If both explicit+inverse produce
+        # the same source, inverse data takes precedence.
         edge_refs: dict[str, list[EdgeRef]] = {}
         if offset == 0:
             doc_coll = self._resolve_doc_collection()
+            edge_ref_index: dict[str, dict[str, EdgeRef]] = {}
+
+            def _upsert_edge_ref(
+                key: str,
+                ref: EdgeRef,
+                *,
+                prefer_new: bool = False,
+            ) -> None:
+                refs_for_key = edge_ref_index.setdefault(key, {})
+                existing = refs_for_key.get(ref.source_id)
+                if existing is None:
+                    refs_for_key[ref.source_id] = ref
+                    return
+
+                if prefer_new:
+                    refs_for_key[ref.source_id] = EdgeRef(
+                        source_id=ref.source_id,
+                        date=ref.date or existing.date,
+                        summary=ref.summary or existing.summary,
+                    )
+                else:
+                    refs_for_key[ref.source_id] = EdgeRef(
+                        source_id=ref.source_id,
+                        date=existing.date or ref.date,
+                        summary=existing.summary or ref.summary,
+                    )
+
+            # Explicit edge refs from current item's edge-tag values.
+            # These are rendered alongside inverse refs under the same tag key.
+            explicit_targets_by_key: dict[str, list[str]] = {}
+            user_keys = [
+                k for k in item.tags
+                if not k.startswith(SYSTEM_TAG_PREFIX) and tag_values(item.tags, k)
+            ]
+            if user_keys:
+                tagdoc_ids = [f".tag/{k}" for k in user_keys]
+                tagdocs = self._document_store.get_many(doc_coll, tagdoc_ids)
+                for key in user_keys:
+                    td = tagdocs.get(f".tag/{key}")
+                    if td is None or not td.tags.get("_inverse"):
+                        continue
+                    seen_targets: set[str] = set()
+                    resolved_targets: list[str] = []
+                    for raw_target in tag_values(item.tags, key):
+                        try:
+                            target_id = normalize_id(raw_target)
+                        except ValueError:
+                            continue
+                        if target_id.startswith(".") or target_id in seen_targets:
+                            continue
+                        seen_targets.add(target_id)
+                        resolved_targets.append(target_id)
+                    if resolved_targets:
+                        explicit_targets_by_key[key] = resolved_targets
+
+            if explicit_targets_by_key:
+                target_ids = {
+                    tid for tids in explicit_targets_by_key.values() for tid in tids
+                }
+                target_docs = self._document_store.get_many(doc_coll, list(target_ids))
+                for key, target_ids_for_key in explicit_targets_by_key.items():
+                    for target_id in target_ids_for_key:
+                        doc = target_docs.get(target_id)
+                        created = ""
+                        summary = ""
+                        if doc is not None:
+                            created = local_date(
+                                doc.tags.get("_created") or doc.tags.get("_updated") or ""
+                            )
+                            summary = doc.summary or ""
+                        _upsert_edge_ref(
+                            key,
+                            EdgeRef(
+                                source_id=target_id,
+                                date=created,
+                                summary=summary,
+                            ),
+                        )
+
             raw_edges = self._document_store.get_inverse_edges(doc_coll, id)
             if raw_edges:
                 # Batch-fetch source docs to avoid N+1
@@ -3598,7 +3687,12 @@ class Keeper:
                         date=local_date(created),
                         summary=doc.summary if doc else "",
                     )
-                    edge_refs.setdefault(inverse, []).append(ref)
+                    _upsert_edge_ref(inverse, ref, prefer_new=True)
+
+            edge_refs = {
+                key: list(refs_by_source.values())
+                for key, refs_by_source in edge_ref_index.items()
+            }
 
         return ItemContext(
             item=item,

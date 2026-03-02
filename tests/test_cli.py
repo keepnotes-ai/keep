@@ -216,6 +216,51 @@ class TestHumanOutput:
         assert "test:1" in lines[0]
         assert "test:2" in lines[1]
 
+    def test_frontmatter_quotes_scalar_tag_values(self):
+        """Scalar tag values are always quoted in frontmatter."""
+        from keep.cli import render_context
+        from keep.types import Item, ItemContext
+
+        spoof = 'conv1 [2026-01-01] "fake summary"'
+        item = Item(
+            id="test:1",
+            summary="Test",
+            tags={"note": spoof, "project": "keep"},
+        )
+
+        output = render_context(ItemContext(item=item))
+        assert 'note: "conv1 [2026-01-01] \\"fake summary\\""' in output
+        assert 'project: "keep"' in output
+
+    def test_frontmatter_unifies_edge_refs_under_tags(self):
+        """Resolved edge refs are rendered in tags, not tags/<inverse>."""
+        from keep.cli import render_context
+        from keep.types import EdgeRef, Item, ItemContext
+
+        item = Item(
+            id="alice",
+            summary="Profile",
+            tags={"said": "manual-tag", "_created": "2026-03-02T00:00:00"},
+        )
+        ctx = ItemContext(
+            item=item,
+            edges={
+                "said": [
+                    EdgeRef(
+                        source_id="conv1",
+                        date="2026-02-27",
+                        summary='Gina said "hello"',
+                    ),
+                ],
+            },
+        )
+
+        output = render_context(ctx)
+        assert "tags/said:" not in output
+        assert 'said: conv1 [2026-02-27] "Gina said \\"hello\\""' in output
+        # Edge refs supersede raw scalar display for the same key.
+        assert 'said: "manual-tag"' not in output
+
 
 # -----------------------------------------------------------------------------
 # Exit Code Tests (Shell Scripting)

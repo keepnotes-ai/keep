@@ -17,7 +17,9 @@ When you run `keep now` while working on a project tagged `project=myapp`:
 ```yaml
 ---
 id: now
-tags: {project: myapp, topic: auth}
+tags:
+  project: "myapp"
+  topic: "auth"
 similar:
   - %a1b2 OAuth2 token refresh pattern
 meta/todo:

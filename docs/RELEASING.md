@@ -16,7 +16,7 @@
    ```bash
    python scripts/bump_version.py X.Y.Z
    ```
-   This updates `pyproject.toml`, `SKILL.md`, and the openclaw plugin manifests.
+   This updates `pyproject.toml`, `uv.lock`, `SKILL.md`, and the openclaw plugin manifests.
    `keep/__init__.py` reads the version from package metadata automatically.
    - `langchain-keep/pyproject.toml`: update `keep-skill[langchain]>=` pin if needed
 
