@@ -166,3 +166,14 @@ Canonical error codes:
 - `find(query)` => single done tick with `seed=query`.
 - simple `put` => single done tick with inline `upsert_item`.
 - ingest `put(file/url)` => multi-tick profile-driven flow.
+
+## 12) Execution Boundary (Local vs Remote)
+
+- Local mode: CLI/MCP calls local `ContinuationEngine` directly (SQLite `FlowStore` + local env/executors).
+- Remote mode: CLI/MCP delegates the same continuation contract to hosted endpoints:
+  - `POST /v1/continue`
+  - `POST /v1/continue/work`
+- Cross-system flow mixing is invalid in v1:
+  - flow IDs are backend-scoped
+  - local-created flows MUST be resumed locally
+  - remote-created flows MUST be resumed remotely

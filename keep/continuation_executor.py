@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, Protocol
 
 from .continuation_env import ContinuationRuntimeEnv
 from .processors import process_summarize
@@ -23,6 +23,12 @@ class RunnerExecution:
 
 ProviderResolver = Callable[["LocalWorkExecutor", str | None, dict[str, Any] | None], tuple[Any, str]]
 RunnerHandler = Callable[["LocalWorkExecutor", dict[str, Any], dict[str, Any]], RunnerExecution]
+
+
+class WorkExecutor(Protocol):
+    """Execution contract consumed by continuation engine."""
+
+    def execute(self, payload: dict[str, Any]) -> RunnerExecution: ...
 
 
 class ContinuationExecutorRegistry:

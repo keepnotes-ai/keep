@@ -564,14 +564,23 @@ class RemoteKeeper:
     # -- Continuation API --
 
     def continue_flow(self, payload: dict[str, Any]) -> dict[str, Any]:
-        raise NotImplementedError(
-            "Remote continuation API is not enabled on this service yet"
-        )
+        if not isinstance(payload, dict):
+            raise ValueError("continue payload must be a JSON object")
+        resp = self._post("/v1/continue", json=payload)
+        if not isinstance(resp, dict):
+            raise ValueError("Remote /v1/continue response must be a JSON object")
+        return resp
 
     def continue_run_work(self, flow_id: str, work_id: str) -> dict[str, Any]:
-        raise NotImplementedError(
-            "Remote continuation API is not enabled on this service yet"
+        if not flow_id or not work_id:
+            raise ValueError("flow_id and work_id are required")
+        resp = self._post(
+            "/v1/continue/work",
+            json={"flow_id": str(flow_id), "work_id": str(work_id)},
         )
+        if not isinstance(resp, dict):
+            raise ValueError("Remote /v1/continue/work response must be a JSON object")
+        return resp
 
     def close(self) -> None:
         self._client.close()

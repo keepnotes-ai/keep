@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from .continuation_env import ContinuationRuntimeEnv
-from .continuation_executor import LocalWorkExecutor
+from .continuation_executor import LocalWorkExecutor, WorkExecutor
 from .continuation_store import (
     FlowRow,
     FlowStore,
@@ -55,7 +55,7 @@ class ContinuationEngine:
         *,
         flow_store: FlowStore,
         env: ContinuationRuntimeEnv,
-        work_executor: Any | None = None,
+        work_executor: WorkExecutor | None = None,
     ) -> None:
         self._env = env
         self._work_executor = work_executor or LocalWorkExecutor(env)
