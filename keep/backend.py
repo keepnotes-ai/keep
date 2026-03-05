@@ -79,6 +79,11 @@ class NullPendingQueue:
     def get_status(self, id: str) -> dict | None:
         return None
 
+    def peek(
+        self, id: str, collection: str, task_type: str = "summarize",
+    ):
+        return None
+
     def mark_delegated(
         self, id: str, collection: str, task_type: str, remote_task_id: str,
     ) -> None:

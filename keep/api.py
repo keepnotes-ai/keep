@@ -225,6 +225,7 @@ from .types import (
     parse_utc_timestamp, validate_tag_key, validate_id, normalize_id, is_part_id,
     MAX_TAG_VALUE_LENGTH,
 )
+from .continuation import LocalContinuationRuntime
 
 
 class FindResults(list):
@@ -766,6 +767,12 @@ class Keeper:
         from .system_docs import _bundled_docs_hash
         self._needs_sysdoc_migration = (
             self._config.system_docs_hash != _bundled_docs_hash()
+        )
+
+        # Local continuation runtime (API-first path, additive only)
+        self._continuation = LocalContinuationRuntime(
+            self._store_path / "continuation.db",
+            self,
         )
 
     def _apply_file_size_limit(self, provider: DocumentProvider) -> None:
@@ -6427,6 +6434,18 @@ class Keeper:
         """
         return self._pending_queue.get_status(id)
 
+    # -------------------------------------------------------------------------
+    # Continuation API (local-only preview)
+    # -------------------------------------------------------------------------
+
+    def continue_flow(self, payload: dict) -> dict:
+        """Run one continuation tick for local API-first flows."""
+        return self._continuation.continue_flow(payload)
+
+    def continue_run_work(self, flow_id: str, work_id: str) -> dict:
+        """Execute a pending local work item and return a work_result envelope."""
+        return self._continuation.run_work(flow_id, work_id)
+
     @property
     def _processor_pid_path(self) -> Path:
         """Path to the processor PID file."""
@@ -6673,6 +6692,13 @@ class Keeper:
         if hasattr(self, '_task_client') and self._task_client is not None:
             self._task_client.close()
             self._task_client = None
+
+        # Close continuation runtime
+        if hasattr(self, "_continuation") and self._continuation is not None:
+            try:
+                self._continuation.close()
+            except Exception:
+                pass
 
         # Remove ops log handler to avoid handler accumulation
         if hasattr(self, '_ops_log_handler') and self._ops_log_handler:

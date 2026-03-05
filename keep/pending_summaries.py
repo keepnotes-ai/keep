@@ -633,6 +633,43 @@ class PendingSummaryQueue:
             "queued_at": row[2],
         }
 
+    def peek(
+        self, id: str, collection: str, task_type: str = "summarize",
+    ) -> PendingSummary | None:
+        """Read a pending item without claiming it."""
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                SELECT id, collection, content, queued_at, attempts,
+                       task_type, metadata, delegated_at
+                FROM pending_summaries
+                WHERE id = ? AND collection = ? AND task_type = ? AND status = 'pending'
+                LIMIT 1
+                """,
+                (id, collection, task_type),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return None
+
+        meta = {}
+        if row[6]:
+            try:
+                meta = json.loads(row[6])
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        return PendingSummary(
+            id=row[0],
+            collection=row[1],
+            content=row[2],
+            queued_at=row[3],
+            attempts=row[4],
+            task_type=row[5] or "summarize",
+            metadata=meta,
+            delegated_at=row[7],
+        )
+
     def clear(self) -> int:
         """Clear all pending items. Returns count of items cleared."""
         with self._lock:

@@ -7,6 +7,7 @@ Related:
 - `later/simplified-model-and-continuation-design.md`
 - `later/continuation-machine-architecture.md`
 - `later/use-case-simulations-with-continuations.md`
+- `later/continuation-decision-support-contract.md`
 
 ## 1) Goal
 

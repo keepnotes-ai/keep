@@ -20,6 +20,8 @@ Date: 2026-03-03
    - Phased local-first implementation plan (summarizer vertical slice before general API exposure).
 8. `later/discriminator-precompute-spec.md`
    - Precompute model for planner priors (fanout/selectivity/bridgeiness) and continuation discriminator integration.
+9. `later/continuation-decision-support-contract.md`
+   - Exact publication/consumption contract for decision-support signals in `frame/views` and `state/frontier`.
 
 ## Historical (Superseded)
 

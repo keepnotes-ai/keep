@@ -108,6 +108,19 @@ def _has_stdin_data() -> bool:
         return False
 
 
+def _parse_json_arg(source: str) -> dict:
+    """Parse JSON from inline string, @file, or stdin (-)."""
+    if source == "-":
+        raw = sys.stdin.read()
+        return json.loads(raw)
+    if source.startswith("@"):
+        path = Path(source[1:])
+        if not path.exists():
+            raise ValueError(f"JSON file not found: {path}")
+        return json.loads(path.read_text(encoding="utf-8"))
+    return json.loads(source)
+
+
 def _tag_display_value(value) -> str:
     """Render scalar/list tag values for compact display."""
     if isinstance(value, list):
@@ -3213,6 +3226,68 @@ def _tail_ops_log(log_path: Path, kp) -> None:
             f"\nDetached. Daemon still running. {_queue_status_line(kp, stats)}",
             err=True,
         )
+
+
+@app.command("continue")
+def continue_cmd(
+    payload: Annotated[str, typer.Argument(
+        help="JSON payload, @file.json, or '-' for stdin",
+    )],
+    store: StoreOption = None,
+):
+    """Run one local continuation tick (API-first preview)."""
+    kp = _get_keeper(store)
+    if not hasattr(kp, "continue_flow"):
+        typer.echo(
+            "Error: continuation API is only available in local mode for now.",
+            err=True,
+        )
+        kp.close()
+        raise typer.Exit(1)
+    try:
+        data = _parse_json_arg(payload)
+        result = kp.continue_flow(data)
+    except Exception as e:
+        typer.echo(f"Error: {e}", err=True)
+        kp.close()
+        raise typer.Exit(1)
+    finally:
+        kp.close()
+
+    if _get_json_output():
+        typer.echo(json.dumps(result, ensure_ascii=False))
+    else:
+        typer.echo(json.dumps(result, ensure_ascii=False, indent=2))
+
+
+@app.command("continue-work")
+def continue_work_cmd(
+    flow_id: Annotated[str, typer.Argument(help="Flow ID")],
+    work_id: Annotated[str, typer.Argument(help="Work item ID")],
+    store: StoreOption = None,
+):
+    """Execute a pending local continuation work item and return work_result JSON."""
+    kp = _get_keeper(store)
+    if not hasattr(kp, "continue_run_work"):
+        typer.echo(
+            "Error: continuation work runner is only available in local mode for now.",
+            err=True,
+        )
+        kp.close()
+        raise typer.Exit(1)
+    try:
+        result = kp.continue_run_work(flow_id, work_id)
+    except Exception as e:
+        typer.echo(f"Error: {e}", err=True)
+        kp.close()
+        raise typer.Exit(1)
+    finally:
+        kp.close()
+
+    if _get_json_output():
+        typer.echo(json.dumps(result, ensure_ascii=False))
+    else:
+        typer.echo(json.dumps(result, ensure_ascii=False, indent=2))
 
 
 # -----------------------------------------------------------------------------
