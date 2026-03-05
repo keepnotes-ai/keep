@@ -71,11 +71,12 @@ class TestKeepPut:
     @pytest.mark.asyncio
     async def test_put_inline_text(self, mock_keeper):
         from keep.mcp import keep_put
+        from keep.api import _text_content_id
         mock_keeper.put.return_value = _make_item(id="%a1b2c3", changed=True)
         result = await keep_put("Hello world")
         assert result == "Stored: %a1b2c3"
         mock_keeper.put.assert_called_once_with(
-            "Hello world", id=None, summary=None, tags=None,
+            "Hello world", id=_text_content_id("Hello world"), summary=None, tags=None,
         )
 
     @pytest.mark.asyncio
@@ -123,10 +124,11 @@ class TestKeepPut:
     @pytest.mark.asyncio
     async def test_put_with_summary(self, mock_keeper):
         from keep.mcp import keep_put
+        from keep.api import _text_content_id
         mock_keeper.put.return_value = _make_item(id="x", changed=True)
         await keep_put("content", summary="My summary")
         mock_keeper.put.assert_called_once_with(
-            "content", id=None, summary="My summary", tags=None,
+            "content", id=_text_content_id("content"), summary="My summary", tags=None,
         )
 
     @pytest.mark.asyncio

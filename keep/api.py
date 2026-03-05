@@ -2614,8 +2614,8 @@ class Keeper:
         else:
             # Inline mode: store content directly
             if id is None:
-                timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")
-                id = f"mem:{timestamp}"
+                # Match CLI/MCP behavior: default inline IDs are content-addressed.
+                id = _text_content_id(content)
             else:
                 id = normalize_id(id)
 

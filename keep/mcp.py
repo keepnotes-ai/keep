@@ -20,7 +20,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from .api import Keeper
+from .api import Keeper, _text_content_id
 from .cli import render_context, render_find_context, expand_prompt
 
 # ---------------------------------------------------------------------------
@@ -102,7 +102,9 @@ async def keep_put(
             if is_uri:
                 item = keeper.put(uri=content, id=id, summary=summary, tags=tags)
             else:
-                item = keeper.put(content, id=id, summary=summary, tags=tags)
+                # Match CLI behavior: inline text defaults to content-addressed IDs.
+                doc_id = id or _text_content_id(content)
+                item = keeper.put(content, id=doc_id, summary=summary, tags=tags)
         except (ValueError, OSError) as e:
             return f"Error: {e}"
 
