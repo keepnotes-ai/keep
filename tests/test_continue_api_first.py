@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from keep.api import Keeper
 
 
@@ -856,5 +858,237 @@ def test_continue_rejects_unsupported_mutation_fields(mock_providers, tmp_path):
         assert second["errors"]
         assert second["errors"][0]["code"] == "invalid_input"
         assert "Unsupported fields for set_tags" in second["errors"][0]["message"]
+    finally:
+        kp.close()
+
+
+def test_continue_rejects_protected_system_mutation_targets(mock_providers, tmp_path):
+    kp = Keeper(store_path=tmp_path)
+    try:
+        content = "protected target"
+        kp.put(content=content, id="note:protected-target", summary=content)
+        first = kp.continue_flow(
+            {
+                "request_id": "req-protected-1",
+                "goal": "classify",
+                "params": {"id": "note:protected-target", "content": content},
+                "steps": [
+                    {
+                        "kind": "classify",
+                        "runner": {"type": "echo", "outputs": {"labels": {"tagged": "yes"}}},
+                        "input_mode": "note_content",
+                        "output_contract": {"must_return": ["labels"]},
+                        "apply": {
+                            "ops": [
+                                {"op": "set_tags", "target": ".now", "tags": "$output.labels"},
+                            ]
+                        },
+                    }
+                ],
+                "feedback": {"work_results": []},
+            }
+        )
+        work_result = kp.continue_run_work(first["flow_id"], first["requests"]["work"][0]["work_id"])
+        second = kp.continue_flow(
+            {
+                "request_id": "req-protected-2",
+                "flow_id": first["flow_id"],
+                "state_version": first["state_version"],
+                "feedback": {"work_results": [work_result]},
+            }
+        )
+        assert second["status"] == "failed"
+        assert second["errors"]
+        assert second["errors"][0]["code"] == "forbidden_target"
+    finally:
+        kp.close()
+
+
+def test_continue_executor_rejects_unallowed_runner_variable_refs(mock_providers, tmp_path):
+    kp = Keeper(store_path=tmp_path)
+    try:
+        content = "resolver allowlist"
+        kp.put(content=content, id="note:resolver", summary=content)
+        out = kp.continue_flow(
+            {
+                "request_id": "req-resolve-1",
+                "goal": "pipeline",
+                "params": {"id": "note:resolver", "content": content},
+                "steps": [
+                    {
+                        "kind": "bad-ref",
+                        "runner": {"type": "echo", "outputs": {"x": "$request_id"}},
+                        "input_mode": "note_content",
+                        "output_contract": {"must_return": ["x"]},
+                    }
+                ],
+                "feedback": {"work_results": []},
+            }
+        )
+        work_id = out["requests"]["work"][0]["work_id"]
+        with pytest.raises(ValueError, match="not allowed"):
+            kp.continue_run_work(out["flow_id"], work_id)
+    finally:
+        kp.close()
+
+
+def test_continue_surfaces_frame_evidence_query_errors(mock_providers, tmp_path):
+    kp = Keeper(store_path=tmp_path)
+    try:
+        original_find = kp.find
+
+        def _raise_find(*args, **kwargs):
+            raise RuntimeError("embedding down")
+
+        kp.find = _raise_find  # type: ignore[assignment]
+        try:
+            out = kp.continue_flow(
+                {
+                    "request_id": "req-frame-error-1",
+                    "goal": "query",
+                    "frame_request": {
+                        "seed": {"mode": "query", "value": "anything"},
+                        "budget": {"max_nodes": 5},
+                    },
+                    "feedback": {"work_results": []},
+                }
+            )
+            assert out["status"] == "failed"
+            assert out["errors"]
+            assert out["errors"][0]["code"] == "frame_evidence_error"
+        finally:
+            kp.find = original_find  # type: ignore[assignment]
+    finally:
+        kp.close()
+
+
+def test_continuation_runtime_is_lazy_initialized(mock_providers, tmp_path):
+    kp = Keeper(store_path=tmp_path)
+    continuation_path = tmp_path / "continuation.db"
+    try:
+        assert not continuation_path.exists()
+        out = kp.continue_flow(
+            {
+                "request_id": "req-lazy-1",
+                "goal": "query",
+                "frame_request": {
+                    "seed": {"mode": "query", "value": "none"},
+                },
+                "feedback": {"work_results": []},
+            }
+        )
+        assert out["status"] in {"done", "failed"}
+        assert continuation_path.exists()
+    finally:
+        kp.close()
+
+
+def test_continue_rejects_oversized_payload(mock_providers, tmp_path):
+    kp = Keeper(store_path=tmp_path)
+    try:
+        huge = "x" * 600_000
+        with pytest.raises(ValueError, match="exceeds max size"):
+            kp.continue_flow(
+                {
+                    "request_id": "req-too-big-1",
+                    "goal": "write",
+                    "params": {"id": "note:big", "content": huge},
+                    "feedback": {"work_results": []},
+                }
+            )
+    finally:
+        kp.close()
+
+
+def test_continue_replays_pending_mutations_on_tick(mock_providers, tmp_path):
+    kp = Keeper(store_path=tmp_path)
+    try:
+        kp.put(content="pending mutation source", id="note:pending", summary="pending mutation source")
+        runtime = kp._get_continuation_runtime()
+        mutation_id = runtime._insert_pending_mutation(
+            flow_id="f_test_pending",
+            work_id=None,
+            op={"op": "set_tags", "target": "note:pending", "tags": {"replayed": "yes"}},
+        )
+        row = runtime._conn.execute(
+            "SELECT status FROM continue_mutations WHERE mutation_id = ?",
+            (mutation_id,),
+        ).fetchone()
+        assert row is not None and row["status"] == "pending"
+
+        out = kp.continue_flow(
+            {
+                "request_id": "req-replay-1",
+                "goal": "query",
+                "frame_request": {"seed": {"mode": "id", "value": "note:pending"}},
+                "feedback": {"work_results": []},
+            }
+        )
+        assert out["status"] == "done"
+        item = kp.get("note:pending")
+        assert item is not None
+        assert item.tags.get("replayed") == "yes"
+        status_row = runtime._conn.execute(
+            "SELECT status FROM continue_mutations WHERE mutation_id = ?",
+            (mutation_id,),
+        ).fetchone()
+        assert status_row is not None and status_row["status"] == "applied"
+    finally:
+        kp.close()
+
+
+def test_continue_mutation_journal_is_idempotent_for_duplicate_ops(mock_providers, tmp_path):
+    kp = Keeper(store_path=tmp_path)
+    try:
+        kp.put(content="dup mutation source", id="note:dup-mutation", summary="dup mutation source")
+        runtime = kp._get_continuation_runtime()
+        op = {"op": "set_tags", "target": "note:dup-mutation", "tags": {"k": "v"}}
+        first = runtime._insert_pending_mutation(flow_id="f_dup", work_id="w_dup", op=op)
+        second = runtime._insert_pending_mutation(flow_id="f_dup", work_id="w_dup", op=op)
+        assert first == second
+        rows = runtime._conn.execute(
+            "SELECT COUNT(*) AS c FROM continue_mutations WHERE mutation_id = ?",
+            (first,),
+        ).fetchone()
+        assert rows is not None
+        assert int(rows["c"]) == 1
+    finally:
+        kp.close()
+
+
+def test_continue_work_result_mutations_are_queued_then_replayed(mock_providers, tmp_path):
+    kp = Keeper(store_path=tmp_path)
+    try:
+        content = "queued replay content"
+        kp.put(content=content, id="note:queued", summary="placeholder")
+        first = kp.continue_flow(
+            _summarize_request("note:queued", content, request_id="req-queued-1")
+        )
+        work_id = first["requests"]["work"][0]["work_id"]
+        wr = kp.continue_run_work(first["flow_id"], work_id)
+        second = kp.continue_flow(
+            {
+                "request_id": "req-queued-2",
+                "flow_id": first["flow_id"],
+                "state_version": first["state_version"],
+                "feedback": {"work_results": [wr]},
+            }
+        )
+        assert second["status"] == "done"
+        work_ops = second["applied"]["work_ops"]
+        assert work_ops
+        op_entries = work_ops[0]["ops"]["ops"]
+        assert op_entries
+        assert op_entries[0]["status"] in {"queued", "applied"}
+        runtime = kp._get_continuation_runtime()
+        rows = runtime._conn.execute(
+            "SELECT status FROM continue_mutations WHERE flow_id = ? ORDER BY created_at DESC LIMIT 1",
+            (first["flow_id"],),
+        ).fetchone()
+        assert rows is not None
+        assert rows["status"] == "applied"
+        item = kp.get("note:queued")
+        assert item is not None
+        assert item.summary == content[:200]
     finally:
         kp.close()

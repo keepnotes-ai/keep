@@ -769,11 +769,9 @@ class Keeper:
             self._config.system_docs_hash != _bundled_docs_hash()
         )
 
-        # Local continuation runtime (API-first path, additive only)
-        self._continuation = LocalContinuationRuntime(
-            self._store_path / "continuation.db",
-            self,
-        )
+        # Local continuation runtime (API-first path), initialized lazily on first use.
+        self._continuation = None
+        self._continuation_lock = threading.Lock()
 
     def _apply_file_size_limit(self, provider: DocumentProvider) -> None:
         """Apply max_file_size config to file-based providers."""
@@ -6390,13 +6388,27 @@ class Keeper:
     # Continuation API (local-only preview)
     # -------------------------------------------------------------------------
 
+    def _get_continuation_runtime(self) -> LocalContinuationRuntime:
+        runtime = self._continuation
+        if runtime is not None:
+            return runtime
+        with self._continuation_lock:
+            runtime = self._continuation
+            if runtime is None:
+                runtime = LocalContinuationRuntime(
+                    self._store_path / "continuation.db",
+                    self,
+                )
+                self._continuation = runtime
+        return runtime
+
     def continue_flow(self, payload: dict) -> dict:
         """Run one continuation tick for local API-first flows."""
-        return self._continuation.continue_flow(payload)
+        return self._get_continuation_runtime().continue_flow(payload)
 
     def continue_run_work(self, flow_id: str, work_id: str) -> dict:
         """Execute a pending local work item and return a work_result envelope."""
-        return self._continuation.run_work(flow_id, work_id)
+        return self._get_continuation_runtime().run_work(flow_id, work_id)
 
     @property
     def _processor_pid_path(self) -> Path:

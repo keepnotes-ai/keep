@@ -53,6 +53,17 @@ DEFAULT_CONTINUATION_EXECUTOR_REGISTRY = ContinuationExecutorRegistry()
 
 
 class LocalWorkExecutor:
+    RESOLVABLE_PAYLOAD_ROOT_KEYS = {
+        "content",
+        "item_id",
+        "collection",
+        "tags",
+        "summary",
+        "context",
+        "metadata",
+        "input",
+    }
+
     def __init__(
         self,
         keeper: "Keeper",
@@ -65,12 +76,31 @@ class LocalWorkExecutor:
     @staticmethod
     def resolve_value(value: Any, payload: dict[str, Any]) -> Any:
         if isinstance(value, str) and value.startswith("$"):
-            return payload.get(value[1:])
+            return LocalWorkExecutor._resolve_payload_ref(value[1:], payload)
         if isinstance(value, list):
             return [LocalWorkExecutor.resolve_value(v, payload) for v in value]
         if isinstance(value, dict):
             return {str(k): LocalWorkExecutor.resolve_value(v, payload) for k, v in value.items()}
         return value
+
+    @staticmethod
+    def _resolve_payload_ref(ref: str, payload: dict[str, Any]) -> Any:
+        path = str(ref or "").strip()
+        if not path:
+            raise ValueError("runner variable reference cannot be empty")
+
+        root, *rest = path.split(".")
+        if root not in LocalWorkExecutor.RESOLVABLE_PAYLOAD_ROOT_KEYS:
+            raise ValueError(f"runner variable root is not allowed: {root}")
+
+        current: Any = payload.get(root)
+        for part in rest:
+            if not isinstance(current, dict):
+                raise ValueError(f"runner variable path is not an object at: {part}")
+            if part not in current:
+                return None
+            current = current.get(part)
+        return current
 
     def resolve_provider(
         self,
@@ -152,7 +182,8 @@ def _run_provider_summarize(
 
     context = runner.get("context")
     if isinstance(context, str):
-        context = str(executor.resolve_value(context, payload))
+        resolved_context = executor.resolve_value(context, payload)
+        context = None if resolved_context is None else str(resolved_context)
     elif context is not None:
         context = str(context)
 
@@ -201,8 +232,21 @@ def _run_provider_generate_json(
     if not callable(generate):
         raise ValueError("provider.generate_json requires provider.generate(system, user, ...)")
 
-    system = str(executor.resolve_value(runner.get("system") or "", payload))
-    user = str(executor.resolve_value(runner.get("user") or payload.get("content") or "", payload))
+    resolved_system = executor.resolve_value(runner.get("system") or "", payload)
+    if resolved_system is None:
+        system = ""
+    elif isinstance(resolved_system, (dict, list)):
+        system = json.dumps(resolved_system, ensure_ascii=False)
+    else:
+        system = str(resolved_system)
+
+    resolved_user = executor.resolve_value(runner.get("user") or payload.get("content") or "", payload)
+    if resolved_user is None:
+        user = ""
+    elif isinstance(resolved_user, (dict, list)):
+        user = json.dumps(resolved_user, ensure_ascii=False)
+    else:
+        user = str(resolved_user)
     max_tokens = int(runner.get("max_tokens") or 4096)
     raw = generate(system, user, max_tokens=max_tokens)
     if raw is None:

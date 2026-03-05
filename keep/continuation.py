@@ -30,7 +30,12 @@ ALLOWED_FRAME_OPS = {"where", "slice"}
 DECISION_SUPPORT_VERSION = "ds.v1"
 DECISION_STRATEGIES = {"single_lane_refine", "top2_plus_bridge", "explore_more"}
 BUILTIN_QUERY_AUTO_PROFILES = {"query.auto", ".profile/query.auto"}
-NON_PIVOT_TAG_KEYS = {"type", "context", "category"}
+SYSTEM_NOTE_PREFIX = "."
+MAX_CONTINUE_PAYLOAD_BYTES = 512_000
+MAX_CONTINUE_STATE_BYTES = 1_000_000
+MAX_CONTINUE_WORK_INPUT_BYTES = 256_000
+MAX_CONTINUE_WORK_RESULT_BYTES = 256_000
+MAX_CONTINUE_EVENTS_PER_FLOW = 500
 DEFAULT_DECISION_POLICY = {
     "margin_high": 0.18,
     "entropy_low": 0.45,
@@ -59,6 +64,17 @@ class _WorkRow:
     input_json: str
     output_contract_json: str
     attempt: int
+
+
+@dataclass
+class _MutationRow:
+    mutation_id: str
+    flow_id: str
+    work_id: Optional[str]
+    status: str
+    op_json: str
+    attempts: int
+    error: Optional[str]
 
 
 class LocalContinuationRuntime:
@@ -126,6 +142,23 @@ class LocalContinuationRuntime:
                 created_at TEXT NOT NULL
             )
         """)
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS continue_mutations (
+                mutation_id TEXT PRIMARY KEY,
+                flow_id TEXT NOT NULL,
+                work_id TEXT,
+                status TEXT NOT NULL,
+                op_json TEXT NOT NULL,
+                error TEXT,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
+        self._conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_continue_mutations_status_created
+            ON continue_mutations(status, created_at)
+        """)
 
     @staticmethod
     def _now() -> str:
@@ -138,6 +171,38 @@ class LocalContinuationRuntime:
         material.pop("request_id", None)
         canonical = json.dumps(material, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _json_size_bytes(value: Any) -> int:
+        material = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return len(material.encode("utf-8"))
+
+    @classmethod
+    def _validate_json_size(
+        cls, value: Any, *, max_bytes: int, label: str,
+    ) -> Optional[dict[str, str]]:
+        try:
+            size = cls._json_size_bytes(value)
+        except TypeError as exc:
+            return {
+                "code": "invalid_input",
+                "message": f"{label} must be JSON-serializable: {exc}",
+            }
+        if size <= max_bytes:
+            return None
+        return {
+            "code": "payload_too_large",
+            "message": f"{label} exceeds max size ({size} > {max_bytes} bytes)",
+        }
+
+    @staticmethod
+    def _is_decision_tag_key(key: str) -> bool:
+        # Keep decision support generic: only ignore internal/system-prefixed tags.
+        return bool(key) and not key.startswith("_")
+
+    @staticmethod
+    def _is_protected_note_id(note_id: str) -> bool:
+        return bool(note_id) and note_id.startswith(SYSTEM_NOTE_PREFIX)
 
     @staticmethod
     def _output_hash(payload: dict[str, Any]) -> str:
@@ -201,6 +266,21 @@ class LocalContinuationRuntime:
             VALUES (?, ?, ?, ?)
             """,
             (key, request_hash, json.dumps(output, ensure_ascii=False), self._now()),
+        )
+
+    def _prune_events(self, flow_id: str, *, keep_last: int = MAX_CONTINUE_EVENTS_PER_FLOW) -> None:
+        self._conn.execute(
+            """
+            DELETE FROM continue_events
+            WHERE flow_id = ?
+              AND event_id NOT IN (
+                SELECT event_id FROM continue_events
+                WHERE flow_id = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+              )
+            """,
+            (flow_id, flow_id, max(int(keep_last), 1)),
         )
 
     def _list_requested_work(self, flow_id: str) -> list[_WorkRow]:
@@ -485,10 +565,10 @@ class LocalContinuationRuntime:
 
     def _frame_evidence_for_request(
         self, frame_request: dict[str, Any],
-    ) -> list[dict[str, Any]]:
+    ) -> tuple[list[dict[str, Any]], Optional[dict[str, str]]]:
         seed = frame_request.get("seed") or {}
         if not isinstance(seed, dict):
-            return []
+            return [], None
 
         mode = str(seed.get("mode") or "")
         value = seed.get("value")
@@ -509,8 +589,8 @@ class LocalContinuationRuntime:
         if mode == "id" and value:
             item = self._keeper.get(str(value))
             if item is None:
-                return []
-            return [self._evidence_item(item, role="target", metadata_level=metadata_level)]
+                return [], None
+            return [self._evidence_item(item, role="target", metadata_level=metadata_level)], None
 
         if mode == "query" and value:
             try:
@@ -520,12 +600,15 @@ class LocalContinuationRuntime:
                     limit=limit,
                     deep=deep,
                 )
-            except Exception:
-                return []
-            return [
+            except Exception as exc:
+                return [], {
+                    "code": "frame_evidence_error",
+                    "message": f"query evidence retrieval failed: {exc}",
+                }
+            return ([
                 self._evidence_item(it, role="candidate", metadata_level=metadata_level)
                 for it in items[:limit]
-            ]
+            ], None)
 
         if mode == "similar_to" and value:
             try:
@@ -535,15 +618,20 @@ class LocalContinuationRuntime:
                     limit=limit,
                     deep=deep,
                 )
-            except Exception:
-                return []
-            return [
+            except Exception as exc:
+                return [], {
+                    "code": "frame_evidence_error",
+                    "message": f"similar_to evidence retrieval failed: {exc}",
+                }
+            return ([
                 self._evidence_item(it, role="neighbor", metadata_level=metadata_level)
                 for it in items[:limit]
-            ]
-        return []
+            ], None)
+        return [], None
 
-    def _frame_evidence(self, program: dict[str, Any]) -> list[dict[str, Any]]:
+    def _frame_evidence(
+        self, program: dict[str, Any],
+    ) -> tuple[list[dict[str, Any]], Optional[dict[str, str]]]:
         frame_request = self._effective_frame_request(program)
         return self._frame_evidence_for_request(frame_request)
 
@@ -819,6 +907,14 @@ class LocalContinuationRuntime:
                 return None, {"code": "invalid_input", "message": "work step input must be an object"}
             input_payload.update(extra_input)
 
+        input_size_err = self._validate_json_size(
+            input_payload,
+            max_bytes=MAX_CONTINUE_WORK_INPUT_BYTES,
+            label="work input payload",
+        )
+        if input_size_err is not None:
+            return None, input_size_err
+
         request_work = self._insert_work(
             flow_id=flow_id,
             kind=kind,
@@ -877,6 +973,14 @@ class LocalContinuationRuntime:
     def _apply_work_result(
         self, flow_id: str, work_result: dict[str, Any],
     ) -> tuple[dict[str, Any], Optional[dict[str, str]]]:
+        work_result_size_err = self._validate_json_size(
+            work_result,
+            max_bytes=MAX_CONTINUE_WORK_RESULT_BYTES,
+            label="work_result",
+        )
+        if work_result_size_err is not None:
+            return {}, work_result_size_err
+
         work_id = str(work_result.get("work_id") or "")
         if not work_id:
             return {}, {"code": "missing_required_field", "message": "work_result.work_id is required"}
@@ -900,7 +1004,12 @@ class LocalContinuationRuntime:
             return {"work_id": work_id, "status": "failed"}, None
 
         work_input = json.loads(work.input_json)
-        applied, err = self._apply_work_outputs(work_input, work_result)
+        applied, err = self._apply_work_outputs(
+            work_input,
+            work_result,
+            flow_id=flow_id,
+            work_id=work_id,
+        )
         if err is not None:
             return {}, err
         self._conn.execute(
@@ -960,77 +1069,275 @@ class LocalContinuationRuntime:
             normalized.append(resolved)
         return normalized, None
 
-    def _apply_mutation_ops(
-        self, ops: list[dict[str, Any]],
-    ) -> tuple[list[dict[str, Any]], Optional[dict[str, str]]]:
-        applied: list[dict[str, Any]] = []
+    def _validate_mutation_op(
+        self, op: dict[str, Any],
+    ) -> tuple[dict[str, Any], Optional[dict[str, str]]]:
         allowed_fields: dict[str, set[str]] = {
             "upsert_item": {"op", "target", "content", "tags", "summary"},
             "set_tags": {"op", "target", "tags"},
             "set_summary": {"op", "target", "summary"},
         }
-        for op in ops:
-            op_name = str(op.get("op") or "")
-            allowed = allowed_fields.get(op_name)
-            if allowed is None:
-                return [], {"code": "invalid_input", "message": f"Unsupported mutation op: {op_name}"}
-            unknown_fields = sorted(str(key) for key in op.keys() if str(key) not in allowed)
-            if unknown_fields:
-                return [], {
-                    "code": "invalid_input",
-                    "message": (
-                        f"Unsupported fields for {op_name}: " + ", ".join(unknown_fields)
-                    ),
+        normalized = {str(k): v for k, v in op.items()}
+        op_name = str(normalized.get("op") or "")
+        allowed = allowed_fields.get(op_name)
+        if allowed is None:
+            return {}, {"code": "invalid_input", "message": f"Unsupported mutation op: {op_name}"}
+        unknown_fields = sorted(str(key) for key in normalized.keys() if str(key) not in allowed)
+        if unknown_fields:
+            return {}, {
+                "code": "invalid_input",
+                "message": f"Unsupported fields for {op_name}: " + ", ".join(unknown_fields),
+            }
+        target = normalized.get("target")
+        if target:
+            target_id = str(target)
+            if self._is_protected_note_id(target_id):
+                return {}, {
+                    "code": "forbidden_target",
+                    "message": f"Mutation target is protected: {target_id}",
                 }
-            target = op.get("target")
-            if op_name == "upsert_item":
-                if not target:
-                    return [], {"code": "missing_required_field", "message": "upsert_item requires target"}
-                content = op.get("content")
-                if content is None:
-                    return [], {"code": "missing_required_field", "message": "upsert_item requires content"}
-                tags = op.get("tags")
-                if tags is not None and not isinstance(tags, dict):
-                    return [], {"code": "invalid_input", "message": "upsert_item.tags must be an object"}
-                summary = op.get("summary")
-                self._keeper.put(
-                    content=str(content),
-                    id=str(target),
-                    tags=tags,
-                    summary=str(summary) if summary is not None else None,
-                )
-            elif op_name == "set_tags":
-                if not target:
-                    return [], {"code": "missing_required_field", "message": "set_tags requires target"}
-                tags = op.get("tags")
-                if not isinstance(tags, dict):
-                    return [], {"code": "missing_required_field", "message": "set_tags requires tags object"}
-                normalized_tags = {str(k): v for k, v in tags.items()}
-                self._keeper.tag(str(target), tags=normalized_tags)
-            elif op_name == "set_summary":
-                if not target:
-                    return [], {"code": "missing_required_field", "message": "set_summary requires target"}
-                summary = op.get("summary")
-                if summary is None:
-                    return [], {"code": "missing_required_field", "message": "set_summary requires summary"}
-                existing = self._keeper.get(str(target))
-                if existing is None:
-                    return [], {"code": "invalid_input", "message": f"Target note not found: {target}"}
-                from .processors import ProcessorResult
+        if op_name == "upsert_item":
+            if not target:
+                return {}, {"code": "missing_required_field", "message": "upsert_item requires target"}
+            if normalized.get("content") is None:
+                return {}, {"code": "missing_required_field", "message": "upsert_item requires content"}
+            tags = normalized.get("tags")
+            if tags is not None and not isinstance(tags, dict):
+                return {}, {"code": "invalid_input", "message": "upsert_item.tags must be an object"}
+        elif op_name == "set_tags":
+            if not target:
+                return {}, {"code": "missing_required_field", "message": "set_tags requires target"}
+            if not isinstance(normalized.get("tags"), dict):
+                return {}, {"code": "missing_required_field", "message": "set_tags requires tags object"}
+        elif op_name == "set_summary":
+            if not target:
+                return {}, {"code": "missing_required_field", "message": "set_summary requires target"}
+            if normalized.get("summary") is None:
+                return {}, {"code": "missing_required_field", "message": "set_summary requires summary"}
+        return normalized, None
 
-                doc_coll = self._keeper._resolve_doc_collection()
-                result = ProcessorResult(task_type="summarize", summary=str(summary))
-                self._keeper.apply_result(
-                    str(target),
-                    doc_coll,
-                    result,
-                    existing_tags=dict(existing.tags),
+    def _insert_pending_mutation(
+        self, *, flow_id: str, work_id: Optional[str], op: dict[str, Any],
+    ) -> str:
+        op_json = json.dumps(op, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        material = f"{flow_id}|{work_id or ''}|{op_json}"
+        mutation_id = f"m_{hashlib.sha256(material.encode('utf-8')).hexdigest()[:20]}"
+        now = self._now()
+        self._conn.execute(
+            """
+            INSERT OR IGNORE INTO continue_mutations(
+                mutation_id, flow_id, work_id, status, op_json, error, attempts, created_at, updated_at
+            ) VALUES (?, ?, ?, 'pending', ?, NULL, 0, ?, ?)
+            """,
+            (mutation_id, flow_id, work_id, op_json, now, now),
+        )
+        return mutation_id
+
+    def _get_mutation(self, mutation_id: str) -> Optional[_MutationRow]:
+        row = self._conn.execute(
+            """
+            SELECT mutation_id, flow_id, work_id, status, op_json, attempts, error
+            FROM continue_mutations
+            WHERE mutation_id = ?
+            """,
+            (mutation_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return _MutationRow(
+            mutation_id=str(row["mutation_id"]),
+            flow_id=str(row["flow_id"]),
+            work_id=str(row["work_id"]) if row["work_id"] is not None else None,
+            status=str(row["status"]),
+            op_json=str(row["op_json"]),
+            attempts=int(row["attempts"]),
+            error=str(row["error"]) if row["error"] is not None else None,
+        )
+
+    def _set_mutation_status(self, mutation_id: str, *, status: str, error: Optional[str] = None) -> None:
+        self._conn.execute(
+            """
+            UPDATE continue_mutations
+            SET status = ?, error = ?, attempts = attempts + 1, updated_at = ?
+            WHERE mutation_id = ?
+            """,
+            (status, error, self._now(), mutation_id),
+        )
+
+    def _list_pending_mutations(
+        self, *, flow_id: Optional[str] = None, limit: int = 100,
+    ) -> list[_MutationRow]:
+        if flow_id:
+            rows = self._conn.execute(
+                """
+                SELECT mutation_id, flow_id, work_id, status, op_json, attempts, error
+                FROM continue_mutations
+                WHERE status = 'pending' AND flow_id = ?
+                ORDER BY created_at ASC
+                LIMIT ?
+                """,
+                (flow_id, max(int(limit), 1)),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                """
+                SELECT mutation_id, flow_id, work_id, status, op_json, attempts, error
+                FROM continue_mutations
+                WHERE status = 'pending'
+                ORDER BY created_at ASC
+                LIMIT ?
+                """,
+                (max(int(limit), 1),),
+            ).fetchall()
+        return [
+            _MutationRow(
+                mutation_id=str(row["mutation_id"]),
+                flow_id=str(row["flow_id"]),
+                work_id=str(row["work_id"]) if row["work_id"] is not None else None,
+                status=str(row["status"]),
+                op_json=str(row["op_json"]),
+                attempts=int(row["attempts"]),
+                error=str(row["error"]) if row["error"] is not None else None,
+            )
+            for row in rows
+        ]
+
+    def _apply_single_mutation(
+        self, op: dict[str, Any],
+    ) -> tuple[dict[str, Any], Optional[dict[str, str]]]:
+        op_name = str(op.get("op") or "")
+        target = str(op.get("target") or "")
+        if op_name == "upsert_item":
+            content = op.get("content")
+            tags = op.get("tags")
+            summary = op.get("summary")
+            self._keeper.put(
+                content=str(content),
+                id=target,
+                tags=tags if isinstance(tags, dict) else None,
+                summary=str(summary) if summary is not None else None,
+            )
+            return {"op": op_name, "target": target, "status": "applied"}, None
+        if op_name == "set_tags":
+            tags = op.get("tags")
+            if not isinstance(tags, dict):
+                return {}, {"code": "missing_required_field", "message": "set_tags requires tags object"}
+            normalized_tags = {str(k): v for k, v in tags.items()}
+            self._keeper.tag(target, tags=normalized_tags)
+            return {"op": op_name, "target": target, "status": "applied"}, None
+        if op_name == "set_summary":
+            summary = op.get("summary")
+            existing = self._keeper.get(target)
+            if existing is None:
+                return {}, {"code": "invalid_input", "message": f"Target note not found: {target}"}
+            if existing.summary == str(summary):
+                return {"op": op_name, "target": target, "status": "noop"}, None
+            from .processors import ProcessorResult
+
+            doc_coll = self._keeper._resolve_doc_collection()
+            result = ProcessorResult(task_type="summarize", summary=str(summary))
+            self._keeper.apply_result(
+                target,
+                doc_coll,
+                result,
+                existing_tags=dict(existing.tags),
+            )
+            return {"op": op_name, "target": target, "status": "applied"}, None
+        return {}, {"code": "invalid_input", "message": f"Unsupported mutation op: {op_name}"}
+
+    def _replay_pending_mutations(
+        self, *, flow_id: Optional[str] = None, limit: int = 100,
+    ) -> list[dict[str, str]]:
+        pending = self._list_pending_mutations(flow_id=flow_id, limit=limit)
+        failures: list[dict[str, str]] = []
+        for row in pending:
+            try:
+                op = json.loads(row.op_json)
+            except Exception as exc:
+                msg = f"invalid op_json: {exc}"
+                self._set_mutation_status(row.mutation_id, status="failed", error=msg)
+                failures.append({
+                    "code": "mutation_apply_failed",
+                    "message": f"mutation {row.mutation_id} failed: {msg}",
+                })
+                continue
+            applied, err = self._apply_single_mutation(op)
+            if err is not None:
+                msg = f"{err.get('code')}: {err.get('message')}"
+                self._set_mutation_status(
+                    row.mutation_id,
+                    status="failed",
+                    error=msg,
                 )
-            applied.append({"op": op_name, "target": str(target), "status": "applied"})
+                failures.append({
+                    "code": "mutation_apply_failed",
+                    "message": f"mutation {row.mutation_id} failed: {msg}",
+                })
+                continue
+            self._set_mutation_status(row.mutation_id, status="applied")
+            logger.debug(
+                "Replayed pending mutation %s flow=%s op=%s target=%s",
+                row.mutation_id,
+                row.flow_id,
+                applied.get("op"),
+                applied.get("target"),
+            )
+        return failures
+
+    def _apply_mutation_ops(
+        self, ops: list[dict[str, Any]], *, flow_id: str, work_id: Optional[str] = None,
+    ) -> tuple[list[dict[str, Any]], Optional[dict[str, str]]]:
+        applied: list[dict[str, Any]] = []
+        in_tx = bool(self._conn.in_transaction)
+        for raw_op in ops:
+            if not isinstance(raw_op, dict):
+                return [], {"code": "invalid_input", "message": "mutation op entries must be objects"}
+            op, err = self._validate_mutation_op(raw_op)
+            if err is not None:
+                return [], err
+            mutation_id = self._insert_pending_mutation(flow_id=flow_id, work_id=work_id, op=op)
+            existing = self._get_mutation(mutation_id)
+            if existing is not None and existing.status == "applied":
+                applied.append({
+                    "op": str(op.get("op") or ""),
+                    "target": str(op.get("target") or ""),
+                    "status": "applied",
+                    "mutation_id": mutation_id,
+                })
+                continue
+            if existing is not None and existing.status == "failed":
+                return applied, {
+                    "code": "mutation_failed",
+                    "message": existing.error or "previous mutation attempt failed",
+                }
+            if in_tx:
+                applied.append({
+                    "op": str(op.get("op") or ""),
+                    "target": str(op.get("target") or ""),
+                    "status": "queued",
+                    "mutation_id": mutation_id,
+                })
+                continue
+            applied_entry, apply_err = self._apply_single_mutation(op)
+            if apply_err is not None:
+                self._set_mutation_status(
+                    mutation_id,
+                    status="failed",
+                    error=f"{apply_err.get('code')}: {apply_err.get('message')}",
+                )
+                return applied, apply_err
+            self._set_mutation_status(mutation_id, status="applied")
+            applied_entry["mutation_id"] = mutation_id
+            applied.append(applied_entry)
         return applied, None
 
     def _apply_work_outputs(
-        self, work_input: dict[str, Any], work_result: dict[str, Any],
+        self,
+        work_input: dict[str, Any],
+        work_result: dict[str, Any],
+        *,
+        flow_id: str,
+        work_id: Optional[str],
     ) -> tuple[dict[str, Any], Optional[dict[str, str]]]:
         outputs = work_result.get("outputs") or {}
         if not isinstance(outputs, dict):
@@ -1040,7 +1347,7 @@ class LocalContinuationRuntime:
             return {}, err
         if not ops:
             return {}, None
-        applied, err = self._apply_mutation_ops(ops)
+        applied, err = self._apply_mutation_ops(ops, flow_id=flow_id, work_id=work_id)
         if err is not None:
             return {}, err
         return {"ops": applied}, None
@@ -1228,7 +1535,7 @@ class LocalContinuationRuntime:
         where_tags = self._parse_where_tags(frame_request)
         for key in where_tags:
             k = str(key).strip()
-            if k and k not in candidates:
+            if self._is_decision_tag_key(k) and k not in candidates:
                 candidates.append(k)
         for row in evidence[:12]:
             metadata = row.get("metadata") if isinstance(row, dict) else None
@@ -1237,7 +1544,7 @@ class LocalContinuationRuntime:
                 continue
             for key in sorted(tags.keys()):
                 k = str(key).strip()
-                if k and k not in candidates:
+                if self._is_decision_tag_key(k) and k not in candidates:
                     candidates.append(k)
                 if len(candidates) >= 12:
                     break
@@ -1311,7 +1618,7 @@ class LocalContinuationRuntime:
                 continue
             for key in tags:
                 k = str(key).strip()
-                if not k or k.startswith("_"):
+                if not self._is_decision_tag_key(k):
                     continue
                 keyset.add(k)
 
@@ -1593,7 +1900,7 @@ class LocalContinuationRuntime:
                 continue
             for key, raw in tags.items():
                 k = str(key).strip()
-                if not k or k.startswith("_") or k in NON_PIVOT_TAG_KEYS:
+                if not self._is_decision_tag_key(k):
                     continue
                 kind = self._tag_key_kind(k, cache=tag_kind_cache)
                 values: list[str] = []
@@ -1688,7 +1995,7 @@ class LocalContinuationRuntime:
                 continue
             for key, raw in tags.items():
                 k = str(key).strip()
-                if not k or k.startswith("_") or k in NON_PIVOT_TAG_KEYS:
+                if not self._is_decision_tag_key(k):
                     continue
                 kind = self._tag_key_kind(k, cache=tag_kind_cache)
                 values: list[str] = []
@@ -1818,7 +2125,7 @@ class LocalContinuationRuntime:
         return branches[:3]
 
     def _apply_inline_write(
-        self, state: dict[str, Any], program: dict[str, Any],
+        self, state: dict[str, Any], program: dict[str, Any], *, flow_id: str,
     ) -> tuple[list[dict[str, Any]], Optional[dict[str, str]]]:
         if state.get("frontier", {}).get("write_applied"):
             return [], None
@@ -1843,7 +2150,7 @@ class LocalContinuationRuntime:
             "tags": params.get("tags"),
             "summary": params.get("summary"),
         }]
-        applied, err = self._apply_mutation_ops(ops)
+        applied, err = self._apply_mutation_ops(ops, flow_id=flow_id, work_id=None)
         if err is not None:
             return [], err
         state.setdefault("frontier", {})["write_applied"] = True
@@ -1870,6 +2177,13 @@ class LocalContinuationRuntime:
     def continue_flow(self, payload: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(payload, dict):
             raise ValueError("continue input must be a JSON object")
+        payload_size_err = self._validate_json_size(
+            payload,
+            max_bytes=MAX_CONTINUE_PAYLOAD_BYTES,
+            label="continue payload",
+        )
+        if payload_size_err is not None:
+            raise ValueError(payload_size_err["message"])
 
         request_id = str(payload.get("request_id") or uuid.uuid4())
         idempotency_key = payload.get("idempotency_key")
@@ -1886,6 +2200,13 @@ class LocalContinuationRuntime:
                     output["request_id"] = request_id
                     return output
 
+            replay_failures = self._replay_pending_mutations(limit=100)
+            if replay_failures:
+                logger.warning(
+                    "Continuation replay found %d pending mutation failures before tick",
+                    len(replay_failures),
+                )
+
             self._conn.execute("BEGIN IMMEDIATE")
             try:
                 flow_id = payload.get("flow_id")
@@ -1897,17 +2218,19 @@ class LocalContinuationRuntime:
                     if flow is None:
                         raise ValueError(f"unknown flow_id: {flow_id}")
 
-                assert flow is not None
+                if flow is None:
+                    raise ValueError("flow state unavailable")
                 expected_version = payload.get("state_version")
                 if expected_version is not None and int(expected_version) != flow.state_version:
-                    self._conn.rollback()
+                    if self._conn.in_transaction:
+                        self._conn.rollback()
                     state = json.loads(flow.state_json)
                     program = state.get("program") or {}
                     if not isinstance(program, dict):
                         program = {}
                     goal = self._goal_from_program(program)
                     note_id = self._infer_note_id(program) if program else None
-                    evidence = self._frame_evidence(program) if program else []
+                    evidence, _ = self._frame_evidence(program) if program else ([], None)
                     return {
                         "request_id": request_id,
                         "idempotency_key": idempotency_key,
@@ -2028,9 +2351,17 @@ class LocalContinuationRuntime:
                 previous_evidence_ids = state.get("frontier", {}).get("evidence_ids") or []
                 if not isinstance(previous_evidence_ids, list):
                     previous_evidence_ids = []
-                evidence = self._frame_evidence(program) if program and not errors else []
+                evidence: list[dict[str, Any]] = []
                 if program and not errors:
-                    write_ops, write_err = self._apply_inline_write(state, program)
+                    evidence, evidence_err = self._frame_evidence(program)
+                    if evidence_err is not None:
+                        errors.append(evidence_err)
+                if program and not errors:
+                    write_ops, write_err = self._apply_inline_write(
+                        state,
+                        program,
+                        flow_id=flow.flow_id,
+                    )
                     if write_err is not None:
                         errors.append(write_err)
                     elif write_ops:
@@ -2235,6 +2566,11 @@ class LocalContinuationRuntime:
 
                 new_state_version = flow.state_version + 1
                 state_json = json.dumps(state, ensure_ascii=False)
+                state_bytes = len(state_json.encode("utf-8"))
+                if state_bytes > MAX_CONTINUE_STATE_BYTES:
+                    raise ValueError(
+                        f"continuation state exceeds max size ({state_bytes} > {MAX_CONTINUE_STATE_BYTES} bytes)"
+                    )
                 now = self._now()
                 self._conn.execute(
                     """
@@ -2263,6 +2599,7 @@ class LocalContinuationRuntime:
                         now,
                     ),
                 )
+                self._prune_events(flow.flow_id)
 
                 output = {
                     "request_id": request_id,
@@ -2290,12 +2627,92 @@ class LocalContinuationRuntime:
                         }
                     ),
                 }
+                self._conn.commit()
+                post_failures = self._replay_pending_mutations(flow_id=flow.flow_id, limit=200)
+                if post_failures:
+                    self._conn.execute("BEGIN IMMEDIATE")
+                    try:
+                        latest = self._get_flow(flow.flow_id)
+                        if latest is not None:
+                            latest_state = json.loads(latest.state_json)
+                            cursor = latest_state.get("cursor")
+                            if isinstance(cursor, dict):
+                                cursor["stage"] = "failed"
+                                cursor["phase"] = "failed"
+                            corrected_errors = list(errors) + post_failures
+                            corrected_status = "failed"
+                            corrected_version = latest.state_version + 1
+                            corrected_now = self._now()
+                            corrected_state_json = json.dumps(latest_state, ensure_ascii=False)
+                            self._conn.execute(
+                                """
+                                UPDATE continue_flows
+                                SET state_version = ?, status = ?, state_json = ?, updated_at = ?
+                                WHERE flow_id = ?
+                                """,
+                                (
+                                    corrected_version,
+                                    corrected_status,
+                                    corrected_state_json,
+                                    corrected_now,
+                                    flow.flow_id,
+                                ),
+                            )
+                            self._conn.execute(
+                                """
+                                INSERT INTO continue_events(event_id, flow_id, event_type, payload_json, created_at)
+                                VALUES (?, ?, 'mutation_failure', ?, ?)
+                                """,
+                                (
+                                    f"e_{uuid.uuid4().hex[:12]}",
+                                    flow.flow_id,
+                                    json.dumps(
+                                        {
+                                            "status": corrected_status,
+                                            "errors": corrected_errors,
+                                            "request_id": request_id,
+                                            "goal": goal,
+                                        },
+                                        ensure_ascii=False,
+                                    ),
+                                    corrected_now,
+                                ),
+                            )
+                            self._prune_events(flow.flow_id)
+                            self._conn.commit()
+                            output["status"] = corrected_status
+                            output["state_version"] = corrected_version
+                            output["errors"] = corrected_errors
+                            output["state"] = latest_state
+                            output["next"] = {
+                                "recommended": "continue",
+                                "reason": "Resolve mutation failures and retry",
+                            }
+                            frame_obj = output.get("frame")
+                            if isinstance(frame_obj, dict):
+                                frame_obj["status"] = corrected_status
+                        else:
+                            self._conn.rollback()
+                    except Exception:
+                        if self._conn.in_transaction:
+                            self._conn.rollback()
+                        raise
+
+                output["output_hash"] = self._output_hash(
+                    {
+                        "flow_id": output.get("flow_id"),
+                        "state_version": output.get("state_version"),
+                        "status": output.get("status"),
+                        "requests": output.get("requests", {}).get("work", []),
+                        "errors": output.get("errors", []),
+                    }
+                )
                 if idempotency_key:
                     self._store_idempotent(str(idempotency_key), request_hash, output)
-                self._conn.commit()
                 return output
             except Exception:
-                self._conn.rollback()
+                if self._conn.in_transaction:
+                    self._conn.rollback()
                 raise
 
     def run_work(self, flow_id: str, work_id: str) -> dict[str, Any]:
@@ -2305,23 +2722,24 @@ class LocalContinuationRuntime:
                 raise ValueError(f"unknown work_id: {work_id}")
             if work.status != "requested":
                 raise ValueError(f"work_id is not pending: {work_id}")
-
             payload = json.loads(work.input_json)
-            execution = self._work_executor.execute(payload)
-            content = str(payload.get("content") or "")
-            runner = payload.get("runner") or {}
-            executor_id = str(payload.get("_executor_id") or runner.get("executor_id") or execution.executor_id or "local.runner")
-            return {
-                "work_id": work_id,
-                "executor_id": executor_id,
-                "status": "ok",
-                "outputs": execution.outputs,
-                "quality": execution.quality,
-                "provenance": {
-                    "input_hash": hashlib.sha256(content.encode("utf-8")).hexdigest(),
-                    "attempt": work.attempt,
-                },
-            }
+            attempt = work.attempt
+
+        execution = self._work_executor.execute(payload)
+        content = str(payload.get("content") or "")
+        runner = payload.get("runner") or {}
+        executor_id = str(payload.get("_executor_id") or runner.get("executor_id") or execution.executor_id or "local.runner")
+        return {
+            "work_id": work_id,
+            "executor_id": executor_id,
+            "status": "ok",
+            "outputs": execution.outputs,
+            "quality": execution.quality,
+            "provenance": {
+                "input_hash": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                "attempt": attempt,
+            },
+        }
 
     def close(self) -> None:
         if self._conn is not None:
