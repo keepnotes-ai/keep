@@ -7,6 +7,7 @@ Usage:
 """
 
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -19,8 +20,6 @@ TARGETS = [
     ("SKILL.md",                                       r'(version:\s*)\S+'),
     ("keep/data/openclaw-plugin/openclaw.plugin.json", r'("version":\s*)"[^"]+"'),
     ("keep/data/openclaw-plugin/package.json",         r'("version":\s*)"[^"]+"'),
-    # Keep uv.lock's editable package version in sync with pyproject.
-    ("uv.lock",                                        r'(\[\[package\]\]\s+name\s*=\s*"keep-skill"\s+version\s*=\s*)"[^"]+"'),
 ]
 
 
@@ -64,6 +63,10 @@ def main() -> None:
 
     print(f"\nBumped {len(TARGETS)} files to {new}")
     print(f"(keep/__init__.py reads from package metadata — no edit needed)")
+
+    # Re-resolve the lock file so dependency versions stay current.
+    print("\nRunning uv lock ...")
+    subprocess.run(["uv", "lock"], cwd=ROOT, check=True)
 
 
 if __name__ == "__main__":
