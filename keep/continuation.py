@@ -17,12 +17,10 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional
+from typing import Any, Optional
 
+from .continuation_env import ContinuationRuntimeEnv
 from .continuation_executor import LocalWorkExecutor
-
-if TYPE_CHECKING:
-    from .api import Keeper
 
 logger = logging.getLogger(__name__)
 
@@ -80,10 +78,10 @@ class _MutationRow:
 class LocalContinuationRuntime:
     """Durable local continuation runtime."""
 
-    def __init__(self, db_path: Path, keeper: "Keeper") -> None:
+    def __init__(self, db_path: Path, env: ContinuationRuntimeEnv) -> None:
         self._db_path = db_path
-        self._keeper = keeper
-        self._work_executor = LocalWorkExecutor(keeper)
+        self._env = env
+        self._work_executor = LocalWorkExecutor(env)
         self._conn: Optional[sqlite3.Connection] = None
         self._lock = threading.RLock()
         self._init_db()
@@ -529,7 +527,7 @@ class LocalContinuationRuntime:
         }
         if metadata_level == "rich":
             try:
-                ctx = self._keeper.get_context(
+                ctx = self._env.get_context(
                     base_id,
                     include_similar=True,
                     include_meta=True,
@@ -587,14 +585,14 @@ class LocalContinuationRuntime:
         limit = min(max(limit, 1), 100)
 
         if mode == "id" and value:
-            item = self._keeper.get(str(value))
+            item = self._env.get(str(value))
             if item is None:
                 return [], None
             return [self._evidence_item(item, role="target", metadata_level=metadata_level)], None
 
         if mode == "query" and value:
             try:
-                items = self._keeper.find(
+                items = self._env.find(
                     query=str(value),
                     tags=where_tags or None,
                     limit=limit,
@@ -612,7 +610,7 @@ class LocalContinuationRuntime:
 
         if mode == "similar_to" and value:
             try:
-                items = self._keeper.find(
+                items = self._env.find(
                     similar_to=str(value),
                     tags=where_tags or None,
                     limit=limit,
@@ -638,7 +636,7 @@ class LocalContinuationRuntime:
     def _content_for_work(
         self, note_id: str, program: dict[str, Any], doc_coll: str,
     ) -> tuple[Optional[str], Optional[dict[str, str]]]:
-        doc = self._keeper._document_store.get(doc_coll, note_id)
+        doc = self._env.get_document(note_id, collection=doc_coll)
         if doc is None:
             return None, {
                 "code": "missing_required_field",
@@ -675,7 +673,7 @@ class LocalContinuationRuntime:
             return [], None
 
         profile_id = profile if profile.startswith(".profile/") else f".profile/{profile}"
-        doc = self._keeper.get(profile_id)
+        doc = self._env.get(profile_id)
         if doc is None:
             return [], {"code": "unknown_profile", "message": f"Profile not found: {profile_id}"}
 
@@ -891,7 +889,7 @@ class LocalContinuationRuntime:
                     "code": "missing_required_field",
                     "message": "work step with input_mode=note_content requires note id",
                 }
-            doc_coll = self._keeper._resolve_doc_collection()
+            doc_coll = self._env.resolve_doc_collection()
             content, err = self._content_for_work(note_id, program, doc_coll)
             if err is not None:
                 return None, err
@@ -1211,9 +1209,9 @@ class LocalContinuationRuntime:
             content = op.get("content")
             tags = op.get("tags")
             summary = op.get("summary")
-            self._keeper.put(
+            self._env.upsert_item(
+                target=target,
                 content=str(content),
-                id=target,
                 tags=tags if isinstance(tags, dict) else None,
                 summary=str(summary) if summary is not None else None,
             )
@@ -1223,25 +1221,16 @@ class LocalContinuationRuntime:
             if not isinstance(tags, dict):
                 return {}, {"code": "missing_required_field", "message": "set_tags requires tags object"}
             normalized_tags = {str(k): v for k, v in tags.items()}
-            self._keeper.tag(target, tags=normalized_tags)
+            self._env.set_tags(target, normalized_tags)
             return {"op": op_name, "target": target, "status": "applied"}, None
         if op_name == "set_summary":
             summary = op.get("summary")
-            existing = self._keeper.get(target)
+            existing = self._env.get(target)
             if existing is None:
                 return {}, {"code": "invalid_input", "message": f"Target note not found: {target}"}
             if existing.summary == str(summary):
                 return {"op": op_name, "target": target, "status": "noop"}, None
-            from .processors import ProcessorResult
-
-            doc_coll = self._keeper._resolve_doc_collection()
-            result = ProcessorResult(task_type="summarize", summary=str(summary))
-            self._keeper.apply_result(
-                target,
-                doc_coll,
-                result,
-                existing_tags=dict(existing.tags),
-            )
+            self._env.set_summary(target, str(summary))
             return {"op": op_name, "target": target, "status": "applied"}, None
         return {}, {"code": "invalid_input", "message": f"Unsupported mutation op: {op_name}"}
 
@@ -1571,8 +1560,8 @@ class LocalContinuationRuntime:
 
         kind = "facet"
         try:
-            doc_coll = self._keeper._resolve_doc_collection()
-            tagdoc = self._keeper._document_store.get(doc_coll, f".tag/{k}")
+            doc_coll = self._env.resolve_doc_collection()
+            tagdoc = self._env.get_document(f".tag/{k}", collection=doc_coll)
             tags = tagdoc.tags if tagdoc and isinstance(getattr(tagdoc, "tags", None), dict) else {}
             inverse = str(tags.get("_inverse") or "").strip()
             if inverse:
@@ -1818,7 +1807,7 @@ class LocalContinuationRuntime:
             params = program.get("params") if isinstance(program.get("params"), dict) else {}
             scope_key = params.get("scope_key") if isinstance(params, dict) else None
             candidates = self._candidate_subject_keys(frame_request, evidence)
-            planner_payload = self._keeper.get_planner_priors(
+            planner_payload = self._env.get_planner_priors(
                 scope_key=scope_key if isinstance(scope_key, str) and scope_key else None,
                 candidates=candidates or None,
             )
@@ -2201,7 +2190,7 @@ class LocalContinuationRuntime:
             "reason": "Flow paused awaiting work feedback or decision",
         }
         try:
-            return self._keeper.emit_escalation_note(
+            return self._env.emit_escalation_note(
                 "decision-request",
                 context=context,
             )

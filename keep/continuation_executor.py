@@ -8,12 +8,10 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Callable
+from typing import Any, Callable
 
+from .continuation_env import ContinuationRuntimeEnv
 from .processors import process_summarize
-
-if TYPE_CHECKING:
-    from .api import Keeper
 
 
 @dataclass
@@ -66,11 +64,11 @@ class LocalWorkExecutor:
 
     def __init__(
         self,
-        keeper: "Keeper",
+        env: ContinuationRuntimeEnv,
         *,
         registry: ContinuationExecutorRegistry | None = None,
     ) -> None:
-        self._keeper = keeper
+        self._env = env
         self._registry = registry or DEFAULT_CONTINUATION_EXECUTOR_REGISTRY
 
     @staticmethod
@@ -142,7 +140,7 @@ def _resolve_summarization_provider(
     executor: LocalWorkExecutor, name: str | None, params: dict[str, Any] | None,
 ) -> tuple[Any, str]:
     if name is None and params is None:
-        return executor._keeper._get_summarization_provider(), "summarization.default"
+        return executor._env.get_default_summarization_provider(), "summarization.default"
     if name is None:
         raise ValueError("runner.provider.name is required when provider params are provided")
     from .providers.base import get_registry

@@ -3,6 +3,7 @@
 
 * `keep put --no-version` for volatile items
 
+* simple "set status closed" thing, because we broke it
 
 * edge migration over versioning and move
 

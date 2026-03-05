@@ -561,5 +561,17 @@ class RemoteKeeper:
         """Import is not yet supported for hosted stores."""
         raise NotImplementedError("Export/import not yet supported for hosted stores")
 
+    # -- Continuation API --
+
+    def continue_flow(self, payload: dict[str, Any]) -> dict[str, Any]:
+        raise NotImplementedError(
+            "Remote continuation API is not enabled on this service yet"
+        )
+
+    def continue_run_work(self, flow_id: str, work_id: str) -> dict[str, Any]:
+        raise NotImplementedError(
+            "Remote continuation API is not enabled on this service yet"
+        )
+
     def close(self) -> None:
         self._client.close()

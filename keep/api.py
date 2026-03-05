@@ -227,6 +227,7 @@ from .types import (
     MAX_TAG_VALUE_LENGTH,
 )
 from .continuation import LocalContinuationRuntime
+from .continuation_env import LocalContinuationEnvironment
 
 
 class FindResults(list):
@@ -6534,7 +6535,7 @@ class Keeper:
             if runtime is None:
                 runtime = LocalContinuationRuntime(
                     self._store_path / "continuation.db",
-                    self,
+                    LocalContinuationEnvironment(self),
                 )
                 self._continuation = runtime
         return runtime
