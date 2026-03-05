@@ -506,6 +506,12 @@ def test_continue_publishes_decision_discriminators_and_snapshot(mock_providers,
             "dominant",
             "distinct_topk",
         }
+        assert set(discriminators["tag_profile"].keys()) == {
+            "edge_key_count",
+            "facet_key_count",
+            "edge_keys",
+            "facet_keys",
+        }
         assert "policy_hint" in discriminators
         snapshot = out["state"]["frontier"]["decision_support"]
         assert set(snapshot.keys()) == {"version", "strategy_chosen", "reason_codes", "pivot_ids"}

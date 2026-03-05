@@ -1481,8 +1481,95 @@ class LocalContinuationRuntime:
                 if k and k not in candidates:
                     candidates.append(k)
                 if len(candidates) >= 12:
-                    return candidates
-        return candidates
+                    break
+            if len(candidates) >= 12:
+                break
+
+        tag_kind_cache: dict[str, str] = {}
+        facets: list[str] = []
+        edges: list[str] = []
+        for key in candidates:
+            kind = self._tag_key_kind(key, cache=tag_kind_cache)
+            if kind == "edge":
+                edges.append(key)
+            else:
+                facets.append(key)
+        return facets + edges
+
+    def _tag_key_kind(self, key: str, *, cache: Optional[dict[str, str]] = None) -> str:
+        k = str(key or "").strip()
+        if not k:
+            return "facet"
+        if cache is not None and k in cache:
+            return cache[k]
+
+        kind = "facet"
+        try:
+            doc_coll = self._keeper._resolve_doc_collection()
+            tagdoc = self._keeper._document_store.get(doc_coll, f".tag/{k}")
+            tags = tagdoc.tags if tagdoc and isinstance(getattr(tagdoc, "tags", None), dict) else {}
+            inverse = str(tags.get("_inverse") or "").strip()
+            if inverse:
+                kind = "edge"
+        except Exception:
+            kind = "facet"
+
+        if cache is not None:
+            cache[k] = kind
+        return kind
+
+    @staticmethod
+    def _best_fact_from_counts(
+        counts: dict[tuple[str, str], int], *, total: int,
+    ) -> Optional[str]:
+        if not counts:
+            return None
+        (key, value), count = max(
+            counts.items(),
+            key=lambda item: (item[1], item[0][0], item[0][1]),
+        )
+        if count < 2 or (count / max(total, 1)) < 0.4:
+            return None
+        return f"{key}={value}"
+
+    def _tag_profile(self, evidence: list[dict[str, Any]], *, topk: int) -> dict[str, Any]:
+        window = evidence[:topk]
+        if not window:
+            return {
+                "edge_key_count": 0,
+                "facet_key_count": 0,
+                "edge_keys": [],
+                "facet_keys": [],
+            }
+
+        keyset: set[str] = set()
+        for row in window:
+            if not isinstance(row, dict):
+                continue
+            metadata = row.get("metadata")
+            tags = metadata.get("tags") if isinstance(metadata, dict) else None
+            if not isinstance(tags, dict):
+                continue
+            for key in tags:
+                k = str(key).strip()
+                if not k or k.startswith("_"):
+                    continue
+                keyset.add(k)
+
+        tag_kind_cache: dict[str, str] = {}
+        edge_keys: list[str] = []
+        facet_keys: list[str] = []
+        for key in sorted(keyset):
+            if self._tag_key_kind(key, cache=tag_kind_cache) == "edge":
+                edge_keys.append(key)
+            else:
+                facet_keys.append(key)
+        return {
+            "edge_key_count": len(edge_keys),
+            "facet_key_count": len(facet_keys),
+            "edge_keys": edge_keys,
+            "facet_keys": facet_keys,
+        }
 
     def _query_stats(
         self,
@@ -1688,6 +1775,7 @@ class LocalContinuationRuntime:
             topk=topk,
         )
         lineage = self._lineage_signals(evidence, topk=topk)
+        tag_profile = self._tag_profile(evidence, topk=topk)
         strategy, reason_codes = self._choose_strategy(
             query_stats=query_stats,
             lineage=lineage,
@@ -1710,6 +1798,7 @@ class LocalContinuationRuntime:
             },
             "query_stats": query_stats,
             "lineage": lineage,
+            "tag_profile": tag_profile,
             "policy_hint": {
                 "strategy": strategy,
                 "reason_codes": reason_codes,
@@ -1732,7 +1821,9 @@ class LocalContinuationRuntime:
             return None
         rows = evidence[:10]
         total = max(len(rows), 1)
-        key_value_counts: dict[tuple[str, str], int] = {}
+        facet_counts: dict[tuple[str, str], int] = {}
+        edge_counts: dict[tuple[str, str], int] = {}
+        tag_kind_cache: dict[str, str] = {}
 
         for row in rows:
             if not isinstance(row, dict):
@@ -1745,6 +1836,7 @@ class LocalContinuationRuntime:
                 k = str(key).strip()
                 if not k or k.startswith("_") or k in NON_PIVOT_TAG_KEYS:
                     continue
+                kind = self._tag_key_kind(k, cache=tag_kind_cache)
                 values: list[str] = []
                 if isinstance(raw, list):
                     values = [str(v) for v in raw if isinstance(v, (str, int, float, bool))]
@@ -1753,18 +1845,16 @@ class LocalContinuationRuntime:
                 for val in values[:4]:
                     if not val.strip():
                         continue
-                    key_value_counts[(k, val)] = key_value_counts.get((k, val), 0) + 1
+                    if kind == "edge":
+                        edge_counts[(k, val)] = edge_counts.get((k, val), 0) + 1
+                    else:
+                        facet_counts[(k, val)] = facet_counts.get((k, val), 0) + 1
 
-        if not key_value_counts:
-            return None
-
-        (key, value), count = max(
-            key_value_counts.items(),
-            key=lambda item: (item[1], item[0][0], item[0][1]),
-        )
-        if count < 2 or (count / total) < 0.4:
-            return None
-        return f"{key}={value}"
+        # Facets provide grouping/scoping; edges are fallback pivots if no strong facet.
+        fact = self._best_fact_from_counts(facet_counts, total=total)
+        if fact:
+            return fact
+        return self._best_fact_from_counts(edge_counts, total=total)
 
     def _query_auto_next_frame_request(
         self,
