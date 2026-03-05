@@ -2174,6 +2174,41 @@ class LocalContinuationRuntime:
             return "explore"
         return "tick"
 
+    def _emit_pause_decision_request(
+        self,
+        *,
+        flow_id: str,
+        goal: str,
+        stage: str,
+        requested_work: list[dict[str, Any]],
+    ) -> Optional[str]:
+        requested_kinds = sorted(
+            {
+                str(w.get("kind") or "").strip()
+                for w in requested_work
+                if isinstance(w, dict) and str(w.get("kind") or "").strip()
+            }
+        )
+        event_material = f"{flow_id}|paused|{goal}"
+        event_id = hashlib.sha256(event_material.encode("utf-8")).hexdigest()[:16]
+        context = {
+            "event_id": event_id,
+            "flow_id": flow_id,
+            "goal": goal or "unknown",
+            "stage": stage or "paused",
+            "requested_count": len(requested_work),
+            "requested_kinds": ",".join(requested_kinds) if requested_kinds else "none",
+            "reason": "Flow paused awaiting work feedback or decision",
+        }
+        try:
+            return self._keeper.emit_escalation_note(
+                "decision-request",
+                context=context,
+            )
+        except Exception as exc:
+            logger.warning("Could not emit pause decision request for %s: %s", flow_id, exc)
+            return None
+
     def continue_flow(self, payload: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(payload, dict):
             raise ValueError("continue input must be a JSON object")
@@ -2707,6 +2742,21 @@ class LocalContinuationRuntime:
                         "errors": output.get("errors", []),
                     }
                 )
+                if output.get("status") == "paused":
+                    pause_note_id = self._emit_pause_decision_request(
+                        flow_id=flow.flow_id,
+                        goal=goal,
+                        stage=cursor_stage,
+                        requested_work=request_work,
+                    )
+                    if pause_note_id:
+                        state_obj = output.get("state")
+                        if isinstance(state_obj, dict):
+                            frontier_obj = state_obj.get("frontier")
+                            if not isinstance(frontier_obj, dict):
+                                frontier_obj = {}
+                                state_obj["frontier"] = frontier_obj
+                            frontier_obj["pause_request_id"] = pause_note_id
                 if idempotency_key:
                     self._store_idempotent(str(idempotency_key), request_hash, output)
                 return output

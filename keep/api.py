@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Iterable, Iterator, Optional
 
 logger = logging.getLogger(__name__)
+_ESCALATION_PLACEHOLDER_RE = re.compile(r"\{\{\s*([a-zA-Z0-9_.-]+)\s*\}\}")
 
 
 def _parse_date_param(value: str) -> str:
@@ -1278,6 +1279,109 @@ class Keeper:
                     break
 
         return best_prompt
+
+    @staticmethod
+    def _resolve_template_path_value(context: dict[str, Any], path: str) -> Any:
+        current: Any = context
+        for part in str(path).split("."):
+            if not isinstance(current, dict):
+                return ""
+            if part not in current:
+                return ""
+            current = current.get(part)
+        return current
+
+    def _render_escalation_template_value(self, value: Any, context: dict[str, Any]) -> Any:
+        if isinstance(value, str):
+            def _sub(match: re.Match[str]) -> str:
+                key = match.group(1)
+                resolved = self._resolve_template_path_value(context, key)
+                if resolved is None:
+                    return ""
+                if isinstance(resolved, (dict, list)):
+                    return json.dumps(resolved, ensure_ascii=False)
+                return str(resolved)
+
+            return _ESCALATION_PLACEHOLDER_RE.sub(_sub, value)
+        if isinstance(value, list):
+            return [self._render_escalation_template_value(v, context) for v in value]
+        if isinstance(value, dict):
+            return {
+                str(k): self._render_escalation_template_value(v, context)
+                for k, v in value.items()
+            }
+        return value
+
+    def _resolve_escalation_template(self, template_ref: str) -> dict[str, Any]:
+        template_id = (
+            template_ref
+            if template_ref.startswith(".template/")
+            else f".template/escalation/{template_ref}"
+        )
+        doc = self.get(template_id)
+        if doc is None:
+            raise ValueError(f"Escalation template not found: {template_id}")
+        raw = str(doc.summary or "").strip()
+        if not raw:
+            raise ValueError(f"Escalation template is empty: {template_id}")
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Escalation template is not valid JSON: {template_id}") from exc
+        if not isinstance(parsed, dict):
+            raise ValueError(f"Escalation template must be a JSON object: {template_id}")
+        return parsed
+
+    def emit_escalation_note(
+        self,
+        template_ref: str,
+        *,
+        context: dict[str, Any],
+    ) -> Optional[str]:
+        """Render a store-backed escalation template and upsert the resulting note."""
+        try:
+            template = self._resolve_escalation_template(template_ref)
+            rendered = self._render_escalation_template_value(template, context)
+            if not isinstance(rendered, dict):
+                raise ValueError("Rendered escalation template must be an object")
+            note_id = str(rendered.get("id") or "").strip()
+            content = str(rendered.get("content") or "").strip()
+            if not note_id:
+                raise ValueError("Escalation template missing rendered id")
+            if not content:
+                raise ValueError("Escalation template missing rendered content")
+
+            tags_raw = rendered.get("tags")
+            tags: dict[str, Any] = {}
+            if isinstance(tags_raw, dict):
+                for raw_key, raw_value in tags_raw.items():
+                    key = str(raw_key).strip()
+                    if not key:
+                        continue
+                    if isinstance(raw_value, str):
+                        val = raw_value.strip()
+                        if not val:
+                            continue
+                        tags[key] = val
+                    elif isinstance(raw_value, list):
+                        vals = [str(v).strip() for v in raw_value if str(v).strip()]
+                        if vals:
+                            tags[key] = vals
+                    elif raw_value is not None:
+                        tags[key] = str(raw_value)
+
+            summary_raw = rendered.get("summary")
+            summary = str(summary_raw).strip() if summary_raw is not None else None
+            self.put(
+                content=content,
+                id=note_id,
+                tags=tags or None,
+                summary=summary if summary else None,
+            )
+            return note_id
+        except Exception as exc:
+            logger.warning("Could not emit escalation note using %s: %s", template_ref, exc)
+            return None
 
     def _gather_context(
         self,
@@ -5568,6 +5672,29 @@ class Keeper:
         self._spawn_processor()
         return True
 
+    def _emit_processing_breakdown(
+        self,
+        *,
+        item: Any,
+        error: str,
+        failure_class: str,
+    ) -> Optional[str]:
+        event_material = f"{item.collection}|{item.task_type}|{item.id}"
+        event_id = hashlib.sha256(event_material.encode("utf-8")).hexdigest()[:16]
+        context = {
+            "event_id": event_id,
+            "task_type": str(item.task_type or ""),
+            "item_id": str(item.id or ""),
+            "collection": str(item.collection or ""),
+            "attempt": int(getattr(item, "attempts", 0) or 0),
+            "error": str(error or ""),
+            "failure_class": str(failure_class or "unknown"),
+        }
+        return self.emit_escalation_note(
+            "breakdown",
+            context=context,
+        )
+
     def process_pending(self, limit: int = 10) -> dict:
         """
         Process pending work items (embedding, summaries, OCR, and analysis).
@@ -5600,6 +5727,11 @@ class Keeper:
                 self._pending_queue.abandon(
                     item.id, item.collection, item.task_type,
                     error=f"Exhausted {item.attempts} attempts",
+                )
+                self._emit_processing_breakdown(
+                    item=item,
+                    error=f"Exhausted {item.attempts} attempts",
+                    failure_class="exhausted_attempts",
                 )
                 result["abandoned"] += 1
                 logger.warning(
@@ -5692,6 +5824,11 @@ class Keeper:
                     self._pending_queue.abandon(
                         item.id, item.collection, item.task_type,
                         error=f"Permanent: {error_msg}",
+                    )
+                    self._emit_processing_breakdown(
+                        item=item,
+                        error=error_msg,
+                        failure_class="permanent_failure",
                     )
                     result["abandoned"] = result.get("abandoned", 0) + 1
                     logger.info(

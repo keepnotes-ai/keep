@@ -1092,3 +1092,38 @@ def test_continue_work_result_mutations_are_queued_then_replayed(mock_providers,
         assert item.summary == content[:200]
     finally:
         kp.close()
+
+
+def test_continue_paused_flow_emits_decision_request_note(mock_providers, tmp_path):
+    kp = Keeper(store_path=tmp_path)
+    try:
+        content = "pause escalation content"
+        kp.put(content=content, id="note:pause", summary="placeholder")
+        first = kp.continue_flow(_summarize_request("note:pause", content, request_id="req-pause-1"))
+        assert first["status"] == "waiting_work"
+        current = first
+        for i in range(2, 5):
+            current = kp.continue_flow(
+                {
+                    "request_id": f"req-pause-{i}",
+                    "flow_id": current["flow_id"],
+                    "state_version": current["state_version"],
+                    "feedback": {"work_results": []},
+                }
+            )
+            if current["status"] == "paused":
+                break
+        assert current["status"] == "paused"
+        open_requests = kp.list_items(
+            tags={
+                "act": "request",
+                "status": "open",
+                "type": "decision",
+                "flow_id": current["flow_id"],
+            },
+            limit=20,
+        )
+        assert open_requests
+        assert any(item.id.startswith("esc/decision/") for item in open_requests)
+    finally:
+        kp.close()

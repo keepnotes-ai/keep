@@ -47,41 +47,35 @@ def _get_system_doc_dir() -> Path:
 SYSTEM_DOC_DIR = _get_system_doc_dir()
 
 # Stable IDs for system documents — derived from filename.
-# Convention: strip .md, replace hyphens with /, prefix with dot.
-# e.g. "tag-speaker.md" → ".tag/speaker"
-
-
-# Max hierarchy depth (number of `/` separators) per ID prefix.
-# e.g. ".prompt/agent/session-start" has depth 2 (prompt, agent),
-# so only the first 2 hyphens become slashes.
+# Convention: strip .md, replace leading hyphens with / according to prefix
+# depth, keep remaining hyphens literal, prefix with a dot.
+#
+# Examples:
+#   tag-act-commitment.md                    -> .tag/act/commitment
+#   prompt-agent-session-start.md            -> .prompt/agent/session-start
+#   template-escalation-decision-request.md  -> .template/escalation/decision-request
 _PREFIX_DEPTH = {
-    "tag": 2,      # .tag/act/commitment
-    "meta": 1,     # .meta/todo
-    "prompt": 2,   # .prompt/agent/session-start
+    "tag": 2,
+    "meta": 1,
+    "prompt": 2,
+    "template": 2,
 }
 
 
 def _filename_to_id(filename: str) -> str:
-    """Derive a stable document ID from a system doc filename.
-
-    Convention: strip ``.md``, replace leading hyphens with ``/`` up to
-    the known hierarchy depth for the prefix, then keep remaining hyphens.
-    Prefix with ``.``.
-    """
+    """Derive a stable document ID from a system doc filename."""
     stem = filename.removesuffix(".md")
     parts = stem.split("-")
     depth = _PREFIX_DEPTH.get(parts[0], 0)
-    # Split into hierarchy segments and a remainder
     hierarchy = parts[:depth + 1]
     remainder = parts[depth + 1:]
-    result = "/".join(hierarchy)
+    out = "/".join(hierarchy)
     if remainder:
-        result += "-" + "-".join(remainder)
-    return "." + result
+        out += "-" + "-".join(remainder)
+    return "." + out
 
 
 def _all_system_doc_ids() -> dict[str, str]:
-    """Build filename→id mapping from all .md files on disk."""
     return {
         p.name: _filename_to_id(p.name)
         for p in sorted(SYSTEM_DOC_DIR.glob("*.md"))
@@ -89,7 +83,6 @@ def _all_system_doc_ids() -> dict[str, str]:
     }
 
 
-# Materialised for import compat; rebuilt from disk each time the module loads.
 SYSTEM_DOC_IDS = _all_system_doc_ids()
 
 # Migration renames from old ID prefixes to new stable IDs
@@ -356,9 +349,9 @@ def reset_system_documents(keeper: "Keeper") -> dict:
     doc_coll = keeper._resolve_doc_collection()
 
     for path in SYSTEM_DOC_DIR.glob("*.md"):
-        new_id = SYSTEM_DOC_IDS.get(path.name)
-        if new_id is None:
+        if path.name == "__init__.py":
             continue
+        new_id = _filename_to_id(path.name)
 
         try:
             content, tags = _load_frontmatter(path)

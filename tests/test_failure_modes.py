@@ -529,3 +529,39 @@ class TestConcurrentWriters:
         assert total == 10, f"Expected 10 total, got {total}: {results}"
 
         kp.close()
+
+
+def test_process_pending_permanent_failure_emits_breakdown_note(mock_providers, tmp_path):
+    kp = Keeper(store_path=tmp_path)
+    try:
+        kp.put("ocr failure source", id="note:ocr-fail")
+        kp._pending_queue = PendingSummaryQueue(tmp_path / "pending_escalation.db")
+        kp._config.content_extractor = None
+        kp._content_extractor = None
+        kp._pending_queue.enqueue(
+            "note:ocr-fail",
+            "default",
+            "",
+            task_type="ocr",
+            metadata={
+                "uri": "file:///tmp/nonexistent.pdf",
+                "ocr_pages": [1],
+                "content_type": "application/pdf",
+            },
+        )
+        result = kp.process_pending(limit=10)
+        assert result["abandoned"] >= 1
+
+        breakdowns = kp.list_items(
+            tags={
+                "act": "request",
+                "status": "open",
+                "type": "breakdown",
+                "source_id": "note:ocr-fail",
+            },
+            limit=10,
+        )
+        assert breakdowns
+        assert any(item.id.startswith("esc/breakdown/") for item in breakdowns)
+    finally:
+        kp.close()

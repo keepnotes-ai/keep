@@ -1,14 +1,15 @@
 
-* "reflective callback" queue
+* chatgpt import
 
-* more edge tags for linking "artifacts" with "notes"
+* `keep put --no-version` for volatile items
+
 
 * edge migration over versioning and move
 
 * blog: the unreasonable "as if";
     experience building software with agents as mirrors;
 
-* prompt: select by model (match `_model=`, inject that in)
+* prompt: select by model (match `_model=`, inject that in)?
 
 * openclaw:  message:received / message:sent?
 
@@ -240,3 +241,5 @@ x check for CLI compatibility with windows (WLS should work but no plan to valid
 . benchmark results
 . multi-valued edges outbound, as well as inverse
 . edge-tags: query-time union
+. more edge tags for linking "artifacts" with "notes"
+. "reflective callback" queue
