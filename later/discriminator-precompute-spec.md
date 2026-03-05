@@ -1,88 +1,75 @@
-# Discriminator Precompute (Minimal Spec)
+# Discriminator Precompute Spec (Minimal)
 
-Date: 2026-03-04
-Status: Draft
+Date: 2026-03-05
+Status: Draft (Canonical)
 Related:
-- `later/continuation-api-spec.md`
 - `later/continuation-decision-support-contract.md`
+- `later/continue-wire-contract-v1.md`
 
 ## 1) Goal
 
-Keep precompute tiny and generic:
-1. provide stable planner priors
-2. keep continuation runtime simple
-3. stay domain-agnostic
+Keep precompute tiny, generic, and rebuildable.
 
-Rule:
-- precompute only what is reused across many queries
-- compute everything query-specific at tick time
-
-## 2) Precomputed Priors (Only)
-
+Precompute only stable priors reused across many queries:
 1. `fanout`
-- expected expansion size for a candidate facet/edge.
-
 2. `selectivity`
-- fraction of nodes where that facet/edge is present and useful.
-
 3. `cardinality`
-- distinct-value and top-value counts for facets.
 
-4. `bridgeiness` (optional in phase 1)
-- lightweight cross-partition connectivity score.
+Everything query-specific stays runtime-computed per tick.
 
-No answer-level scoring, no query embeddings, no LLM outputs in precompute.
+## 2) Storage Boundary
 
-## 3) Storage and Semantics
-
-Use two stores with a strict boundary:
+Two-store boundary:
 1. `documents.db`
-   - canonical notes/tags/edges
-   - `planner_outbox` (trigger-written)
+- canonical notes/tags/edges
+- trigger-written `planner_outbox`
+
 2. `planner_stats.db`
-   - materialized priors only (rebuildable)
+- materialized priors only
+- safe to wipe/rebuild
 
 Semantics:
-1. mutation + outbox enqueue are atomic (same `documents.db` transaction)
-2. stats materialization is async/eventual
-3. recompute is idempotent
+- mutation + outbox enqueue are atomic in `documents.db`
+- stats materialization is async/eventual
+- recompute is idempotent
+
+## 3) Generic Keying
+
+Use logical `scope_key` (project/namespace boundary), not embedding provider IDs.
+
+No duplication across model/provider swaps.
 
 ## 4) Update Model
 
-1. Triggers write compact outbox deltas on relevant table changes.
-2. Worker drains outbox in bounded batches and upserts priors.
-3. Full rebuild command can regenerate all priors from canonical data.
+1. triggers enqueue compact deltas to outbox
+2. worker drains in bounded batches
+3. full rebuild regenerates priors from canonical data
 
-No long transactions, no cross-db distributed commit.
+No cross-db distributed transaction.
 
-## 5) Generic Keying
+## 5) Continuation Integration
 
-Use logical scope keys, not embedding-provider collections.
-
-`scope_key` identifies the logical dataset boundary (local project / hosted org+project / optional namespace).
-
-This avoids duplicated priors across embedding model changes.
-
-## 6) Continuation Integration
-
-Continuation reads priors best-effort and publishes them under:
+Continuation reads priors best-effort and publishes:
 - `frame.views.discriminators.planner_priors`
+- `frame.views.discriminators.staleness`
 
-If priors are missing/stale:
-1. set fallback flag
-2. continue with query-time stats only
+If stale/missing:
+- set `fallback_mode=true`
+- continue with query-time signals
 
-No write dependency from continuation to stats maintenance.
+## 6) Semantics Policy
 
-## 7) Phase Plan
+Priors are key-agnostic statistics.
 
-Phase 1:
-1. outbox + drain loop
-2. `fanout`, `selectivity`, `cardinality`
+They MUST NOT encode semantic meaning of specific tags.
+Any behavior difference by key must come from metaschema structure (for example edge/facet class), not hard-coded key names.
 
-Phase 2:
-1. optional `bridgeiness`
-2. tuning thresholds based on observed gain
+## 7) Phase Boundary
 
-Design constraint:
-- if a metric does not change strategy quality measurably, remove it.
+In scope now:
+- fanout/selectivity/cardinality
+- bounded drain + full rebuild
+
+Out of scope now:
+- heavyweight bridgeiness metrics
+- LLM-generated priors

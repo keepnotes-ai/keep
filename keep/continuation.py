@@ -11,7 +11,6 @@ import hashlib
 import json
 import logging
 import math
-import re
 import sqlite3
 import threading
 import uuid
@@ -27,7 +26,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = "continue.v1"
 ALLOWED_FRAME_OPS = {"where", "slice"}
 DECISION_SUPPORT_VERSION = "ds.v1"
 DECISION_STRATEGIES = {"single_lane_refine", "top2_plus_bridge", "explore_more"}
@@ -42,7 +40,6 @@ DEFAULT_DECISION_POLICY = {
     "pivot_topk": 6,
     "max_pivots": 2,
 }
-_BIND_EXPR_RE = re.compile(r"\$\{(params|slots)\.([A-Za-z0-9_]+)(?:\|([^}]*))?\}")
 
 
 @dataclass
@@ -287,23 +284,12 @@ class LocalContinuationRuntime:
             for key in (
                 "goal",
                 "profile",
-                "success_tests",
-                "template_ref",
                 "params",
                 "frame_request",
                 "decision_policy",
                 "steps",
-                "stages",
             )
         )
-
-    @staticmethod
-    def _legacy_input_fields(payload: dict[str, Any]) -> list[str]:
-        legacy = []
-        for key in ("intent", "work_plan", "write"):
-            if key in payload:
-                legacy.append(key)
-        return legacy
 
     def _merge_program(self, state: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
         existing = state.get("program") or {}
@@ -318,14 +304,6 @@ class LocalContinuationRuntime:
             merged["goal"] = str(payload.get("goal") or "").strip().lower()
         if "profile" in payload:
             merged["profile"] = str(payload.get("profile") or "").strip()
-        if "success_tests" in payload:
-            tests = payload.get("success_tests")
-            if isinstance(tests, list):
-                merged["success_tests"] = [str(x) for x in tests if str(x).strip()]
-            else:
-                merged["success_tests"] = []
-        if "template_ref" in payload:
-            merged["template_ref"] = str(payload.get("template_ref") or "").strip()
         if "params" in payload:
             params = payload.get("params")
             merged["params"] = params if isinstance(params, dict) else {}
@@ -338,8 +316,6 @@ class LocalContinuationRuntime:
         if "steps" in payload:
             steps = payload.get("steps")
             merged["steps"] = [dict(step) for step in steps if isinstance(step, dict)] if isinstance(steps, list) else []
-        if "stages" in payload:
-            merged["stages"] = self._normalize_profile_stages(payload.get("stages"))
         merged["goal"] = self._goal_from_program(merged)
         return merged
 
@@ -347,10 +323,6 @@ class LocalContinuationRuntime:
         frame_request = program.get("frame_request")
         if isinstance(frame_request, dict):
             return frame_request
-
-        template_request = program.get("_template_frame_request")
-        if isinstance(template_request, dict):
-            return template_request
 
         params = program.get("params") or {}
         if isinstance(params, dict) and params.get("text"):
@@ -604,62 +576,24 @@ class LocalContinuationRuntime:
             return [step for step in plan if isinstance(step, dict)]
         return []
 
-    @staticmethod
-    def _normalize_profile_stages(stages: Any) -> list[dict[str, Any]]:
-        if not isinstance(stages, list):
-            return []
-        normalized: list[dict[str, Any]] = []
-        for idx, raw in enumerate(stages):
-            if not isinstance(raw, dict):
-                continue
-            name = str(raw.get("name") or raw.get("emits_work") or f"stage_{idx}").strip()
-            if not name:
-                continue
-            stage: dict[str, Any] = {
-                "name": name,
-                "when": raw.get("when"),
-                "terminal": bool(raw.get("terminal")),
-            }
-            emits_work = raw.get("emits_work")
-            if isinstance(emits_work, str) and emits_work.strip():
-                stage["emits_work"] = [emits_work.strip()]
-            elif isinstance(emits_work, list):
-                stage["emits_work"] = [str(k).strip() for k in emits_work if str(k).strip()]
-            for key in (
-                "runner",
-                "input_mode",
-                "input",
-                "output_contract",
-                "apply",
-                "executor",
-                "executor_class",
-                "executor_id",
-                "quality_gates",
-                "escalate_if",
-            ):
-                if key in raw:
-                    stage[key] = raw[key]
-            normalized.append(stage)
-        return normalized
-
-    def _profile_plan_and_stages(
+    def _profile_steps(
         self, program: dict[str, Any],
-    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], Optional[dict[str, str]]]:
+    ) -> tuple[list[dict[str, Any]], Optional[dict[str, str]]]:
         if self._is_query_auto_profile(program):
-            return [], [], None
+            return [], None
 
         profile = str(program.get("profile") or "").strip()
         if not profile:
-            return [], [], None
+            return [], None
 
         profile_id = profile if profile.startswith(".profile/") else f".profile/{profile}"
         doc = self._keeper.get(profile_id)
         if doc is None:
-            return [], [], {"code": "unknown_template", "message": f"Profile not found: {profile_id}"}
+            return [], {"code": "unknown_profile", "message": f"Profile not found: {profile_id}"}
 
         raw = str(doc.summary or "").strip()
         if not raw:
-            return [], [], {"code": "invalid_input", "message": f"Profile is empty: {profile_id}"}
+            return [], {"code": "invalid_input", "message": f"Profile is empty: {profile_id}"}
 
         parsed: Any = None
         try:
@@ -672,7 +606,7 @@ class LocalContinuationRuntime:
             except Exception:
                 parsed = None
         if not isinstance(parsed, dict):
-            return [], [], {"code": "invalid_input", "message": f"Profile must parse to an object: {profile_id}"}
+            return [], {"code": "invalid_input", "message": f"Profile must parse to an object: {profile_id}"}
 
         if not isinstance(program.get("decision_policy"), dict):
             profile_policy = parsed.get("decision_policy")
@@ -682,104 +616,16 @@ class LocalContinuationRuntime:
         steps = parsed.get("steps")
         if isinstance(steps, list):
             normalized_steps = [dict(step) for step in steps if isinstance(step, dict)]
-            return normalized_steps, [], None
+            return normalized_steps, None
+        return [], {"code": "invalid_input", "message": f"Profile missing steps: {profile_id}"}
 
-        stages = self._normalize_profile_stages(parsed.get("stages"))
-        if not stages:
-            return [], [], {"code": "invalid_input", "message": f"Profile missing steps/stages: {profile_id}"}
-
-        compiled: list[dict[str, Any]] = []
-        for stage in stages:
-            kinds = stage.get("emits_work") or []
-            if not isinstance(kinds, list):
-                kinds = []
-            for kind in kinds:
-                step: dict[str, Any] = {"kind": str(kind), "stage": stage.get("name")}
-                when = stage.get("when")
-                if when is not None:
-                    step["when"] = when
-                for key in (
-                    "runner",
-                    "input_mode",
-                    "input",
-                    "output_contract",
-                    "apply",
-                    "executor",
-                    "executor_class",
-                    "executor_id",
-                    "quality_gates",
-                    "escalate_if",
-                ):
-                    if key in stage:
-                        step[key] = stage[key]
-                compiled.append(step)
-        return compiled, stages, None
-
-    def _resolved_plan_and_stages(
+    def _resolved_plan(
         self, program: dict[str, Any],
-    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], Optional[dict[str, str]]]:
+    ) -> tuple[list[dict[str, Any]], Optional[dict[str, str]]]:
         inline = self._program_steps(program)
         if inline:
-            inline_stages = self._normalize_profile_stages(program.get("stages"))
-            return inline, inline_stages, None
-        return self._profile_plan_and_stages(program)
-
-    def _active_process_stage(
-        self,
-        *,
-        flow_id: str,
-        program: dict[str, Any],
-        state: dict[str, Any],
-        stages: list[dict[str, Any]],
-    ) -> Optional[str]:
-        if not stages:
-            return None
-        stage_names = [str(s.get("name") or "") for s in stages]
-        cursor = state.get("cursor") or {}
-        stage = str(cursor.get("stage") or "")
-        if stage in stage_names and self._when_matches(
-            stages[stage_names.index(stage)].get("when"),
-            flow_id=flow_id,
-            program=program,
-        ):
-            return stage
-        for candidate in stages:
-            if self._when_matches(candidate.get("when"), flow_id=flow_id, program=program):
-                return str(candidate.get("name") or "")
-        return None
-
-    def _stage_step_keys(
-        self,
-        *,
-        flow_id: str,
-        program: dict[str, Any],
-        stage_name: str,
-        plan: list[dict[str, Any]],
-    ) -> list[str]:
-        keys: list[str] = []
-        for idx, step in enumerate(plan):
-            if str(step.get("stage") or "") != stage_name:
-                continue
-            if not self._when_matches(step.get("when"), flow_id=flow_id, program=program):
-                continue
-            keys.append(self._work_step_key(step, idx))
-        return keys
-
-    def _next_process_stage(
-        self,
-        *,
-        flow_id: str,
-        program: dict[str, Any],
-        current_stage: str,
-        stages: list[dict[str, Any]],
-    ) -> Optional[str]:
-        stage_names = [str(s.get("name") or "") for s in stages]
-        if current_stage not in stage_names:
-            return None
-        for candidate in stages[stage_names.index(current_stage) + 1:]:
-            if self._when_matches(candidate.get("when"), flow_id=flow_id, program=program):
-                return str(candidate.get("name") or "")
-        return None
+            return inline, None
+        return self._profile_steps(program)
 
     @staticmethod
     def _work_step_key(step: dict[str, Any], idx: int) -> str:
@@ -804,17 +650,6 @@ class LocalContinuationRuntime:
             """
             SELECT 1 FROM continue_work
             WHERE flow_id = ? AND kind = ? AND status = 'completed'
-            LIMIT 1
-            """,
-            (flow_id, key),
-        ).fetchone()
-        return row is not None
-
-    def _has_finished_work_key(self, flow_id: str, key: str) -> bool:
-        row = self._conn.execute(
-            """
-            SELECT 1 FROM continue_work
-            WHERE flow_id = ? AND kind = ? AND status IN ('completed', 'failed')
             LIMIT 1
             """,
             (flow_id, key),
@@ -924,7 +759,7 @@ class LocalContinuationRuntime:
     ) -> tuple[Optional[dict[str, Any]], Optional[dict[str, str]]]:
         kind = self._work_step_key(step, step_idx)
         input_mode = str(step.get("input_mode") or "note_content")
-        output_contract = step.get("output_contract") or {"schema_version": "1.0"}
+        output_contract = step.get("output_contract") or {}
         if not isinstance(output_contract, dict):
             return None, {
                 "code": "invalid_input",
@@ -1002,16 +837,12 @@ class LocalContinuationRuntime:
         program: dict[str, Any],
         *,
         plan: list[dict[str, Any]],
-        active_stage: Optional[str] = None,
     ) -> tuple[list[dict[str, Any]], Optional[dict[str, str]]]:
         if not plan:
             return [], None
 
         created: list[dict[str, Any]] = []
         for idx, step in enumerate(plan):
-            step_stage = str(step.get("stage") or "")
-            if active_stage and step_stage and step_stage != active_stage:
-                continue
             key = self._work_step_key(step, idx)
             if self._has_any_work_key(flow_id, key):
                 continue
@@ -1122,12 +953,6 @@ class LocalContinuationRuntime:
             if "target" not in op and default_target:
                 op["target"] = default_target
 
-            if "from_output" in op:
-                return [], {
-                    "code": "invalid_input",
-                    "message": "from_output is not supported; use explicit $output.* values",
-                }
-
             resolved = {
                 str(k): self._resolve_mutation_value(v, outputs=outputs, work_input=work_input)
                 for k, v in op.items()
@@ -1139,8 +964,24 @@ class LocalContinuationRuntime:
         self, ops: list[dict[str, Any]],
     ) -> tuple[list[dict[str, Any]], Optional[dict[str, str]]]:
         applied: list[dict[str, Any]] = []
+        allowed_fields: dict[str, set[str]] = {
+            "upsert_item": {"op", "target", "content", "tags", "summary"},
+            "set_tags": {"op", "target", "tags"},
+            "set_summary": {"op", "target", "summary"},
+        }
         for op in ops:
             op_name = str(op.get("op") or "")
+            allowed = allowed_fields.get(op_name)
+            if allowed is None:
+                return [], {"code": "invalid_input", "message": f"Unsupported mutation op: {op_name}"}
+            unknown_fields = sorted(str(key) for key in op.keys() if str(key) not in allowed)
+            if unknown_fields:
+                return [], {
+                    "code": "invalid_input",
+                    "message": (
+                        f"Unsupported fields for {op_name}: " + ", ".join(unknown_fields)
+                    ),
+                }
             target = op.get("target")
             if op_name == "upsert_item":
                 if not target:
@@ -1185,8 +1026,6 @@ class LocalContinuationRuntime:
                     result,
                     existing_tags=dict(existing.tags),
                 )
-            else:
-                return [], {"code": "invalid_input", "message": f"Unsupported mutation op: {op_name}"}
             applied.append({"op": op_name, "target": str(target), "status": "applied"})
         return applied, None
 
@@ -1216,15 +1055,10 @@ class LocalContinuationRuntime:
         program: dict[str, Any],
         evidence: list[dict[str, Any]],
         budget_used: Optional[dict[str, Any]] = None,
-        extra_slots: Optional[dict[str, Any]] = None,
         discriminators: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         params = program.get("params") if isinstance(program.get("params"), dict) else {}
         query_text = str(params.get("text") or "")
-        success_tests = []
-        raw_tests = program.get("success_tests")
-        if isinstance(raw_tests, list):
-            success_tests = [str(x) for x in raw_tests if str(x).strip()]
 
         task = "Continue flow"
         if goal:
@@ -1239,12 +1073,7 @@ class LocalContinuationRuntime:
             "goal": goal,
             "stage": stage,
             "query": query_text,
-            "success_tests": success_tests,
-            "template_ref": str(program.get("template_ref") or ""),
         }
-        if isinstance(extra_slots, dict):
-            for key, value in extra_slots.items():
-                slots[str(key)] = value
         return {
             "slots": slots,
             "views": {
@@ -1262,76 +1091,6 @@ class LocalContinuationRuntime:
                 "nodes": self._as_int((budget_used or {}).get("nodes"), 0),
             },
             "status": status,
-        }
-
-    @staticmethod
-    def _render_evidence_block(evidence: list[dict[str, Any]], *, limit: int = 10) -> str:
-        if not evidence:
-            return "No evidence."
-        lines = []
-        for row in evidence[:limit]:
-            score = row.get("score")
-            score_str = f" ({score:.2f})" if isinstance(score, (int, float)) else ""
-            lines.append(f"- {row.get('id', '')}{score_str}  {row.get('summary', '')}")
-        return "\n".join(lines)
-
-    @staticmethod
-    def _split_frontmatter(content: str) -> tuple[dict[str, Any], str]:
-        if not content.startswith("---"):
-            return {}, content
-        parts = content.split("---", 2)
-        if len(parts) < 3:
-            return {}, content
-        body = parts[2].lstrip("\n")
-        try:
-            import yaml
-
-            frontmatter = yaml.safe_load(parts[1])
-        except Exception:
-            return {}, body
-        if not isinstance(frontmatter, dict):
-            return {}, body
-        return frontmatter, body
-
-    def _load_template_spec(self, template_ref: str) -> Optional[dict[str, Any]]:
-        if not template_ref:
-            return None
-        doc = self._keeper.get(template_ref)
-        if doc is None:
-            return None
-        raw = str(doc.summary or "")
-        frontmatter, body = self._split_frontmatter(raw)
-        template_text = body
-        try:
-            from .analyzers import extract_prompt_section
-
-            prompt_section = extract_prompt_section(body)
-            if prompt_section:
-                template_text = prompt_section
-        except Exception:
-            pass
-
-        render_override = frontmatter.get("render")
-        if isinstance(render_override, str) and render_override.strip():
-            template_text = render_override
-        bindings = frontmatter.get("bindings")
-        if not isinstance(bindings, dict):
-            bindings = {}
-
-        template_frame_request = frontmatter.get("frame_request")
-        if not isinstance(template_frame_request, dict):
-            template_frame_request = None
-        template_policy = frontmatter.get("decision_policy")
-        if not isinstance(template_policy, dict):
-            template_policy = None
-        template_stages = self._normalize_profile_stages(frontmatter.get("stages"))
-        return {
-            "template_ref": template_ref,
-            "template_text": template_text,
-            "bindings": dict(bindings),
-            "frame_request": template_frame_request,
-            "decision_policy": template_policy,
-            "stages": template_stages,
         }
 
     @staticmethod
@@ -2058,172 +1817,6 @@ class LocalContinuationRuntime:
         )
         return branches[:3]
 
-    def _resolve_template_expr(
-        self,
-        value: Any,
-        *,
-        program: dict[str, Any],
-        slots: dict[str, Any],
-    ) -> Any:
-        if isinstance(value, str):
-            def _replace(match: re.Match[str]) -> str:
-                scope = match.group(1)
-                key = match.group(2)
-                fallback = match.group(3) or ""
-                if scope == "params":
-                    resolved = self._param_value(program, key)
-                else:
-                    resolved = slots.get(key)
-                if resolved is None:
-                    resolved = fallback
-                if isinstance(resolved, (dict, list)):
-                    return json.dumps(resolved, ensure_ascii=False)
-                return str(resolved)
-
-            return _BIND_EXPR_RE.sub(_replace, value)
-        if isinstance(value, list):
-            return [
-                self._resolve_template_expr(v, program=program, slots=slots)
-                for v in value
-            ]
-        if isinstance(value, dict):
-            return {
-                str(k): self._resolve_template_expr(v, program=program, slots=slots)
-                for k, v in value.items()
-            }
-        return value
-
-    def _resolve_template_binding_value(
-        self,
-        binding_name: str,
-        binding_spec: Any,
-        *,
-        program: dict[str, Any],
-        slots: dict[str, Any],
-    ) -> tuple[Any, Optional[dict[str, str]]]:
-        spec = binding_spec
-        if isinstance(spec, str):
-            spec = {"from": spec}
-        if not isinstance(spec, dict):
-            return "", {
-                "code": "invalid_input",
-                "message": f"Template binding {binding_name} must be an object or string",
-            }
-
-        source = spec.get("from")
-        if source is not None:
-            if not isinstance(source, str):
-                return "", {
-                    "code": "invalid_input",
-                    "message": f"Template binding {binding_name}.from must be a string",
-                }
-            if source.startswith("params."):
-                value = self._param_value(program, source[7:])
-            elif source.startswith("slots."):
-                value = slots.get(source[6:])
-            else:
-                value = source
-            resolved = self._resolve_template_expr(value, program=program, slots=slots)
-            return "" if resolved is None else resolved, None
-
-        frame_request = spec.get("frame_request")
-        if frame_request is not None:
-            if not isinstance(frame_request, dict):
-                return "", {
-                    "code": "invalid_input",
-                    "message": f"Template binding {binding_name}.frame_request must be an object",
-                }
-            resolved_request = self._resolve_template_expr(frame_request, program=program, slots=slots)
-            if not isinstance(resolved_request, dict):
-                return "", {
-                    "code": "invalid_input",
-                    "message": f"Template binding {binding_name}.frame_request resolved to invalid value",
-                }
-            frame_err = self._validate_frame_request(resolved_request)
-            if frame_err is not None:
-                return "", frame_err
-            evidence = self._frame_evidence_for_request(resolved_request)
-            format_mode = str(spec.get("format") or "evidence_block")
-            if format_mode == "evidence":
-                return evidence, None
-            if format_mode == "evidence_ids":
-                return [row.get("id") for row in evidence], None
-            return self._render_evidence_block(evidence), None
-
-        return "", None
-
-    def _resolve_template_slots(
-        self,
-        *,
-        program: dict[str, Any],
-        template_spec: dict[str, Any],
-    ) -> tuple[dict[str, Any], list[dict[str, str]]]:
-        bindings = template_spec.get("bindings") or {}
-        if not isinstance(bindings, dict):
-            return {}, [{
-                "code": "invalid_input",
-                "message": "template bindings must be an object",
-            }]
-        slots: dict[str, Any] = {}
-        errors: list[dict[str, str]] = []
-        for name, spec in bindings.items():
-            value, err = self._resolve_template_binding_value(
-                str(name),
-                spec,
-                program=program,
-                slots=slots,
-            )
-            if err is not None:
-                errors.append(err)
-                continue
-            slots[str(name)] = value
-        return slots, errors
-
-    def _render_template(
-        self,
-        program: dict[str, Any],
-        frame: dict[str, Any],
-        *,
-        template_spec: Optional[dict[str, Any]] = None,
-    ) -> Optional[dict[str, Any]]:
-        template_ref = str(program.get("template_ref") or "")
-        if not template_ref:
-            return None
-
-        if template_spec is None:
-            template_spec = self._load_template_spec(template_ref)
-        if template_spec is None:
-            return None
-        template_text = str(template_spec.get("template_text") or "")
-
-        evidence = frame.get("views", {}).get("evidence") or []
-        evidence_text = self._render_evidence_block(evidence)
-        rendered = template_text
-
-        slots = frame.get("slots") or {}
-        slot_values = {
-            "task": str(frame.get("views", {}).get("task") or ""),
-            "evidence": evidence_text,
-            **{str(k): slots[k] for k in slots},
-        }
-        for key in slot_values:
-            value = slot_values[key]
-            if isinstance(value, (dict, list)):
-                sval = json.dumps(value, ensure_ascii=False)
-            else:
-                sval = str(value)
-            rendered = rendered.replace(f"{{{{{key}}}}}", sval)
-
-        template_hash = hashlib.sha256(template_text.encode("utf-8")).hexdigest()
-        policy_seed = str(getattr(self._keeper._config, "system_docs_hash", "") or "")
-        metaschema_hash = hashlib.sha256(policy_seed.encode("utf-8")).hexdigest()
-        return {
-            "template_ref": template_ref,
-            "template_hash": f"sha256:{template_hash}",
-            "metaschema_hash": f"sha256:{metaschema_hash}",
-            "text": rendered,
-        }
-
     def _apply_inline_write(
         self, state: dict[str, Any], program: dict[str, Any],
     ) -> tuple[list[dict[str, Any]], Optional[dict[str, str]]]:
@@ -2277,8 +1870,6 @@ class LocalContinuationRuntime:
     def continue_flow(self, payload: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(payload, dict):
             raise ValueError("continue input must be a JSON object")
-        if payload.get("schema_version") != SCHEMA_VERSION:
-            raise ValueError(f"schema_version must be {SCHEMA_VERSION!r}")
 
         request_id = str(payload.get("request_id") or uuid.uuid4())
         idempotency_key = payload.get("idempotency_key")
@@ -2318,7 +1909,6 @@ class LocalContinuationRuntime:
                     note_id = self._infer_note_id(program) if program else None
                     evidence = self._frame_evidence(program) if program else []
                     return {
-                        "schema_version": SCHEMA_VERSION,
                         "request_id": request_id,
                         "idempotency_key": idempotency_key,
                         "flow_id": flow.flow_id,
@@ -2350,25 +1940,11 @@ class LocalContinuationRuntime:
                 state = json.loads(flow.state_json)
                 errors: list[dict[str, str]] = []
                 applied_ops: list[dict[str, Any]] = []
-                template_spec: Optional[dict[str, Any]] = None
-                template_slots: dict[str, Any] = {}
                 resolved_plan: list[dict[str, Any]] = []
-                resolved_stages: list[dict[str, Any]] = []
-                process_stage: Optional[str] = None
                 decision_discriminators = self._empty_discriminators()
                 decision_snapshot: Optional[dict[str, Any]] = None
                 used_auto_query_pending = False
                 used_auto_query_branch_id: Optional[str] = None
-                legacy_fields = self._legacy_input_fields(payload)
-                if legacy_fields:
-                    errors.append({
-                        "code": "invalid_input",
-                        "message": (
-                            "Unsupported legacy continuation fields: "
-                            + ", ".join(sorted(legacy_fields))
-                            + ". Use top-level goal/profile/steps."
-                        ),
-                    })
                 program = self._merge_program(state, payload)
                 decision_override, decision_override_err = self._decision_override_from_payload(payload)
                 if decision_override_err is not None:
@@ -2405,7 +1981,7 @@ class LocalContinuationRuntime:
                 if is_new_flow and not self._program_has_inputs(payload):
                     errors.append({
                         "code": "missing_required_field",
-                        "message": "New flow requires template_ref or top-level flow fields",
+                        "message": "New flow requires top-level flow fields",
                     })
                 if not program:
                     errors.append({
@@ -2414,35 +1990,7 @@ class LocalContinuationRuntime:
                     })
                 else:
                     program["goal"] = self._goal_from_program(program)
-                    template_ref = str(program.get("template_ref") or "")
-                    if template_ref:
-                        template_spec = self._load_template_spec(template_ref)
-                    if template_ref and template_spec is None:
-                        errors.append({
-                            "code": "unknown_template",
-                            "message": f"Template not found: {template_ref}",
-                        })
-                    if template_spec is not None:
-                        template_frame_request = template_spec.get("frame_request")
-                        if (
-                            isinstance(template_frame_request, dict)
-                            and not isinstance(program.get("frame_request"), dict)
-                        ):
-                            program["_template_frame_request"] = template_frame_request
-                        template_policy = template_spec.get("decision_policy")
-                        if (
-                            isinstance(template_policy, dict)
-                            and not isinstance(program.get("decision_policy"), dict)
-                        ):
-                            program["decision_policy"] = template_policy
-                        template_stages = template_spec.get("stages")
-                        if (
-                            isinstance(template_stages, list)
-                            and template_stages
-                            and not isinstance(program.get("stages"), list)
-                        ):
-                            program["stages"] = template_stages
-                    resolved_plan, resolved_stages, plan_err = self._resolved_plan_and_stages(program)
+                    resolved_plan, plan_err = self._resolved_plan(program)
                     if plan_err is not None:
                         errors.append(plan_err)
                     frame_request = self._effective_frame_request(program)
@@ -2477,26 +2025,10 @@ class LocalContinuationRuntime:
                 request_work: list[dict[str, Any]] = []
                 goal = self._goal_from_program(program) if program else ""
                 note_id = self._infer_note_id(program) if program else None
-                if program and resolved_stages and not errors:
-                    process_stage = self._active_process_stage(
-                        flow_id=flow.flow_id,
-                        program=program,
-                        state=state,
-                        stages=resolved_stages,
-                    )
                 previous_evidence_ids = state.get("frontier", {}).get("evidence_ids") or []
                 if not isinstance(previous_evidence_ids, list):
                     previous_evidence_ids = []
                 evidence = self._frame_evidence(program) if program and not errors else []
-                if program and template_spec is not None and not errors:
-                    slots, slot_errors = self._resolve_template_slots(
-                        program=program,
-                        template_spec=template_spec,
-                    )
-                    if slot_errors:
-                        errors.extend(slot_errors)
-                    else:
-                        template_slots = slots
                 if program and not errors:
                     write_ops, write_err = self._apply_inline_write(state, program)
                     if write_err is not None:
@@ -2518,7 +2050,6 @@ class LocalContinuationRuntime:
                         flow.flow_id,
                         program,
                         plan=resolved_plan,
-                        active_stage=process_stage,
                     )
                     if err:
                         errors.append(err)
@@ -2533,32 +2064,6 @@ class LocalContinuationRuntime:
                     status = "failed"
                 elif requested:
                     status = "waiting_work"
-                if (
-                    status == "done"
-                    and not errors
-                    and not requested
-                    and process_stage
-                    and resolved_stages
-                ):
-                    stage_keys = self._stage_step_keys(
-                        flow_id=flow.flow_id,
-                        program=program,
-                        stage_name=process_stage,
-                        plan=resolved_plan,
-                    )
-                    stage_complete = all(
-                        self._has_finished_work_key(flow.flow_id, key)
-                        for key in stage_keys
-                    )
-                    if stage_complete:
-                        next_stage = self._next_process_stage(
-                            flow_id=flow.flow_id,
-                            program=program,
-                            current_stage=process_stage,
-                            stages=resolved_stages,
-                        )
-                        if next_stage is not None:
-                            process_stage = next_stage
 
                 termination = state.setdefault("termination", {})
                 idle_ticks = self._as_int(termination.get("idle_ticks"), 0)
@@ -2578,7 +2083,7 @@ class LocalContinuationRuntime:
                     errors=bool(errors),
                     has_evidence=bool(evidence),
                 )
-                cursor_stage = process_stage or stage
+                cursor_stage = stage
 
                 next_step = int((state.get("cursor") or {}).get("step", 0)) + 1
                 state["cursor"] = {"step": next_step, "stage": cursor_stage, "phase": stage}
@@ -2725,14 +2230,8 @@ class LocalContinuationRuntime:
                     program,
                     evidence,
                     budget_used,
-                    template_slots,
                     decision_discriminators,
                 )
-                rendered = None
-                if not errors:
-                    rendered = self._render_template(
-                        program, frame, template_spec=template_spec,
-                    ) if program else None
 
                 new_state_version = flow.state_version + 1
                 state_json = json.dumps(state, ensure_ascii=False)
@@ -2751,7 +2250,6 @@ class LocalContinuationRuntime:
                     "errors": errors,
                     "request_id": request_id,
                     "goal": goal,
-                    "template_ref": str(program.get("template_ref") or "") if program else "",
                 }
                 self._conn.execute(
                     """
@@ -2767,7 +2265,6 @@ class LocalContinuationRuntime:
                 )
 
                 output = {
-                    "schema_version": SCHEMA_VERSION,
                     "request_id": request_id,
                     "idempotency_key": idempotency_key,
                     "flow_id": flow.flow_id,
@@ -2793,8 +2290,6 @@ class LocalContinuationRuntime:
                         }
                     ),
                 }
-                if rendered is not None:
-                    output["rendered"] = rendered
                 if idempotency_key:
                     self._store_idempotent(str(idempotency_key), request_hash, output)
                 self._conn.commit()

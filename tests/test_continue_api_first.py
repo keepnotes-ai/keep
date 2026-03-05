@@ -5,7 +5,6 @@ from keep.api import Keeper
 
 def _summarize_request(note_id: str, content: str, *, request_id: str, idempotency_key: str | None = None) -> dict:
     payload = {
-        "schema_version": "continue.v1",
         "request_id": request_id,
         "goal": "summarize",
         "params": {"id": note_id, "content": content},
@@ -14,7 +13,7 @@ def _summarize_request(note_id: str, content: str, *, request_id: str, idempoten
                 "kind": "summarize",
                 "runner": {"type": "provider.summarize"},
                 "input_mode": "note_content",
-                "output_contract": {"must_return": ["summary"], "schema_version": "1.0"},
+                "output_contract": {"must_return": ["summary"]},
                 "apply": {
                     "ops": [
                         {"op": "set_summary", "summary": "$output.summary"},
@@ -50,7 +49,6 @@ def test_continue_summarize_round_trip(mock_providers, tmp_path):
         work_result = kp.continue_run_work(first["flow_id"], work_id)
         second = kp.continue_flow(
             {
-                "schema_version": "continue.v1",
                 "request_id": "req-2",
                 "flow_id": first["flow_id"],
                 "state_version": first["state_version"],
@@ -106,7 +104,6 @@ def test_continue_state_conflict_returns_error(mock_providers, tmp_path):
         )
         stale = kp.continue_flow(
             {
-                "schema_version": "continue.v1",
                 "request_id": "req-2",
                 "flow_id": first["flow_id"],
                 "state_version": first["state_version"] - 1,
@@ -126,7 +123,6 @@ def test_continue_frame_request_id_seed(mock_providers, tmp_path):
         kp.put(content="frame content", id="note:frame", summary="frame summary")
         out = kp.continue_flow(
             {
-                "schema_version": "continue.v1",
                 "request_id": "req-frame-1",
                 "goal": "query",
                 "frame_request": {
@@ -144,79 +140,12 @@ def test_continue_frame_request_id_seed(mock_providers, tmp_path):
         kp.close()
 
 
-def test_continue_template_query_renders_text(mock_providers, tmp_path):
-    kp = Keeper(store_path=tmp_path)
-    try:
-        kp.put(content="auth migration notes", id="note:q1", summary="auth migration notes")
-        out = kp.continue_flow(
-            {
-                "schema_version": "continue.v1",
-                "request_id": "req-template-1",
-                "template_ref": ".prompt/agent/query",
-                "params": {"text": "auth migration"},
-                "feedback": {"work_results": []},
-            }
-        )
-        assert out["status"] == "done"
-        assert "rendered" in out
-        assert out["rendered"]["template_ref"] == ".prompt/agent/query"
-        assert isinstance(out["rendered"]["text"], str)
-        assert len(out["rendered"]["text"]) > 0
-    finally:
-        kp.close()
-
-
-def test_continue_template_bindings_compile_and_render(mock_providers, tmp_path):
-    kp = Keeper(store_path=tmp_path)
-    try:
-        kp.put(content="binding context note", id="note:bind-1", summary="binding context note")
-        template = """---
-bindings:
-  question:
-    from: params.text
-  context_block:
-    frame_request:
-      seed:
-        mode: query
-        value: "${params.text}"
-      pipeline:
-        - op: slice
-          args:
-            limit: 2
-render: |
-  Q: {{question}}
-  C:
-  {{context_block}}
----
-# .prompt/agent/bind-demo
-"""
-        kp.put(content=template, id=".prompt/agent/bind-demo", summary=template)
-        out = kp.continue_flow(
-            {
-                "schema_version": "continue.v1",
-                "request_id": "req-bind-1",
-                "template_ref": ".prompt/agent/bind-demo",
-                "params": {"text": "binding context"},
-                "feedback": {"work_results": []},
-            }
-        )
-        assert out["status"] == "done"
-        assert "rendered" in out
-        assert "Q: binding context" in out["rendered"]["text"]
-        assert "binding context note" in out["rendered"]["text"]
-        assert out["frame"]["slots"]["question"] == "binding context"
-        assert "context_block" in out["frame"]["slots"]
-    finally:
-        kp.close()
-
-
 def test_continue_program_persists_across_ticks(mock_providers, tmp_path):
     kp = Keeper(store_path=tmp_path)
     try:
         kp.put(content="release plan and risks", id="note:persist", summary="release plan and risks")
         first = kp.continue_flow(
             {
-                "schema_version": "continue.v1",
                 "request_id": "req-persist-1",
                 "goal": "query",
                 "frame_request": {
@@ -228,7 +157,6 @@ def test_continue_program_persists_across_ticks(mock_providers, tmp_path):
         )
         second = kp.continue_flow(
             {
-                "schema_version": "continue.v1",
                 "request_id": "req-persist-2",
                 "flow_id": first["flow_id"],
                 "state_version": first["state_version"],
@@ -250,7 +178,6 @@ def test_continue_query_auto_profile_schedules_and_consumes_refine(mock_provider
 
         first = kp.continue_flow(
             {
-                "schema_version": "continue.v1",
                 "request_id": "req-auto-1",
                 "goal": "query",
                 "profile": "query.auto",
@@ -274,7 +201,6 @@ def test_continue_query_auto_profile_schedules_and_consumes_refine(mock_provider
         for i in range(1, 6):
             current = kp.continue_flow(
                 {
-                    "schema_version": "continue.v1",
                     "request_id": f"req-auto-2-{i}",
                     "flow_id": current["flow_id"],
                     "state_version": current["state_version"],
@@ -301,7 +227,6 @@ def test_continue_query_auto_profile_single_lane_refine_adds_where(mock_provider
 
         first = kp.continue_flow(
             {
-                "schema_version": "continue.v1",
                 "request_id": "req-auto-lane-1",
                 "goal": "query",
                 "profile": "query.auto",
@@ -355,7 +280,6 @@ def test_continue_query_auto_profile_top2_plus_bridge_runs_branch_plan(mock_prov
 
         first = kp.continue_flow(
             {
-                "schema_version": "continue.v1",
                 "request_id": "req-auto-bridge-1",
                 "goal": "query",
                 "profile": "query.auto",
@@ -384,7 +308,6 @@ def test_continue_query_auto_profile_top2_plus_bridge_runs_branch_plan(mock_prov
         for i in range(1, 6):
             current = kp.continue_flow(
                 {
-                    "schema_version": "continue.v1",
                     "request_id": f"req-auto-bridge-next-{i}",
                     "flow_id": current["flow_id"],
                     "state_version": current["state_version"],
@@ -401,71 +324,11 @@ def test_continue_query_auto_profile_top2_plus_bridge_runs_branch_plan(mock_prov
         kp.close()
 
 
-def test_continue_profile_stages_drive_process_progression(mock_providers, tmp_path):
-    kp = Keeper(store_path=tmp_path)
-    try:
-        content = "stage progression sample"
-        kp.put(content=content, id="note:stages", summary=content)
-        profile_doc = json.dumps(
-            {
-                "stages": [
-                    {
-                        "name": "classify",
-                        "emits_work": "classify_step",
-                        "runner": {"type": "echo", "outputs": {"labels": {"phase": "classified"}}},
-                        "input_mode": "note_content",
-                        "output_contract": {"must_return": ["labels"], "schema_version": "1.0"},
-                        "apply": {"ops": [{"op": "set_tags", "tags": "$output.labels"}]},
-                    },
-                    {
-                        "name": "finalize",
-                        "terminal": True,
-                    },
-                ]
-            }
-        )
-        kp.put(content=profile_doc, id=".profile/stage.demo", summary=profile_doc)
-
-        first = kp.continue_flow(
-            {
-                "schema_version": "continue.v1",
-                "request_id": "req-stage-1",
-                "goal": "pipeline",
-                "profile": "stage.demo",
-                "params": {"id": "note:stages", "content": content},
-                "feedback": {"work_results": []},
-            }
-        )
-        assert first["status"] == "waiting_work"
-        assert first["state"]["cursor"]["stage"] == "classify"
-        assert first["requests"]["work"][0]["kind"] == "classify_step"
-
-        work_result = kp.continue_run_work(first["flow_id"], first["requests"]["work"][0]["work_id"])
-        second = kp.continue_flow(
-            {
-                "schema_version": "continue.v1",
-                "request_id": "req-stage-2",
-                "flow_id": first["flow_id"],
-                "state_version": first["state_version"],
-                "feedback": {"work_results": [work_result]},
-            }
-        )
-        assert second["status"] == "done"
-        assert second["state"]["cursor"]["stage"] == "finalize"
-        assert second["state"]["cursor"]["phase"] == "reconcile"
-        tagged = kp.get("note:stages")
-        assert tagged is not None
-        assert tagged.tags.get("phase") == "classified"
-    finally:
-        kp.close()
-
-
 def test_continue_invalid_frame_operator_fails(mock_providers, tmp_path):
     kp = Keeper(store_path=tmp_path)
     try:
         out = kp.continue_flow(
             {
-                "schema_version": "continue.v1",
                 "request_id": "req-op-1",
                 "goal": "query",
                 "frame_request": {
@@ -488,7 +351,6 @@ def test_continue_frame_evidence_includes_basic_metadata(mock_providers, tmp_pat
         kp.put(content="meta evidence", id="note:meta", tags={"topic": "continuations"}, summary="meta evidence")
         out = kp.continue_flow(
             {
-                "schema_version": "continue.v1",
                 "request_id": "req-meta-1",
                 "goal": "query",
                 "frame_request": {
@@ -515,7 +377,6 @@ def test_continue_frame_evidence_includes_rich_metadata(mock_providers, tmp_path
         kp.put(content="rich metadata sample", id="note:meta-rich", summary="rich metadata sample")
         out = kp.continue_flow(
             {
-                "schema_version": "continue.v1",
                 "request_id": "req-meta-rich-1",
                 "goal": "query",
                 "frame_request": {
@@ -548,7 +409,6 @@ def test_continue_publishes_decision_discriminators_and_snapshot(mock_providers,
         )
         out = kp.continue_flow(
             {
-                "schema_version": "continue.v1",
                 "request_id": "req-decision-1",
                 "goal": "query",
                 "frame_request": {
@@ -604,7 +464,6 @@ def test_continue_decision_override_controls_strategy(mock_providers, tmp_path):
         kp.put(content="override strategy", id="note:override", summary="override strategy")
         out = kp.continue_flow(
             {
-                "schema_version": "continue.v1",
                 "request_id": "req-decision-override-1",
                 "goal": "query",
                 "frame_request": {
@@ -635,7 +494,6 @@ def test_continue_custom_steps_applies_tags(mock_providers, tmp_path):
         kp.put(content=content, id="note:classify", summary=content)
         first = kp.continue_flow(
             {
-                "schema_version": "continue.v1",
                 "request_id": "req-classify-1",
                 "goal": "classify",
                 "params": {"id": "note:classify", "content": content},
@@ -652,7 +510,7 @@ def test_continue_custom_steps_applies_tags(mock_providers, tmp_path):
                             },
                         },
                         "input_mode": "note_content",
-                        "output_contract": {"must_return": ["labels"], "schema_version": "1.0"},
+                        "output_contract": {"must_return": ["labels"]},
                         "apply": {
                             "ops": [
                                 {"op": "set_tags", "tags": "$output.labels"},
@@ -672,7 +530,6 @@ def test_continue_custom_steps_applies_tags(mock_providers, tmp_path):
         )
         second = kp.continue_flow(
             {
-                "schema_version": "continue.v1",
                 "request_id": "req-classify-2",
                 "flow_id": first["flow_id"],
                 "state_version": first["state_version"],
@@ -695,7 +552,6 @@ def test_continue_work_request_includes_quality_gates_and_escalation(mock_provid
         kp.put(content=content, id="note:quality", summary=content)
         out = kp.continue_flow(
             {
-                "schema_version": "continue.v1",
                 "request_id": "req-quality-1",
                 "goal": "pipeline",
                 "params": {"id": "note:quality", "content": content},
@@ -704,7 +560,7 @@ def test_continue_work_request_includes_quality_gates_and_escalation(mock_provid
                         "kind": "quality_step",
                         "runner": {"type": "echo", "outputs": {"ok": True}},
                         "input_mode": "note_content",
-                        "output_contract": {"must_return": ["ok"], "schema_version": "1.0"},
+                        "output_contract": {"must_return": ["ok"]},
                         "quality_gates": {"min_confidence": 0.7, "citation_required": True},
                         "escalate_if": ["low_confidence", "missing_citation"],
                     }
@@ -728,7 +584,6 @@ def test_continue_set_tags_preserves_list_values(mock_providers, tmp_path):
         kp.put(content=content, id="note:list-tags", summary=content)
         first = kp.continue_flow(
             {
-                "schema_version": "continue.v1",
                 "request_id": "req-list-tags-1",
                 "goal": "classify",
                 "params": {"id": "note:list-tags", "content": content},
@@ -740,7 +595,7 @@ def test_continue_set_tags_preserves_list_values(mock_providers, tmp_path):
                             "outputs": {"labels": {"topic": ["continuations", "api"]}},
                         },
                         "input_mode": "note_content",
-                        "output_contract": {"must_return": ["labels"], "schema_version": "1.0"},
+                        "output_contract": {"must_return": ["labels"]},
                         "apply": {"ops": [{"op": "set_tags", "tags": "$output.labels"}]},
                     }
                 ],
@@ -752,7 +607,6 @@ def test_continue_set_tags_preserves_list_values(mock_providers, tmp_path):
         )
         second = kp.continue_flow(
             {
-                "schema_version": "continue.v1",
                 "request_id": "req-list-tags-2",
                 "flow_id": first["flow_id"],
                 "state_version": first["state_version"],
@@ -772,7 +626,6 @@ def test_continue_inline_write_single_tick(mock_providers, tmp_path):
     try:
         out = kp.continue_flow(
             {
-                "schema_version": "continue.v1",
                 "request_id": "req-write-1",
                 "goal": "write",
                 "params": {"id": "note:write", "content": "hello", "tags": {"topic": "demo"}},
@@ -796,7 +649,6 @@ def test_continue_multi_step_plan_orders_work(mock_providers, tmp_path):
         kp.put(content=content, id="note:ordered", summary="placeholder")
         first = kp.continue_flow(
             {
-                "schema_version": "continue.v1",
                 "request_id": "req-order-1",
                 "goal": "pipeline",
                 "params": {
@@ -811,7 +663,7 @@ def test_continue_multi_step_plan_orders_work(mock_providers, tmp_path):
                             "outputs": {"labels": {"doc_phase": "classified"}},
                         },
                         "input_mode": "note_content",
-                        "output_contract": {"must_return": ["labels"], "schema_version": "1.0"},
+                        "output_contract": {"must_return": ["labels"]},
                         "apply": {
                             "ops": [
                                 {"op": "set_tags", "tags": "$output.labels"},
@@ -823,7 +675,7 @@ def test_continue_multi_step_plan_orders_work(mock_providers, tmp_path):
                         "when": {"work_completed": "classify"},
                         "runner": {"type": "provider.summarize"},
                         "input_mode": "note_content",
-                        "output_contract": {"must_return": ["summary"], "schema_version": "1.0"},
+                        "output_contract": {"must_return": ["summary"]},
                         "apply": {
                             "ops": [
                                 {"op": "set_summary", "summary": "$output.summary"},
@@ -842,7 +694,6 @@ def test_continue_multi_step_plan_orders_work(mock_providers, tmp_path):
         )
         second = kp.continue_flow(
             {
-                "schema_version": "continue.v1",
                 "request_id": "req-order-2",
                 "flow_id": first["flow_id"],
                 "state_version": first["state_version"],
@@ -856,7 +707,6 @@ def test_continue_multi_step_plan_orders_work(mock_providers, tmp_path):
 
         third = kp.continue_flow(
             {
-                "schema_version": "continue.v1",
                 "request_id": "req-order-3",
                 "flow_id": second["flow_id"],
                 "state_version": second["state_version"],
@@ -881,7 +731,7 @@ def test_continue_profile_steps_are_loaded(mock_providers, tmp_path):
                         "kind": "profile_step",
                         "runner": {"type": "echo", "outputs": {"labels": {"profile_loaded": "yes"}}},
                         "input_mode": "note_content",
-                        "output_contract": {"must_return": ["labels"], "schema_version": "1.0"},
+                        "output_contract": {"must_return": ["labels"]},
                         "apply": {"ops": [{"op": "set_tags", "tags": "$output.labels"}]},
                     }
                 ]
@@ -891,7 +741,6 @@ def test_continue_profile_steps_are_loaded(mock_providers, tmp_path):
 
         first = kp.continue_flow(
             {
-                "schema_version": "continue.v1",
                 "request_id": "req-profile-1",
                 "goal": "pipeline",
                 "profile": "demo.profile",
@@ -912,7 +761,6 @@ def test_continue_parallel_work_emission(mock_providers, tmp_path):
         kp.put(content=content, id="note:parallel", summary=content)
         first = kp.continue_flow(
             {
-                "schema_version": "continue.v1",
                 "request_id": "req-parallel-1",
                 "goal": "pipeline",
                 "params": {"id": "note:parallel", "content": content},
@@ -921,14 +769,14 @@ def test_continue_parallel_work_emission(mock_providers, tmp_path):
                         "kind": "a",
                         "runner": {"type": "echo", "outputs": {"labels": {"a": "1"}}},
                         "input_mode": "note_content",
-                        "output_contract": {"must_return": ["labels"], "schema_version": "1.0"},
+                        "output_contract": {"must_return": ["labels"]},
                         "apply": {"ops": [{"op": "set_tags", "tags": "$output.labels"}]},
                     },
                     {
                         "kind": "b",
                         "runner": {"type": "echo", "outputs": {"labels": {"b": "1"}}},
                         "input_mode": "note_content",
-                        "output_contract": {"must_return": ["labels"], "schema_version": "1.0"},
+                        "output_contract": {"must_return": ["labels"]},
                         "apply": {"ops": [{"op": "set_tags", "tags": "$output.labels"}]},
                     },
                 ],
@@ -949,7 +797,6 @@ def test_continue_params_steps_is_ignored(mock_providers, tmp_path):
         kp.put(content=content, id="note:param-plan", summary=content)
         out = kp.continue_flow(
             {
-                "schema_version": "continue.v1",
                 "request_id": "req-param-plan-1",
                 "goal": "pipeline",
                 "params": {
@@ -960,7 +807,7 @@ def test_continue_params_steps_is_ignored(mock_providers, tmp_path):
                             "kind": "should_not_emit",
                             "runner": {"type": "echo", "outputs": {"labels": {"x": "1"}}},
                             "input_mode": "note_content",
-                            "output_contract": {"must_return": ["labels"], "schema_version": "1.0"},
+                            "output_contract": {"must_return": ["labels"]},
                             "apply": {"ops": [{"op": "set_tags", "tags": "$output.labels"}]},
                         }
                     ],
@@ -974,44 +821,23 @@ def test_continue_params_steps_is_ignored(mock_providers, tmp_path):
         kp.close()
 
 
-def test_continue_rejects_legacy_program_fields(mock_providers, tmp_path):
+def test_continue_rejects_unsupported_mutation_fields(mock_providers, tmp_path):
     kp = Keeper(store_path=tmp_path)
     try:
-        out = kp.continue_flow(
-            {
-                "schema_version": "continue.v1",
-                "request_id": "req-legacy-1",
-                "intent": {"goal": "query"},
-                "frame_request": {"seed": {"mode": "query", "value": "anything"}},
-                "feedback": {"work_results": []},
-            }
-        )
-        assert out["status"] == "failed"
-        assert out["errors"]
-        assert out["errors"][0]["code"] == "invalid_input"
-        assert "Unsupported legacy continuation fields" in out["errors"][0]["message"]
-    finally:
-        kp.close()
-
-
-def test_continue_rejects_apply_from_output(mock_providers, tmp_path):
-    kp = Keeper(store_path=tmp_path)
-    try:
-        content = "from_output compatibility is removed"
-        kp.put(content=content, id="note:from-output", summary=content)
+        content = "unsupported mutation field example"
+        kp.put(content=content, id="note:mut-op", summary=content)
         first = kp.continue_flow(
             {
-                "schema_version": "continue.v1",
-                "request_id": "req-from-output-1",
+                "request_id": "req-mut-op-1",
                 "goal": "classify",
-                "params": {"id": "note:from-output", "content": content},
+                "params": {"id": "note:mut-op", "content": content},
                 "steps": [
                     {
                         "kind": "classify",
                         "runner": {"type": "echo", "outputs": {"labels": {"tagged": "yes"}}},
                         "input_mode": "note_content",
-                        "output_contract": {"must_return": ["labels"], "schema_version": "1.0"},
-                        "apply": {"ops": [{"op": "set_tags", "from_output": "labels"}]},
+                        "output_contract": {"must_return": ["labels"]},
+                        "apply": {"ops": [{"op": "set_tags", "tags": "$output.labels", "unexpected": "x"}]},
                     }
                 ],
                 "feedback": {"work_results": []},
@@ -1020,8 +846,7 @@ def test_continue_rejects_apply_from_output(mock_providers, tmp_path):
         result = kp.continue_run_work(first["flow_id"], first["requests"]["work"][0]["work_id"])
         second = kp.continue_flow(
             {
-                "schema_version": "continue.v1",
-                "request_id": "req-from-output-2",
+                "request_id": "req-mut-op-2",
                 "flow_id": first["flow_id"],
                 "state_version": first["state_version"],
                 "feedback": {"work_results": [result]},
@@ -1030,6 +855,6 @@ def test_continue_rejects_apply_from_output(mock_providers, tmp_path):
         assert second["status"] == "failed"
         assert second["errors"]
         assert second["errors"][0]["code"] == "invalid_input"
-        assert "from_output is not supported" in second["errors"][0]["message"]
+        assert "Unsupported fields for set_tags" in second["errors"][0]["message"]
     finally:
         kp.close()

@@ -1,191 +1,76 @@
-# Simplified Logical Model and Continuation Design
+# Simplified Model and Continuation Design
 
-Date: 2026-03-03
+Date: 2026-03-05
+Status: Canonical
 Related:
-- `later/continuation-api-spec.md`
-- `later/continuation-machine-architecture.md`
+- `later/continue-wire-contract-v1.md`
+- `later/continuation-decision-support-contract.md`
 
-## 1) Simplified Logical Model (Clear Core)
+## 1) Core Model
 
-## Principle
+Memory is:
+- nodes
+- facts about nodes
 
-Treat memory as **nodes + facts**.
+Everything is a node flavor:
+- note
+- version node
+- part node
+- tag doc
+- prompt doc
+- meta doc
 
-- A note, version, part, tag-doc, prompt-doc, meta-doc, and entity node are all just `Node`.
-- Tags are all just `Fact` assertions.
-- Some facts are edge-like because their value is an ID and the key is configured as relational.
+Tags are facts. Some facts are directional edges when metaschema says so.
 
-## Minimal Entities
+## 2) Three Relationship Channels
 
-```mermaid
-erDiagram
-    NODE ||--o{ FACT : has
-    NODE ||--o{ FACT : is_value_node_for
+1. Structural lineage (built-in)
+- version-string lineage
+- part-string lineage
+- treated in parallel by decision signals
 
-    NODE {
-      string id PK
-      string summary
-      json attrs
-      datetime created_at
-      datetime updated_at
-      datetime accessed_at
-    }
+2. Edge tags (metaschema-defined)
+- directional links from `_inverse` on `.tag/<key>`
+- semantics are user/domain-defined, not hard-coded
 
-    FACT {
-      string subject_id FK
-      string key
-      string value
-      string value_type   // scalar|id
-      string scope        // head|snapshot
-      datetime asserted_at
-      string source       // user|system|derived
-    }
-```
+3. Non-edge tags (facets)
+- grouping/scoping dimensions
+- no directionality
 
-## Semantics in this core
+## 3) Projection Semantics
 
-- **Tags**: `Fact(subject, key, value)`.
-- **Edge tags**: same fact, but `value_type=id` and key has relational semantics (`_inverse` config).
-- **Versions**: nodes with flavor facts like `type=version`, `of=<base-id>`, `ordinal=<n>`.
-- **Parts**: nodes with flavor facts like `type=part`, `of=<base-id>`, `ordinal=<n>`.
-- **URI/source linkage**: facts like `source_id=<uri-id>`, `source_kind=uri|inline`; still IDs.
-- **System docs** (`.tag/*`, `.meta/*`, `.prompt/*`): just nodes with conventional IDs and facts.
+Current frame request:
+- seed: `id|query|similar_to`
+- pipeline: `where|slice`
+- options: `deep`, metadata level
 
-## Optional normalization
+Projection returns evidence rows plus metadata required for continuation decisions.
 
-Scalar values may remain inline. Frequently reused values can be modeled as value nodes (`Node(id="tag:key:value")`) with `value_type=id` facts.
+## 4) Decision Signals
 
-## Clear outcome
+Published per tick:
+- planner priors (`fanout/selectivity/cardinality`)
+- query-time statistics
+- lineage signals (`version` and `part`, identical schema)
+- tag profile (`edge` vs `facet` key sets)
 
-All special cases become interpretation rules over one representation, not separate ontologies.
+These produce a policy hint strategy:
+- `single_lane_refine`
+- `top2_plus_bridge`
+- `explore_more`
 
-## 2) Where Implementation Has Accumulated Complexity
+## 5) Strategy Consumption
 
-Current implementation is intentionally denormalized for speed and UX:
+`query.auto` consumes policy hints in bounded steps:
+- single-lane: one refine frame
+- top2+bridge: bounded branch plan then select
+- explore: broaden then re-evaluate
 
-1. Separate storage shapes:
-   - `documents`, `document_versions`, `document_parts`
-   - `edges`, `version_edges`
-2. Tags stored as JSON blobs + casefold marker metadata for vector filtering.
-3. Separate FTS indexes for documents/parts/versions.
-4. Dual stores (SQLite canonical + Chroma vector index) with hydration/merging.
-5. Uplift logic (part/version hit -> parent with `_focus_*` tags) for display ergonomics.
-6. Materialized inverse edges and backfill bookkeeping.
-7. Remote/local capability skew (`RemoteKeeper.get_context` currently lacks parts list).
+No unbounded evaluator, no free-form code execution.
 
-This is mostly practical complexity, not conceptual complexity.
+## 6) Design Rules
 
-## 3) Simplified Operator Surface (From the Core Model)
-
-Once everything is Node+Fact, the operator set can be small:
-
-1. `seed(...)` — define start nodes.
-2. `where(...)` — fact predicates.
-3. `hop(...)` — traverse relational facts (`value_type=id`) with direction/depth.
-4. `slice(...)` — fact-based slicing (e.g., versions/parts via flavor facts).
-5. `rank(...)` — semantic/lexical/recency/graph scoring.
-6. `group(...)` — organize by hypothesis/entity/thread.
-7. `project(...)` — produce named view sections.
-8. `propose(...)` — stage candidate writes as facts/nodes.
-9. `commit(...)` — transactional apply.
-
-No operator needs to be "version-specific" or "part-specific"; those are slice presets.
-
-## 4) Frame Request, Reframed
-
-`FrameRequest` (formerly "projection request") is a graph program over Node+Fact:
-
-```yaml
-FrameRequest:
-  seed:
-    mode: "id|query|similar_to"
-    value: "now"
-  pipeline:
-    - op: where
-      args: { facts: ["project=myapp"] }
-    - op: hop
-      args: { keys: ["speaker", "said"], direction: both, depth: 2 }
-    - op: slice
-      args: { include_flavors: ["head", "version", "part"], radius: 2 }
-    - op: rank
-      args: { semantic: 0.45, lexical: 0.25, recency: 0.15, graph: 0.15 }
-    - op: group
-      args: { by: ["entity", "thread"] }
-    - op: project
-      args:
-        sections: ["summary", "evidence", "timeline", "open_loops"]
-  budget:
-    tokens: 1800
-    max_nodes: 120
-```
-
-This request is stable even if backend storage changes.
-
-## 5) State Carrier, Simplified
-
-Use a `State` object that carries just enough durable execution progress:
-
-```yaml
-State:
-  flow_id: "flow_..."
-  objective: {}
-  frame_request: {}    # original FrameRequest
-  cursor:
-    step: 0
-    stage: "explore"
-    engine_cursor: null
-  frontier:
-    nodes: []
-    evidence: []
-    hypotheses: []
-  pending:
-    proposed_nodes: []
-    proposed_facts: []
-  program:
-    goal: "query|summarize|write|..."
-    profile: "optional process profile id"
-  policy:
-    # optional runtime snapshot, typically derived from profile/metaschema
-    pushdown_allowed: ["where", "hop", "slice", "rank", "group", "project"]
-    escalate_on: ["low_confidence", "conflict", "destructive_change"]
-  budget: {}
-```
-
-Step contract:
-
-```yaml
-StepResult:
-  frame: {}
-  state: {}
-  requests:
-    work: []
-```
-
-## 6) Push-Down vs Agentic Evaluation (Cleaner Boundary)
-
-## Push down
-- operations with deterministic graph semantics:
-  - `where`, `hop`, `slice`, bulk ranking, grouping, pagination
-
-## Agentic
-- operations requiring interpretation or commitment:
-  - hypothesis choice
-  - contradiction adjudication
-  - memorialization acceptance (`propose` acceptance)
-  - stop/continue judgment
-
-## Design consequence
-
-The continuation runtime is a controller around a pushdown-capable graph/query engine, not a second retrieval system.
-
-## 7) "Shake Until Clear" Design Outcome
-
-After simplification, the architecture reads as:
-
-1. **Graph kernel**: Node+Fact.
-2. **Operator algebra**: tiny pipeline over graph facts.
-3. **State runtime**: loop + work/decision staging + commit staging.
-
-Everything else (versions, parts, meta docs, edge tags, now/deep presets) is a profile over this core.
-
-That is the clean representation to target in API design, while keeping denormalized storage internally for performance.
+1. no key-name semantics in continuation logic
+2. edge-vs-facet classification comes only from metaschema (`_inverse`)
+3. lineage channels are structural and first-class
+4. all steps are bounded by budget and termination rules

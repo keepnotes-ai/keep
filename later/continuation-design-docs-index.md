@@ -1,38 +1,38 @@
 # Continuation Design Docs Index
 
-Date: 2026-03-03
+Date: 2026-03-05
+Status: Canonical Index
 
-## Canonical
+## Canonical Docs
 
 1. `later/continue-wire-contract-v1.md`
-   - Normative wire contract for `continue(input) -> output` (schema, concurrency, idempotency, mutation semantics).
-2. `later/continuation-api-spec.md`
-   - Protocol and runtime semantics (non-normative design detail).
-3. `later/continuation-machine-architecture.md`
-   - Implementation block architecture and metaschema placement.
-4. `later/simplified-model-and-continuation-design.md`
-   - Simplified logical model (`Node + Fact`) and operator/state shape.
-5. `later/use-case-simulations-with-continuations.md`
-   - Worked examples and simplification outcomes across task types.
-6. `later/template-frame-state-contract.md`
-   - Concrete wire/schema expression for template-driven prompts over Frame/State.
-7. `later/local-first-continuation-implementation-outline.md`
-   - Phased local-first implementation plan (summarizer vertical slice before general API exposure).
-8. `later/discriminator-precompute-spec.md`
-   - Precompute model for planner priors (fanout/selectivity/bridgeiness) and continuation discriminator integration.
-9. `later/continuation-decision-support-contract.md`
-   - Exact publication/consumption contract for decision-support signals in `frame/views` and `state/frontier`.
+- Normative local `continue.v1` contract (input/output/state semantics).
 
-## Historical (Superseded)
+2. `later/simplified-model-and-continuation-design.md`
+- Core logical model: nodes/facts, lineage channels, edge vs facet tags.
 
-1. `later/keep-er-projection-notes.md`
-   - Early normalized E-R framing before simplification.
-2. `later/continuation-driven-memory-iteration.md`
-   - Early continuation/callback framing before unified work-contract API.
+3. `later/continuation-decision-support-contract.md`
+- Published discriminator payload, strategy rules, and `query.auto` consumption.
 
-## Naming Standard
+4. `later/discriminator-precompute-spec.md`
+- Precomputed planner priors (`fanout/selectivity/cardinality`) and update model.
 
-- `Frame`: current derived working view.
-- `State`: durable flow progress.
+5. `later/continuation-machine-architecture.md`
+- Runtime component layout and execution boundaries.
 
-If any doc conflicts with this naming or the single-call API, treat it as outdated.
+6. `later/continuation-eli5.md`
+- Plain-language explanation of how/why/value.
+
+## Non-Design Artifacts In `later/`
+
+- `later/locomo_*.json`: benchmark traces and comparison reports.
+- `later/todo.txt`: working notes.
+
+## Removed As Superseded
+
+- `later/continuation-api-spec.md`
+- `later/continuation-driven-memory-iteration.md`
+- `later/keep-er-projection-notes.md`
+- `later/local-first-continuation-implementation-outline.md`
+- `later/template-frame-state-contract.md`
+- `later/use-case-simulations-with-continuations.md`
