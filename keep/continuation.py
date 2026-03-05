@@ -38,6 +38,7 @@ DEFAULT_DECISION_POLICY = {
     "entropy_low": 0.45,
     "margin_low": 0.08,
     "entropy_high": 0.72,
+    "lineage_strong": 0.75,
     "pivot_topk": 6,
     "max_pivots": 2,
 }
@@ -1381,9 +1382,63 @@ class LocalContinuationRuntime:
         merged["entropy_low"] = self._clamp(self._as_float(policy.get("entropy_low"), merged["entropy_low"]))
         merged["margin_low"] = self._clamp(self._as_float(policy.get("margin_low"), merged["margin_low"]))
         merged["entropy_high"] = self._clamp(self._as_float(policy.get("entropy_high"), merged["entropy_high"]))
+        merged["lineage_strong"] = self._clamp(
+            self._as_float(policy.get("lineage_strong"), merged["lineage_strong"]),
+        )
         merged["pivot_topk"] = min(max(self._as_int(policy.get("pivot_topk"), merged["pivot_topk"]), 1), 20)
         merged["max_pivots"] = min(max(self._as_int(policy.get("max_pivots"), merged["max_pivots"]), 1), 5)
         return merged
+
+    @staticmethod
+    def _empty_lineage_signal() -> dict[str, Any]:
+        return {
+            "coverage_topk": 0.0,
+            "dominant_concentration_topk": 0.0,
+            "dominant": "",
+            "distinct_topk": 0,
+        }
+
+    def _lineage_signal(
+        self, evidence: list[dict[str, Any]], *, field: str, topk: int,
+    ) -> dict[str, Any]:
+        window = evidence[:topk]
+        if not window:
+            return self._empty_lineage_signal()
+
+        counts: dict[str, int] = {}
+        present = 0
+        for row in window:
+            if not isinstance(row, dict):
+                continue
+            metadata = row.get("metadata")
+            focus = metadata.get("focus") if isinstance(metadata, dict) else None
+            if not isinstance(focus, dict):
+                continue
+            raw = focus.get(field)
+            lineage = str(raw or "").strip()
+            if not lineage:
+                continue
+            present += 1
+            counts[lineage] = counts.get(lineage, 0) + 1
+
+        if not counts:
+            return self._empty_lineage_signal()
+
+        dominant, dominant_count = max(counts.items(), key=lambda item: item[1])
+        coverage = self._clamp(present / max(1, len(window)))
+        concentration = self._clamp(dominant_count / max(1, present))
+        return {
+            "coverage_topk": round(coverage, 4),
+            "dominant_concentration_topk": round(concentration, 4),
+            "dominant": dominant,
+            "distinct_topk": int(len(counts)),
+        }
+
+    def _lineage_signals(self, evidence: list[dict[str, Any]], *, topk: int) -> dict[str, Any]:
+        return {
+            "version": self._lineage_signal(evidence, field="version", topk=topk),
+            "part": self._lineage_signal(evidence, field="part", topk=topk),
+        }
 
     def _decision_override_from_payload(
         self, payload: dict[str, Any],
@@ -1533,6 +1588,7 @@ class LocalContinuationRuntime:
         self,
         *,
         query_stats: dict[str, float],
+        lineage: dict[str, Any],
         policy: dict[str, Any],
         staleness: dict[str, Any],
         decision_override: Optional[dict[str, Any]],
@@ -1548,12 +1604,27 @@ class LocalContinuationRuntime:
         entropy_low = self._as_float(policy.get("entropy_low"), DEFAULT_DECISION_POLICY["entropy_low"])
         margin_low = self._as_float(policy.get("margin_low"), DEFAULT_DECISION_POLICY["margin_low"])
         entropy_high = self._as_float(policy.get("entropy_high"), DEFAULT_DECISION_POLICY["entropy_high"])
+        lineage_strong = self._as_float(policy.get("lineage_strong"), DEFAULT_DECISION_POLICY["lineage_strong"])
+
+        version = lineage.get("version") if isinstance(lineage, dict) else {}
+        part = lineage.get("part") if isinstance(lineage, dict) else {}
+        version_dom = self._as_float(
+            version.get("dominant_concentration_topk") if isinstance(version, dict) else None, 0.0,
+        )
+        part_dom = self._as_float(
+            part.get("dominant_concentration_topk") if isinstance(part, dict) else None, 0.0,
+        )
+        lineage_dom = max(version_dom, part_dom)
+        lineage_kind = "version" if version_dom >= part_dom else "part"
 
         reasons: list[str] = []
         strategy = "explore_more"
         if margin >= margin_high and entropy <= entropy_low:
             strategy = "single_lane_refine"
             reasons = ["high_margin", "low_entropy"]
+        elif lineage_dom >= lineage_strong and entropy < entropy_high:
+            strategy = "single_lane_refine"
+            reasons = [f"strong_{lineage_kind}_lineage"]
         elif margin <= margin_low or entropy >= entropy_high:
             strategy = "top2_plus_bridge"
             reasons = ["low_margin" if margin <= margin_low else "high_entropy"]
@@ -1609,14 +1680,17 @@ class LocalContinuationRuntime:
             staleness = {"stats_age_s": None, "fallback_mode": True}
 
         policy = self._decision_policy_from_program(program)
+        topk = self._as_int(policy.get("pivot_topk"), DEFAULT_DECISION_POLICY["pivot_topk"])
         query_stats = self._query_stats(
             frame_request=frame_request,
             evidence=evidence,
             previous_evidence_ids=previous_evidence_ids,
-            topk=self._as_int(policy.get("pivot_topk"), DEFAULT_DECISION_POLICY["pivot_topk"]),
+            topk=topk,
         )
+        lineage = self._lineage_signals(evidence, topk=topk)
         strategy, reason_codes = self._choose_strategy(
             query_stats=query_stats,
+            lineage=lineage,
             policy=policy,
             staleness=staleness,
             decision_override=decision_override,
@@ -1635,6 +1709,7 @@ class LocalContinuationRuntime:
                 "cardinality": priors.get("cardinality", {}) if isinstance(priors.get("cardinality"), dict) else {},
             },
             "query_stats": query_stats,
+            "lineage": lineage,
             "policy_hint": {
                 "strategy": strategy,
                 "reason_codes": reason_codes,
@@ -1682,13 +1757,6 @@ class LocalContinuationRuntime:
 
         if not key_value_counts:
             return None
-
-        # Prefer conversation pivots when available for broad->refine routing.
-        conv_candidates = [(kv, cnt) for kv, cnt in key_value_counts.items() if kv[0] == "conv"]
-        if conv_candidates:
-            (k, v), cnt = max(conv_candidates, key=lambda item: item[1])
-            if cnt >= 2 and (cnt / total) >= 0.4:
-                return f"{k}={v}"
 
         (key, value), count = max(
             key_value_counts.items(),

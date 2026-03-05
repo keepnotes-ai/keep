@@ -493,6 +493,19 @@ def test_continue_publishes_decision_discriminators_and_snapshot(mock_providers,
             "cost_per_gain_prev_step",
             "temporal_alignment",
         }
+        assert set(discriminators["lineage"].keys()) == {"version", "part"}
+        assert set(discriminators["lineage"]["version"].keys()) == {
+            "coverage_topk",
+            "dominant_concentration_topk",
+            "dominant",
+            "distinct_topk",
+        }
+        assert set(discriminators["lineage"]["part"].keys()) == {
+            "coverage_topk",
+            "dominant_concentration_topk",
+            "dominant",
+            "distinct_topk",
+        }
         assert "policy_hint" in discriminators
         snapshot = out["state"]["frontier"]["decision_support"]
         assert set(snapshot.keys()) == {"version", "strategy_chosen", "reason_codes", "pivot_ids"}
