@@ -79,6 +79,7 @@ When you add `_inverse` to an existing tagdoc, keep automatically backfills edge
 | Tag | `_inverse` | Example | Meaning |
 |-----|-----------|---------|---------|
 | `speaker` | `said` | `speaker: Deborah` on a turn | `get Deborah` → `said:` entries in `tags:` |
+| `informs` | `informed_by` | `informs: auth-decision` on a URL | `get auth-decision` → `informed_by:` entries in `tags:` |
 
 ## Rules
 
