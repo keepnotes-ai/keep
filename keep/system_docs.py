@@ -68,6 +68,7 @@ SYSTEM_DOC_IDS = {
     "tag-status-withdrawn.md": ".tag/status/withdrawn",
     "tag-status-renegotiated.md": ".tag/status/renegotiated",
     "tag-project.md": ".tag/project",
+    "tag-informs.md": ".tag/informs",
     "tag-speaker.md": ".tag/speaker",
     "tag-topic.md": ".tag/topic",
     "tag-type.md": ".tag/type",
