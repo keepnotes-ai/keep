@@ -241,6 +241,89 @@ def test_continue_program_persists_across_ticks(mock_providers, tmp_path):
         kp.close()
 
 
+def test_continue_query_auto_profile_schedules_and_consumes_refine(mock_providers, tmp_path):
+    kp = Keeper(store_path=tmp_path)
+    try:
+        kp.put(content="alpha memory A", id="note:auto-1", tags={"conv": "A"}, summary="alpha memory A")
+        kp.put(content="alpha memory A2", id="note:auto-2", tags={"conv": "A"}, summary="alpha memory A2")
+        kp.put(content="alpha memory B", id="note:auto-3", tags={"conv": "B"}, summary="alpha memory B")
+
+        first = kp.continue_flow(
+            {
+                "schema_version": "continue.v1",
+                "request_id": "req-auto-1",
+                "goal": "query",
+                "profile": "query.auto",
+                "params": {"text": "alpha memory"},
+                "frame_request": {
+                    "seed": {"mode": "query", "value": "alpha memory"},
+                    "pipeline": [{"op": "slice", "args": {"limit": 5}}],
+                    "options": {"metadata": "basic"},
+                },
+                "feedback": {"work_results": []},
+            }
+        )
+        assert first["status"] == "done"
+        assert first["next"]["recommended"] == "continue"
+        assert "auto_query_next_frame_request" in first["state"]["frontier"]
+
+        second = kp.continue_flow(
+            {
+                "schema_version": "continue.v1",
+                "request_id": "req-auto-2",
+                "flow_id": first["flow_id"],
+                "state_version": first["state_version"],
+                "feedback": {"work_results": []},
+            }
+        )
+        assert second["status"] == "done"
+        assert second["state"]["frontier"].get("auto_query_refined") is True
+        assert "auto_query_next_frame_request" not in second["state"]["frontier"]
+        effective_frame = second["state"]["program"]["frame_request"]
+        assert effective_frame["options"]["deep"] is True
+    finally:
+        kp.close()
+
+
+def test_continue_query_auto_profile_single_lane_refine_adds_where(mock_providers, tmp_path):
+    kp = Keeper(store_path=tmp_path)
+    try:
+        kp.put(content="focus result one", id="note:auto-s1", tags={"conv": "7"}, summary="focus result one")
+        kp.put(content="focus result two", id="note:auto-s2", tags={"conv": "7"}, summary="focus result two")
+        kp.put(content="focus result other", id="note:auto-s3", tags={"conv": "3"}, summary="focus result other")
+
+        first = kp.continue_flow(
+            {
+                "schema_version": "continue.v1",
+                "request_id": "req-auto-lane-1",
+                "goal": "query",
+                "profile": "query.auto",
+                "params": {"text": "focus result"},
+                "frame_request": {
+                    "seed": {"mode": "query", "value": "focus result"},
+                    "pipeline": [{"op": "slice", "args": {"limit": 5}}],
+                    "options": {"metadata": "basic"},
+                },
+                "decision_override": {
+                    "strategy": "single_lane_refine",
+                    "reason": "test_single_lane",
+                },
+                "feedback": {"work_results": []},
+            }
+        )
+        assert first["status"] == "done"
+        pending = first["state"]["frontier"].get("auto_query_next_frame_request")
+        assert isinstance(pending, dict)
+        pipeline = pending.get("pipeline")
+        assert isinstance(pipeline, list)
+        assert pipeline
+        assert pipeline[0].get("op") == "where"
+        facts = pipeline[0].get("args", {}).get("facts", [])
+        assert facts
+    finally:
+        kp.close()
+
+
 def test_continue_profile_stages_drive_process_progression(mock_providers, tmp_path):
     kp = Keeper(store_path=tmp_path)
     try:

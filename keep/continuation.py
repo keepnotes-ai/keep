@@ -31,6 +31,8 @@ SCHEMA_VERSION = "continue.v1"
 ALLOWED_FRAME_OPS = {"where", "slice"}
 DECISION_SUPPORT_VERSION = "ds.v1"
 DECISION_STRATEGIES = {"single_lane_refine", "top2_plus_bridge", "explore_more"}
+BUILTIN_QUERY_AUTO_PROFILES = {"query.auto", ".profile/query.auto"}
+NON_PIVOT_TAG_KEYS = {"type", "context", "category"}
 DEFAULT_DECISION_POLICY = {
     "margin_high": 0.18,
     "entropy_low": 0.45,
@@ -262,6 +264,13 @@ class LocalContinuationRuntime:
     def _goal_from_program(self, program: dict[str, Any]) -> str:
         goal = str(program.get("goal") or "").strip().lower()
         return goal
+
+    @staticmethod
+    def _profile_from_program(program: dict[str, Any]) -> str:
+        return str(program.get("profile") or "").strip()
+
+    def _is_query_auto_profile(self, program: dict[str, Any]) -> bool:
+        return self._profile_from_program(program) in BUILTIN_QUERY_AUTO_PROFILES
 
     @staticmethod
     def _as_int(value: Any, default: int) -> int:
@@ -635,6 +644,9 @@ class LocalContinuationRuntime:
     def _profile_plan_and_stages(
         self, program: dict[str, Any],
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], Optional[dict[str, str]]]:
+        if self._is_query_auto_profile(program):
+            return [], [], None
+
         profile = str(program.get("profile") or "").strip()
         if not profile:
             return [], [], None
@@ -1640,6 +1652,105 @@ class LocalContinuationRuntime:
         }
         return discriminators, snapshot
 
+    def _dominant_tag_fact(self, evidence: list[dict[str, Any]]) -> Optional[str]:
+        if not evidence:
+            return None
+        rows = evidence[:10]
+        total = max(len(rows), 1)
+        key_value_counts: dict[tuple[str, str], int] = {}
+
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            metadata = row.get("metadata")
+            tags = metadata.get("tags") if isinstance(metadata, dict) else None
+            if not isinstance(tags, dict):
+                continue
+            for key, raw in tags.items():
+                k = str(key).strip()
+                if not k or k.startswith("_") or k in NON_PIVOT_TAG_KEYS:
+                    continue
+                values: list[str] = []
+                if isinstance(raw, list):
+                    values = [str(v) for v in raw if isinstance(v, (str, int, float, bool))]
+                elif isinstance(raw, (str, int, float, bool)):
+                    values = [str(raw)]
+                for val in values[:4]:
+                    if not val.strip():
+                        continue
+                    key_value_counts[(k, val)] = key_value_counts.get((k, val), 0) + 1
+
+        if not key_value_counts:
+            return None
+
+        # Prefer conversation pivots when available for broad->refine routing.
+        conv_candidates = [(kv, cnt) for kv, cnt in key_value_counts.items() if kv[0] == "conv"]
+        if conv_candidates:
+            (k, v), cnt = max(conv_candidates, key=lambda item: item[1])
+            if cnt >= 2 and (cnt / total) >= 0.4:
+                return f"{k}={v}"
+
+        (key, value), count = max(
+            key_value_counts.items(),
+            key=lambda item: (item[1], item[0][0], item[0][1]),
+        )
+        if count < 2 or (count / total) < 0.4:
+            return None
+        return f"{key}={value}"
+
+    def _query_auto_next_frame_request(
+        self,
+        *,
+        current_frame_request: dict[str, Any],
+        evidence: list[dict[str, Any]],
+        decision_snapshot: dict[str, Any],
+    ) -> Optional[dict[str, Any]]:
+        seed = current_frame_request.get("seed") if isinstance(current_frame_request, dict) else {}
+        if not isinstance(seed, dict):
+            return None
+        if str(seed.get("mode") or "") != "query" or not str(seed.get("value") or "").strip():
+            return None
+
+        budget = current_frame_request.get("budget")
+        if not isinstance(budget, dict):
+            budget = {}
+        options = current_frame_request.get("options")
+        if not isinstance(options, dict):
+            options = {}
+        metadata_level = self._normalize_metadata_level(options.get("metadata"))
+        limit = self._pipeline_limit(current_frame_request, default_limit=10)
+        strategy = str(decision_snapshot.get("strategy_chosen") or "explore_more")
+
+        if strategy == "single_lane_refine":
+            fact = self._dominant_tag_fact(evidence)
+            pipeline: list[dict[str, Any]] = []
+            if fact:
+                pipeline.append({"op": "where", "args": {"facts": [fact]}})
+            pipeline.append({"op": "slice", "args": {"limit": limit}})
+            return {
+                "seed": {"mode": "query", "value": str(seed.get("value"))},
+                "pipeline": pipeline,
+                "budget": dict(budget),
+                "options": {"deep": True, "metadata": metadata_level},
+            }
+
+        if strategy == "top2_plus_bridge":
+            return {
+                "seed": {"mode": "query", "value": str(seed.get("value"))},
+                "pipeline": [{"op": "slice", "args": {"limit": limit}}],
+                "budget": dict(budget),
+                "options": {"deep": True, "metadata": metadata_level},
+            }
+
+        # explore_more: broaden modestly then re-evaluate.
+        broaden_limit = min(max(limit + 5, 1), 50)
+        return {
+            "seed": {"mode": "query", "value": str(seed.get("value"))},
+            "pipeline": [{"op": "slice", "args": {"limit": broaden_limit}}],
+            "budget": dict(budget),
+            "options": {"deep": True, "metadata": metadata_level},
+        }
+
     def _resolve_template_expr(
         self,
         value: Any,
@@ -1939,6 +2050,7 @@ class LocalContinuationRuntime:
                 process_stage: Optional[str] = None
                 decision_discriminators = self._empty_discriminators()
                 decision_snapshot: Optional[dict[str, Any]] = None
+                used_auto_query_pending = False
                 legacy_fields = self._legacy_input_fields(payload)
                 if legacy_fields:
                     errors.append({
@@ -1953,6 +2065,21 @@ class LocalContinuationRuntime:
                 decision_override, decision_override_err = self._decision_override_from_payload(payload)
                 if decision_override_err is not None:
                     errors.append(decision_override_err)
+                frontier_state = state.get("frontier")
+                if not isinstance(frontier_state, dict):
+                    frontier_state = {}
+                    state["frontier"] = frontier_state
+                if (
+                    program
+                    and self._is_query_auto_profile(program)
+                    and "frame_request" not in payload
+                ):
+                    auto_next_frame = frontier_state.get("auto_query_next_frame_request")
+                    if isinstance(auto_next_frame, dict):
+                        program["frame_request"] = auto_next_frame
+                        used_auto_query_pending = True
+                if "frame_request" in payload and isinstance(frontier_state, dict):
+                    frontier_state.pop("auto_query_next_frame_request", None)
                 if is_new_flow and not self._program_has_inputs(payload):
                     errors.append({
                         "code": "missing_required_field",
@@ -2138,6 +2265,18 @@ class LocalContinuationRuntime:
                 frontier["evidence_ids"] = [row.get("id") for row in evidence]
                 if isinstance(decision_snapshot, dict):
                     frontier["decision_support"] = decision_snapshot
+                if program and self._is_query_auto_profile(program) and not errors and not requested:
+                    if used_auto_query_pending:
+                        frontier["auto_query_refined"] = True
+                        frontier.pop("auto_query_next_frame_request", None)
+                    elif not bool(frontier.get("auto_query_refined")) and isinstance(decision_snapshot, dict):
+                        next_auto_frame = self._query_auto_next_frame_request(
+                            current_frame_request=self._effective_frame_request(program),
+                            evidence=evidence,
+                            decision_snapshot=decision_snapshot,
+                        )
+                        if isinstance(next_auto_frame, dict):
+                            frontier["auto_query_next_frame_request"] = next_auto_frame
                 state.setdefault("pending", {})["work_ids"] = [row.work_id for row in requested]
                 budget_used = state.get("budget_used")
                 if not isinstance(budget_used, dict):
@@ -2164,6 +2303,17 @@ class LocalContinuationRuntime:
                     next_hint = {
                         "recommended": "continue",
                         "reason": "Fix input errors and retry",
+                    }
+                if (
+                    status == "done"
+                    and program
+                    and self._is_query_auto_profile(program)
+                    and isinstance(state.get("frontier"), dict)
+                    and isinstance(state["frontier"].get("auto_query_next_frame_request"), dict)
+                ):
+                    next_hint = {
+                        "recommended": "continue",
+                        "reason": "Auto query refine frame is ready",
                     }
 
                 frame = self._build_frame(
