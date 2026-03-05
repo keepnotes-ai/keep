@@ -265,21 +265,28 @@ def test_continue_query_auto_profile_schedules_and_consumes_refine(mock_provider
         )
         assert first["status"] == "done"
         assert first["next"]["recommended"] == "continue"
-        assert "auto_query_next_frame_request" in first["state"]["frontier"]
-
-        second = kp.continue_flow(
-            {
-                "schema_version": "continue.v1",
-                "request_id": "req-auto-2",
-                "flow_id": first["flow_id"],
-                "state_version": first["state_version"],
-                "feedback": {"work_results": []},
-            }
+        assert (
+            "auto_query_next_frame_request" in first["state"]["frontier"]
+            or "auto_query_branch_plan" in first["state"]["frontier"]
         )
-        assert second["status"] == "done"
-        assert second["state"]["frontier"].get("auto_query_refined") is True
-        assert "auto_query_next_frame_request" not in second["state"]["frontier"]
-        effective_frame = second["state"]["program"]["frame_request"]
+
+        current = first
+        for i in range(1, 6):
+            current = kp.continue_flow(
+                {
+                    "schema_version": "continue.v1",
+                    "request_id": f"req-auto-2-{i}",
+                    "flow_id": current["flow_id"],
+                    "state_version": current["state_version"],
+                    "feedback": {"work_results": []},
+                }
+            )
+            if current["state"]["frontier"].get("auto_query_refined"):
+                break
+        assert current["status"] == "done"
+        assert current["state"]["frontier"].get("auto_query_refined") is True
+        assert "auto_query_next_frame_request" not in current["state"]["frontier"]
+        effective_frame = current["state"]["program"]["frame_request"]
         assert effective_frame["options"]["deep"] is True
     finally:
         kp.close()
@@ -320,6 +327,76 @@ def test_continue_query_auto_profile_single_lane_refine_adds_where(mock_provider
         assert pipeline[0].get("op") == "where"
         facts = pipeline[0].get("args", {}).get("facts", [])
         assert facts
+    finally:
+        kp.close()
+
+
+def test_continue_query_auto_profile_top2_plus_bridge_runs_branch_plan(mock_providers, tmp_path):
+    kp = Keeper(store_path=tmp_path)
+    try:
+        kp.put(
+            content="bridge planning base one",
+            id="note:auto-b1",
+            tags={"project": "apollo", "topic": "auth", "speaker": "alice"},
+            summary="bridge planning base one",
+        )
+        kp.put(
+            content="bridge planning base two",
+            id="note:auto-b2",
+            tags={"project": "apollo", "topic": "auth", "speaker": "bob"},
+            summary="bridge planning base two",
+        )
+        kp.put(
+            content="bridge planning alt",
+            id="note:auto-b3",
+            tags={"project": "apollo", "topic": "billing", "speaker": "alice"},
+            summary="bridge planning alt",
+        )
+
+        first = kp.continue_flow(
+            {
+                "schema_version": "continue.v1",
+                "request_id": "req-auto-bridge-1",
+                "goal": "query",
+                "profile": "query.auto",
+                "params": {"text": "bridge planning"},
+                "frame_request": {
+                    "seed": {"mode": "query", "value": "bridge planning"},
+                    "pipeline": [{"op": "slice", "args": {"limit": 5}}],
+                    "options": {"metadata": "basic"},
+                },
+                "decision_override": {
+                    "strategy": "top2_plus_bridge",
+                    "reason": "test_top2",
+                },
+                "feedback": {"work_results": []},
+            }
+        )
+        assert first["status"] == "done"
+        assert first["next"]["recommended"] == "continue"
+        plan = first["state"]["frontier"].get("auto_query_branch_plan")
+        assert isinstance(plan, dict)
+        pending = plan.get("pending")
+        assert isinstance(pending, list)
+        assert 1 <= len(pending) <= 3
+
+        current = first
+        for i in range(1, 6):
+            current = kp.continue_flow(
+                {
+                    "schema_version": "continue.v1",
+                    "request_id": f"req-auto-bridge-next-{i}",
+                    "flow_id": current["flow_id"],
+                    "state_version": current["state_version"],
+                    "feedback": {"work_results": []},
+                }
+            )
+            if current["state"]["frontier"].get("auto_query_refined"):
+                break
+        assert current["state"]["frontier"].get("auto_query_refined") is True
+        selected = current["state"]["frontier"].get("auto_query_selected_branch")
+        assert isinstance(selected, dict)
+        assert selected.get("id")
     finally:
         kp.close()
 

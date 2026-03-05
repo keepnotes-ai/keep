@@ -1909,6 +1909,155 @@ class LocalContinuationRuntime:
             "options": {"deep": True, "metadata": metadata_level},
         }
 
+    def _top_tag_facts(
+        self, evidence: list[dict[str, Any]], *, max_facts: int = 2,
+    ) -> list[str]:
+        if not evidence or max_facts <= 0:
+            return []
+        rows = evidence[:10]
+        total = max(len(rows), 1)
+        facet_counts: dict[tuple[str, str], int] = {}
+        edge_counts: dict[tuple[str, str], int] = {}
+        tag_kind_cache: dict[str, str] = {}
+
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            metadata = row.get("metadata")
+            tags = metadata.get("tags") if isinstance(metadata, dict) else None
+            if not isinstance(tags, dict):
+                continue
+            for key, raw in tags.items():
+                k = str(key).strip()
+                if not k or k.startswith("_") or k in NON_PIVOT_TAG_KEYS:
+                    continue
+                kind = self._tag_key_kind(k, cache=tag_kind_cache)
+                values: list[str] = []
+                if isinstance(raw, list):
+                    values = [str(v) for v in raw if isinstance(v, (str, int, float, bool))]
+                elif isinstance(raw, (str, int, float, bool)):
+                    values = [str(raw)]
+                for val in values[:4]:
+                    if not val.strip():
+                        continue
+                    if kind == "edge":
+                        edge_counts[(k, val)] = edge_counts.get((k, val), 0) + 1
+                    else:
+                        facet_counts[(k, val)] = facet_counts.get((k, val), 0) + 1
+
+        def _ordered(counts: dict[tuple[str, str], int]) -> list[str]:
+            ranked = sorted(
+                counts.items(),
+                key=lambda item: (item[1], item[0][0], item[0][1]),
+                reverse=True,
+            )
+            out: list[str] = []
+            for (key, value), count in ranked:
+                if count < 2 or (count / total) < 0.4:
+                    continue
+                out.append(f"{key}={value}")
+                if len(out) >= max_facts:
+                    break
+            return out
+
+        facts: list[str] = []
+        for fact in _ordered(facet_counts):
+            if fact not in facts:
+                facts.append(fact)
+            if len(facts) >= max_facts:
+                return facts
+        for fact in _ordered(edge_counts):
+            if fact not in facts:
+                facts.append(fact)
+            if len(facts) >= max_facts:
+                return facts
+        return facts
+
+    @staticmethod
+    def _query_auto_branch_utility(
+        *, discriminators: dict[str, Any], evidence_count: int,
+    ) -> float:
+        query_stats = discriminators.get("query_stats") if isinstance(discriminators, dict) else {}
+        lineage = discriminators.get("lineage") if isinstance(discriminators, dict) else {}
+        margin = 0.0
+        if isinstance(query_stats, dict):
+            try:
+                margin = float(query_stats.get("top1_top2_margin") or 0.0)
+            except Exception:
+                margin = 0.0
+        version_dom = 0.0
+        part_dom = 0.0
+        if isinstance(lineage, dict):
+            version = lineage.get("version")
+            part = lineage.get("part")
+            if isinstance(version, dict):
+                try:
+                    version_dom = float(version.get("dominant_concentration_topk") or 0.0)
+                except Exception:
+                    version_dom = 0.0
+            if isinstance(part, dict):
+                try:
+                    part_dom = float(part.get("dominant_concentration_topk") or 0.0)
+                except Exception:
+                    part_dom = 0.0
+        evidence_term = 0.0 if evidence_count <= 0 else min(float(evidence_count) / 10.0, 1.0)
+        return round(margin + (0.3 * max(version_dom, part_dom)) + (0.05 * evidence_term), 6)
+
+    def _query_auto_top2_plus_bridge_branches(
+        self,
+        *,
+        current_frame_request: dict[str, Any],
+        evidence: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        seed = current_frame_request.get("seed") if isinstance(current_frame_request, dict) else {}
+        if not isinstance(seed, dict):
+            return []
+        if str(seed.get("mode") or "") != "query" or not str(seed.get("value") or "").strip():
+            return []
+
+        budget = current_frame_request.get("budget")
+        if not isinstance(budget, dict):
+            budget = {}
+        options = current_frame_request.get("options")
+        if not isinstance(options, dict):
+            options = {}
+        metadata_level = self._normalize_metadata_level(options.get("metadata"))
+        limit = self._pipeline_limit(current_frame_request, default_limit=10)
+        query_value = str(seed.get("value"))
+
+        branches: list[dict[str, Any]] = []
+        top_facts = self._top_tag_facts(evidence, max_facts=2)
+        for idx, fact in enumerate(top_facts, start=1):
+            branches.append(
+                {
+                    "id": f"pivot_{idx}",
+                    "kind": "pivot",
+                    "frame_request": {
+                        "seed": {"mode": "query", "value": query_value},
+                        "pipeline": [
+                            {"op": "where", "args": {"facts": [fact]}},
+                            {"op": "slice", "args": {"limit": limit}},
+                        ],
+                        "budget": dict(budget),
+                        "options": {"deep": True, "metadata": metadata_level},
+                    },
+                }
+            )
+
+        branches.append(
+            {
+                "id": "bridge",
+                "kind": "bridge",
+                "frame_request": {
+                    "seed": {"mode": "query", "value": query_value},
+                    "pipeline": [{"op": "slice", "args": {"limit": limit}}],
+                    "budget": dict(budget),
+                    "options": {"deep": True, "metadata": metadata_level},
+                },
+            }
+        )
+        return branches[:3]
+
     def _resolve_template_expr(
         self,
         value: Any,
@@ -2209,6 +2358,7 @@ class LocalContinuationRuntime:
                 decision_discriminators = self._empty_discriminators()
                 decision_snapshot: Optional[dict[str, Any]] = None
                 used_auto_query_pending = False
+                used_auto_query_branch_id: Optional[str] = None
                 legacy_fields = self._legacy_input_fields(payload)
                 if legacy_fields:
                     errors.append({
@@ -2232,12 +2382,26 @@ class LocalContinuationRuntime:
                     and self._is_query_auto_profile(program)
                     and "frame_request" not in payload
                 ):
+                    branch_plan = frontier_state.get("auto_query_branch_plan")
+                    pending_branches = branch_plan.get("pending") if isinstance(branch_plan, dict) else None
+                    if isinstance(pending_branches, list) and pending_branches:
+                        first_branch = pending_branches[0]
+                        frame_req = first_branch.get("frame_request") if isinstance(first_branch, dict) else None
+                        if isinstance(frame_req, dict):
+                            program["frame_request"] = frame_req
+                            used_auto_query_pending = True
+                            branch_id = first_branch.get("id")
+                            if branch_id is not None:
+                                used_auto_query_branch_id = str(branch_id)
                     auto_next_frame = frontier_state.get("auto_query_next_frame_request")
-                    if isinstance(auto_next_frame, dict):
+                    if not used_auto_query_pending and isinstance(auto_next_frame, dict):
                         program["frame_request"] = auto_next_frame
                         used_auto_query_pending = True
                 if "frame_request" in payload and isinstance(frontier_state, dict):
                     frontier_state.pop("auto_query_next_frame_request", None)
+                    frontier_state.pop("auto_query_branch_plan", None)
+                    frontier_state.pop("auto_query_selected_branch", None)
+                    frontier_state.pop("auto_query_refined", None)
                 if is_new_flow and not self._program_has_inputs(payload):
                     errors.append({
                         "code": "missing_required_field",
@@ -2424,17 +2588,88 @@ class LocalContinuationRuntime:
                 if isinstance(decision_snapshot, dict):
                     frontier["decision_support"] = decision_snapshot
                 if program and self._is_query_auto_profile(program) and not errors and not requested:
-                    if used_auto_query_pending:
+                    if used_auto_query_pending and used_auto_query_branch_id:
+                        plan = frontier.get("auto_query_branch_plan")
+                        if not isinstance(plan, dict):
+                            plan = {"pending": [], "results": []}
+                        pending = plan.get("pending")
+                        if not isinstance(pending, list):
+                            pending = []
+                        results = plan.get("results")
+                        if not isinstance(results, list):
+                            results = []
+                        remaining: list[dict[str, Any]] = []
+                        removed = False
+                        for branch in pending:
+                            if not isinstance(branch, dict):
+                                continue
+                            bid = str(branch.get("id") or "")
+                            if not removed and bid == used_auto_query_branch_id:
+                                utility = self._query_auto_branch_utility(
+                                    discriminators=decision_discriminators,
+                                    evidence_count=len(evidence),
+                                )
+                                results.append(
+                                    {
+                                        "id": bid,
+                                        "kind": str(branch.get("kind") or ""),
+                                        "frame_request": branch.get("frame_request"),
+                                        "utility": utility,
+                                        "evidence_count": len(evidence),
+                                        "reason_codes": (
+                                            decision_discriminators.get("policy_hint", {}).get("reason_codes", [])
+                                            if isinstance(decision_discriminators, dict)
+                                            else []
+                                        ),
+                                    }
+                                )
+                                removed = True
+                                continue
+                            remaining.append(branch)
+                        plan["pending"] = remaining
+                        plan["results"] = results
+                        if remaining:
+                            frontier["auto_query_branch_plan"] = plan
+                        else:
+                            frontier.pop("auto_query_branch_plan", None)
+                            best: Optional[dict[str, Any]] = None
+                            for result in results:
+                                if not isinstance(result, dict):
+                                    continue
+                                if best is None or float(result.get("utility") or 0.0) > float(best.get("utility") or 0.0):
+                                    best = result
+                            if isinstance(best, dict):
+                                frontier["auto_query_selected_branch"] = {
+                                    "id": best.get("id"),
+                                    "kind": best.get("kind"),
+                                    "utility": best.get("utility"),
+                                }
+                                best_frame = best.get("frame_request")
+                                if isinstance(best_frame, dict):
+                                    frontier["auto_query_next_frame_request"] = best_frame
+                    elif used_auto_query_pending:
                         frontier["auto_query_refined"] = True
                         frontier.pop("auto_query_next_frame_request", None)
                     elif not bool(frontier.get("auto_query_refined")) and isinstance(decision_snapshot, dict):
-                        next_auto_frame = self._query_auto_next_frame_request(
-                            current_frame_request=self._effective_frame_request(program),
-                            evidence=evidence,
-                            decision_snapshot=decision_snapshot,
-                        )
-                        if isinstance(next_auto_frame, dict):
-                            frontier["auto_query_next_frame_request"] = next_auto_frame
+                        strategy = str(decision_snapshot.get("strategy_chosen") or "")
+                        if strategy == "top2_plus_bridge":
+                            branches = self._query_auto_top2_plus_bridge_branches(
+                                current_frame_request=self._effective_frame_request(program),
+                                evidence=evidence,
+                            )
+                            if branches:
+                                frontier["auto_query_branch_plan"] = {
+                                    "pending": branches,
+                                    "results": [],
+                                }
+                        else:
+                            next_auto_frame = self._query_auto_next_frame_request(
+                                current_frame_request=self._effective_frame_request(program),
+                                evidence=evidence,
+                                decision_snapshot=decision_snapshot,
+                            )
+                            if isinstance(next_auto_frame, dict):
+                                frontier["auto_query_next_frame_request"] = next_auto_frame
                 state.setdefault("pending", {})["work_ids"] = [row.work_id for row in requested]
                 budget_used = state.get("budget_used")
                 if not isinstance(budget_used, dict):
@@ -2467,11 +2702,18 @@ class LocalContinuationRuntime:
                     and program
                     and self._is_query_auto_profile(program)
                     and isinstance(state.get("frontier"), dict)
-                    and isinstance(state["frontier"].get("auto_query_next_frame_request"), dict)
+                    and (
+                        isinstance(state["frontier"].get("auto_query_next_frame_request"), dict)
+                        or (
+                            isinstance(state["frontier"].get("auto_query_branch_plan"), dict)
+                            and isinstance(state["frontier"]["auto_query_branch_plan"].get("pending"), list)
+                            and bool(state["frontier"]["auto_query_branch_plan"].get("pending"))
+                        )
+                    )
                 ):
                     next_hint = {
                         "recommended": "continue",
-                        "reason": "Auto query refine frame is ready",
+                        "reason": "Auto query refinement branches are pending",
                     }
 
                 frame = self._build_frame(
