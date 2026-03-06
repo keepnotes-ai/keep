@@ -2097,9 +2097,28 @@ class ContinuationEngine:
             if work.status != "requested":
                 raise ValueError(f"work_id is not pending: {work_id}")
             payload = json.loads(work.input_json)
-            attempt = work.attempt
+            work_row = work
 
         execution = self._work_executor.execute(payload)
+        return self._work_result_from_execution(
+            work_id=work_id,
+            payload=payload,
+            execution=execution,
+            attempt=int(work_row.attempt),
+        )
+
+    def count_requested_work(self, *, claimable_only: bool = False) -> int:
+        with self._lock:
+            return self._flow_store.count_requested_work(claimable_only=claimable_only)
+
+    def _work_result_from_execution(
+        self,
+        *,
+        work_id: str,
+        payload: dict[str, Any],
+        execution: Any,
+        attempt: int,
+    ) -> dict[str, Any]:
         content = str(payload.get("content") or "")
         runner = payload.get("runner") or {}
         executor_id = str(payload.get("_executor_id") or runner.get("executor_id") or execution.executor_id or "local.runner")
@@ -2111,9 +2130,119 @@ class ContinuationEngine:
             "quality": execution.quality,
             "provenance": {
                 "input_hash": hashlib.sha256(content.encode("utf-8")).hexdigest(),
-                "attempt": attempt,
+                "attempt": int(attempt),
             },
         }
+
+    def _submit_work_result(self, flow_id: str, work_result: dict[str, Any]) -> dict[str, Any]:
+        # Multiple workers may advance flow state in parallel. Retry state conflicts
+        # with a fresh cursor so the claimed work result is eventually applied.
+        last_output: Optional[dict[str, Any]] = None
+        for _ in range(3):
+            with self._lock:
+                flow = self._get_flow(flow_id)
+                if flow is None:
+                    raise ValueError(f"unknown flow_id: {flow_id}")
+                cursor = self._encode_cursor(flow.flow_id, flow.state_version)
+            output = self.continue_flow(
+                {
+                    "request_id": f"work-{work_result.get('work_id')}-{uuid.uuid4().hex[:8]}",
+                    "cursor": cursor,
+                    "work_results": [work_result],
+                }
+            )
+            last_output = output
+            if str(output.get("status") or "") != "failed":
+                return output
+            errors = output.get("errors") or []
+            first = errors[0] if isinstance(errors, list) and errors and isinstance(errors[0], dict) else {}
+            if str(first.get("code") or "") != "state_conflict":
+                return output
+        return last_output or {"status": "failed", "errors": [{"code": "state_conflict"}]}
+
+    def _release_claim_for_retry(
+        self,
+        *,
+        work: WorkRow,
+        worker_id: str,
+        error: str,
+    ) -> str:
+        with self._lock:
+            self._flow_store.release_work_for_retry(
+                work_id=work.work_id,
+                worker_id=worker_id,
+                error=error,
+            )
+            refreshed = self._get_work(work.flow_id, work.work_id)
+        return str(refreshed.status) if refreshed is not None else "unknown"
+
+    def process_requested_work_batch(
+        self,
+        *,
+        worker_id: str,
+        limit: int = 10,
+        lease_seconds: int = 120,
+    ) -> dict[str, Any]:
+        worker = str(worker_id or "").strip()
+        if not worker:
+            raise ValueError("worker_id is required")
+        with self._lock:
+            claimed = self._flow_store.claim_requested_work(
+                worker_id=worker,
+                limit=max(1, int(limit)),
+                lease_seconds=max(1, int(lease_seconds)),
+            )
+
+        result: dict[str, Any] = {
+            "claimed": len(claimed),
+            "processed": 0,
+            "failed": 0,
+            "dead_lettered": 0,
+            "errors": [],
+        }
+        for work in claimed:
+            payload = json.loads(work.input_json)
+            attempt = int(work.attempt)
+            try:
+                execution = self._work_executor.execute(payload)
+                work_result = self._work_result_from_execution(
+                    work_id=work.work_id,
+                    payload=payload,
+                    execution=execution,
+                    attempt=attempt,
+                )
+                output = self._submit_work_result(work.flow_id, work_result)
+                with self._lock:
+                    refreshed = self._get_work(work.flow_id, work.work_id)
+                if refreshed is not None and refreshed.status in {"completed", "failed"}:
+                    result["processed"] += 1
+                    continue
+                errors = output.get("errors") or []
+                first = errors[0] if isinstance(errors, list) and errors and isinstance(errors[0], dict) else {}
+                code = str(first.get("code") or "work_apply_failed")
+                message = str(first.get("message") or "Continuation work result was not applied")
+                status = self._release_claim_for_retry(
+                    work=work,
+                    worker_id=worker,
+                    error=f"{code}: {message}",
+                )
+                if status in {"dead_letter", "dead_lettered"}:
+                    result["dead_lettered"] += 1
+                else:
+                    result["failed"] += 1
+                result["errors"].append(f"{work.work_id}: {code}: {message}")
+            except Exception as exc:
+                status = self._release_claim_for_retry(
+                    work=work,
+                    worker_id=worker,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+                if status in {"dead_letter", "dead_lettered"}:
+                    result["dead_lettered"] += 1
+                else:
+                    result["failed"] += 1
+                result["errors"].append(f"{work.work_id}: {type(exc).__name__}: {exc}")
+        return result
 
     def close(self) -> None:
         self._flow_store.close()

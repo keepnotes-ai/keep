@@ -11,6 +11,7 @@ import json
 import logging
 import re
 import time
+import uuid
 from dataclasses import replace
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -247,6 +248,10 @@ TRUNCATE_LENGTH = 500
 # Maximum attempts before giving up on a pending summary
 MAX_SUMMARY_ATTEMPTS = 5
 
+# Feature flags for incremental continuation background migration.
+KEEP_CONTINUATION_BACKGROUND = "KEEP_CONTINUATION_BACKGROUND"
+KEEP_CONTINUATION_SUMMARIZE = "KEEP_CONTINUATION_SUMMARIZE"
+
 
 # Collection name validation: lowercase ASCII and underscores only
 
@@ -334,6 +339,11 @@ def _extract_markdown_frontmatter(content: str) -> tuple[str, dict]:
         # else: lists, nested dicts, None → drop silently
 
     return body, tags
+
+
+def _env_flag(name: str) -> bool:
+    value = str(os.environ.get(name, "")).strip().lower()
+    return value in {"1", "true", "yes", "on"}
 
 
 def _parse_meta_doc(content: str) -> tuple[list[dict[str, str]], list[str], list[str]]:
@@ -765,6 +775,9 @@ class Keeper:
         # Local continuation runtime (API-first path), initialized lazily on first use.
         self._continuation = None
         self._continuation_lock = threading.Lock()
+        self._deferred_continuation_summarize: list[dict[str, Any]] = []
+        self._deferred_continuation_lock = threading.Lock()
+        self._flushing_deferred_continuation = False
 
     def _apply_file_size_limit(self, provider: DocumentProvider) -> None:
         """Apply max_file_size config to file-based providers."""
@@ -2161,6 +2174,117 @@ class Keeper:
     # Write Operations
     # -------------------------------------------------------------------------
 
+    def _continuation_background_enabled(self) -> bool:
+        return bool(self._is_local) and _env_flag(KEEP_CONTINUATION_BACKGROUND)
+
+    def _continuation_summarize_enabled(self) -> bool:
+        return bool(self._is_local) and (
+            _env_flag(KEEP_CONTINUATION_SUMMARIZE) or self._continuation_background_enabled()
+        )
+
+    def _schedule_summarize_via_continuation(
+        self,
+        *,
+        id: str,
+        content: str,
+        tags: Optional[dict[str, Any]] = None,
+    ) -> None:
+        user_tags = casefold_tags(filter_non_system_tags(tags or {}))
+        tag_fingerprint = hashlib.sha256(
+            json.dumps(user_tags, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()[:12]
+        idem = f"bg-summarize:{id}:{_content_hash(content)}:{tag_fingerprint}"
+        payload = {
+            "request_id": f"bg-summarize-{uuid.uuid4().hex[:8]}",
+            "idempotency_key": idem,
+            "goal": "summarize",
+            "params": {"id": id, "content": content},
+            "steps": [
+                {
+                    "kind": "summarize",
+                    "runner": {"type": "provider.summarize"},
+                    "input_mode": "note_content",
+                    "output_contract": {"must_return": ["summary"]},
+                    "apply": {
+                        "ops": [
+                            {"op": "set_summary", "summary": "$output.summary"},
+                        ]
+                    },
+                }
+            ],
+            "work_results": [],
+        }
+        runtime = self._get_continuation_runtime()
+        if runtime._flow_store.in_transaction():
+            raise RuntimeError("continuation runtime transaction is active")
+        out = runtime.continue_flow(payload)
+        if str(out.get("status") or "") == "failed":
+            errors = out.get("errors") or []
+            first = errors[0] if isinstance(errors, list) and errors and isinstance(errors[0], dict) else {}
+            raise RuntimeError(
+                f"continuation summarize schedule failed: {first.get('code') or 'unknown'}: {first.get('message') or 'no message'}"
+            )
+
+    def _flush_deferred_continuation_summarize(self) -> None:
+        if self._flushing_deferred_continuation:
+            return
+        self._flushing_deferred_continuation = True
+        try:
+            while True:
+                with self._deferred_continuation_lock:
+                    if not self._deferred_continuation_summarize:
+                        break
+                    pending = self._deferred_continuation_summarize.pop(0)
+                try:
+                    self._schedule_summarize_via_continuation(
+                        id=str(pending.get("id") or ""),
+                        content=str(pending.get("content") or ""),
+                        tags=pending.get("tags") if isinstance(pending.get("tags"), dict) else None,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Deferred continuation summarize scheduling failed for %s; falling back to pending queue: %s",
+                        pending.get("id"), exc,
+                    )
+                    self._pending_queue.enqueue(
+                        str(pending.get("id") or ""),
+                        str(pending.get("doc_coll") or self._resolve_doc_collection()),
+                        str(pending.get("content") or ""),
+                    )
+        finally:
+            self._flushing_deferred_continuation = False
+
+    def _enqueue_summarize_background(
+        self,
+        *,
+        id: str,
+        doc_coll: str,
+        content: str,
+        tags: Optional[dict[str, Any]] = None,
+    ) -> None:
+        if self._continuation_summarize_enabled():
+            runtime = self._get_continuation_runtime()
+            if runtime._flow_store.in_transaction():
+                with self._deferred_continuation_lock:
+                    self._deferred_continuation_summarize.append(
+                        {
+                            "id": id,
+                            "doc_coll": doc_coll,
+                            "content": content,
+                            "tags": dict(tags or {}),
+                        }
+                    )
+                return
+            try:
+                self._schedule_summarize_via_continuation(id=id, content=content, tags=tags)
+                return
+            except Exception as exc:
+                logger.warning(
+                    "Continuation summarize scheduling failed for %s; falling back to pending queue: %s",
+                    id, exc,
+                )
+        self._pending_queue.enqueue(id, doc_coll, content)
+
     def _upsert(
         self,
         id: str,
@@ -2268,12 +2392,22 @@ class Keeper:
             logger.debug("Tags changed, queueing re-summarization for %s", id)
             final_summary = existing_doc.summary
             if len(content) > max_len:
-                self._pending_queue.enqueue(id, doc_coll, content)
+                self._enqueue_summarize_background(
+                    id=id,
+                    doc_coll=doc_coll,
+                    content=content,
+                    tags=merged_tags,
+                )
         elif len(content) <= max_len:
             final_summary = content
         else:
             final_summary = content[:max_len] + "..."
-            self._pending_queue.enqueue(id, doc_coll, content)
+            self._enqueue_summarize_background(
+                id=id,
+                doc_coll=doc_coll,
+                content=content,
+                tags=merged_tags,
+            )
 
         # Cloud mode: defer embedding to background worker for faster response.
         # The doc store write happens immediately; the note is findable by
@@ -6546,6 +6680,31 @@ class Keeper:
         """Get count of pending summaries awaiting processing."""
         return self._pending_queue.count()
 
+    def continuation_pending_count(self, *, claimable_only: bool = False) -> int:
+        """Get count of requested continuation work items."""
+        if not self._continuation_background_enabled():
+            return 0
+        runtime = self._get_continuation_runtime()
+        return runtime.count_requested_work(claimable_only=claimable_only)
+
+    def process_continuation_work(
+        self,
+        *,
+        limit: int = 10,
+        worker_id: Optional[str] = None,
+        lease_seconds: int = 120,
+    ) -> dict:
+        """Process a batch of requested continuation work items."""
+        if not self._continuation_background_enabled():
+            return {"claimed": 0, "processed": 0, "failed": 0, "dead_lettered": 0, "errors": []}
+        runtime = self._get_continuation_runtime()
+        worker = worker_id or f"local-daemon:{os.getpid()}"
+        return runtime.process_requested_work_batch(
+            worker_id=worker,
+            limit=limit,
+            lease_seconds=lease_seconds,
+        )
+
     def pending_stats(self) -> dict:
         """Get pending summary queue statistics.
 
@@ -6586,7 +6745,9 @@ class Keeper:
 
     def continue_flow(self, payload: dict) -> dict:
         """Run one continuation tick for local API-first flows."""
-        return self._get_continuation_runtime().continue_flow(payload)
+        result = self._get_continuation_runtime().continue_flow(payload)
+        self._flush_deferred_continuation_summarize()
+        return result
 
     def continue_run_work(self, cursor: str, work_id: str) -> dict:
         """Execute a pending local work item and return a work_result envelope."""

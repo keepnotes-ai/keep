@@ -1,6 +1,7 @@
 from keep.api import Keeper
 from keep.continuation_engine import ContinuationEngine
 from keep.continuation_env import LocalContinuationEnvironment
+from keep.continuation_executor import WorkExecutor
 from keep.continuation_store import SQLiteFlowStore
 
 
@@ -92,6 +93,76 @@ def test_engine_idempotency_replay_with_adapters(mock_providers, tmp_path):
         )
         assert replay["cursor"] == first["cursor"]
         assert replay["status"] == first["status"]
+    finally:
+        engine.close()
+        kp.close()
+
+
+def test_engine_process_requested_work_batch_applies_result(mock_providers, tmp_path):
+    kp = Keeper(store_path=tmp_path)
+    flow_store = SQLiteFlowStore(tmp_path / "engine-continuation.db")
+    engine = ContinuationEngine(
+        flow_store=flow_store,
+        env=LocalContinuationEnvironment(kp),
+    )
+    try:
+        content = "engine batch " * 120
+        kp.put(content=content, id="note:engine:batch", summary="placeholder")
+
+        first = engine.continue_flow(
+            _summarize_request("note:engine:batch", content, request_id="engine-batch-1")
+        )
+        assert first["status"] == "waiting_work"
+        assert engine.count_requested_work() == 1
+
+        processed = engine.process_requested_work_batch(worker_id="worker-1", limit=10)
+        assert processed["claimed"] == 1
+        assert processed["processed"] == 1
+        assert processed["failed"] == 0
+        assert processed["dead_lettered"] == 0
+        assert engine.count_requested_work() == 0
+
+        item = kp.get("note:engine:batch")
+        assert item is not None
+        assert item.summary == content[:200]
+    finally:
+        engine.close()
+        kp.close()
+
+
+class _FailingWorkExecutor(WorkExecutor):
+    def execute(self, payload: dict):
+        raise RuntimeError("boom")
+
+
+def test_engine_process_requested_work_batch_dead_letters_after_max_attempts(mock_providers, tmp_path):
+    kp = Keeper(store_path=tmp_path)
+    flow_store = SQLiteFlowStore(tmp_path / "engine-continuation.db")
+    engine = ContinuationEngine(
+        flow_store=flow_store,
+        env=LocalContinuationEnvironment(kp),
+        work_executor=_FailingWorkExecutor(),
+    )
+    try:
+        content = "engine dead letter " * 120
+        kp.put(content=content, id="note:engine:dead-letter", summary="placeholder")
+
+        first = engine.continue_flow(
+            _summarize_request("note:engine:dead-letter", content, request_id="engine-dead-1")
+        )
+        work_id = first["work"][0]["work_id"]
+        flow_store._conn.execute(
+            "UPDATE continue_work SET attempt = 2, max_attempts = 1 WHERE work_id = ?",
+            (work_id,),
+        )
+        flow_store._conn.commit()
+
+        processed = engine.process_requested_work_batch(worker_id="worker-dead", limit=10)
+        assert processed["claimed"] == 1
+        assert processed["processed"] == 0
+        assert processed["failed"] == 0
+        assert processed["dead_lettered"] == 1
+        assert engine.count_requested_work() == 0
     finally:
         engine.close()
         kp.close()

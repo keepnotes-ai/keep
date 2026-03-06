@@ -1014,6 +1014,49 @@ def test_put_routes_through_continuation_runtime(mock_providers, tmp_path):
         kp.close()
 
 
+def test_put_long_content_uses_pending_queue_by_default(monkeypatch, mock_providers, tmp_path):
+    kp = Keeper(store_path=tmp_path)
+    try:
+        monkeypatch.setattr(kp, "_spawn_processor", lambda: False)
+        monkeypatch.setattr(kp, "_needs_sysdoc_migration", False)
+        baseline_pending = kp.pending_count()
+        content = "default queue " * 200
+        item = kp.put(content=content, id="note:default-queue")
+        assert item.summary.endswith("...")
+        assert kp.pending_count() == baseline_pending + 1
+        assert kp.continuation_pending_count() == 0
+    finally:
+        kp.close()
+
+
+def test_put_long_content_schedules_continuation_work_when_enabled(monkeypatch, mock_providers, tmp_path):
+    monkeypatch.setenv("KEEP_CONTINUATION_BACKGROUND", "1")
+    kp = Keeper(store_path=tmp_path)
+    try:
+        monkeypatch.setattr(kp, "_spawn_processor", lambda: False)
+        monkeypatch.setattr(kp, "_needs_sysdoc_migration", False)
+        baseline_pending = kp.pending_count()
+        baseline_continuation = kp.continuation_pending_count()
+        content = "continuation queue " * 200
+        item = kp.put(content=content, id="note:continuation-queue")
+        assert item.summary.endswith("...")
+        assert kp.pending_count() == baseline_pending
+        assert kp.continuation_pending_count() == baseline_continuation + 1
+
+        result = kp.process_continuation_work(limit=10, worker_id="test-worker")
+        assert result["claimed"] >= 1
+        assert result["processed"] >= 1
+        assert result["failed"] == 0
+        assert result["dead_lettered"] == 0
+
+        updated = kp.get("note:continuation-queue")
+        assert updated is not None
+        assert updated.summary == content[:200]
+        assert kp.continuation_pending_count() == 0
+    finally:
+        kp.close()
+
+
 def test_continue_rejects_oversized_payload(mock_providers, tmp_path):
     kp = Keeper(store_path=tmp_path)
     try:

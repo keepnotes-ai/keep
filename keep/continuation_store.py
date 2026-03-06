@@ -77,6 +77,7 @@ class FlowStore(Protocol):
     def store_idempotent(self, key: str, request_hash: str, output_json: str) -> None: ...
 
     def list_requested_work(self, flow_id: str) -> list[WorkRow]: ...
+    def count_requested_work(self, *, claimable_only: bool = False) -> int: ...
     def get_work(self, flow_id: str, work_id: str) -> Optional[WorkRow]: ...
     def has_any_work_key(self, flow_id: str, key: str) -> bool: ...
     def has_completed_work_key(self, flow_id: str, key: str) -> bool: ...
@@ -348,6 +349,29 @@ class SQLiteFlowStore:
             (flow_id,),
         ).fetchall()
         return [self._work_row(row) for row in rows]
+
+    def count_requested_work(self, *, claimable_only: bool = False) -> int:
+        if claimable_only:
+            now = self._now()
+            row = self._conn.execute(
+                """
+                SELECT COUNT(1) AS c
+                FROM continue_work
+                WHERE status = 'requested'
+                  AND (retry_after IS NULL OR retry_after <= ?)
+                  AND (lease_until IS NULL OR lease_until <= ?)
+                """,
+                (now, now),
+            ).fetchone()
+            return int(row["c"]) if row is not None else 0
+        row = self._conn.execute(
+            """
+            SELECT COUNT(1) AS c
+            FROM continue_work
+            WHERE status = 'requested'
+            """
+        ).fetchone()
+        return int(row["c"]) if row is not None else 0
 
     def get_work(self, flow_id: str, work_id: str) -> Optional[WorkRow]:
         row = self._conn.execute(
