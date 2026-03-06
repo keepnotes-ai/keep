@@ -4,7 +4,7 @@
 
 OpenClaw writes memory files (markdown) which are a solid foundation for long-term memory. But flat files aren't enough to reliably recall what's happening, what needs follow-up, or to build a continuous improvement loop.
 
-[Keep](https://github.com/hughpyle/keep) includes OpenClaw hooks that add three things:
+[Keep](https://github.com/keepnotes-ai/keep) includes OpenClaw hooks that add three things:
 
 1. **Context injection** (`before_agent_start`) — at the start of every agent turn, keep injects current intentions, similar notes, and open commitments. The agent starts each turn knowing what matters.
 2. **Episodic knowledge** (`after_compaction`) — when OpenClaw compacts context, keep indexes the memory files and turns them into searchable, tagged, versioned knowledge. Not just "what was said" but the structure within it.

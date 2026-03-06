@@ -50,5 +50,5 @@
    ```
 
 4. **GitHub release**
-   - Create release from tag at https://github.com/hughpyle/keep/releases
+   - Create release from tag at https://github.com/keepnotes-ai/keep/releases
    - Copy relevant changelog items to release notes

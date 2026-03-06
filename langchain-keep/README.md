@@ -1,6 +1,6 @@
 # langchain-keep
 
-LangChain integration for [keep](https://github.com/hughpyle/keep) — reflective memory for AI agents.
+LangChain integration for [keep](https://github.com/keepnotes-ai/keep) — reflective memory for AI agents.
 
 This is a convenience package that installs `keep-skill[langchain]` and re-exports the integration components.
 
@@ -55,5 +55,5 @@ See the [full documentation](https://docs.keepnotes.ai) for all provider options
 ## Links
 
 - [Documentation](https://docs.keepnotes.ai)
-- [GitHub](https://github.com/hughpyle/keep)
+- [GitHub](https://github.com/keepnotes-ai/keep)
 - [keep on PyPI](https://pypi.org/project/keep-skill/)

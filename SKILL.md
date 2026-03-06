@@ -2,7 +2,7 @@
 name: keep
 version: 0.83.0
 description: Reflective Memory
-homepage: https://github.com/hughpyle/keep
+homepage: https://github.com/keepnotes-ai/keep
 runtime: python:3.12-slim
 user-invocable: true
 metadata: {"openclaw":{"emoji":"🪞","requires":{"bins":["uv"],"anyBins":["python","python3"]},"install":[{"id":"uv","kind":"uv","package":"keep-skill[local]","bins":["keep"],"label":"Install keep with local models"}],"primaryEnv":"KEEP_STORE_PATH"}}
