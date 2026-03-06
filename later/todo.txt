@@ -3,8 +3,6 @@
 
 * `keep put --no-version` for volatile items
 
-* simple "set status closed" thing, because we broke it
-
 * edge migration over versioning and move
 
 * blog: the unreasonable "as if";
@@ -27,7 +25,7 @@
 
 * Content-based dedup, for summarization?
 
-* Codex hooks
+x Codex hooks
     https://developers.openai.com/codex/config-advanced/#notifications
     Notification - can just log the user prompts for the turn (better than nothing)
     "We are actively working on designing a hooks system" (https://github.com/openai/codex/pull/11067#issuecomment-3866360949)
@@ -243,4 +241,5 @@ x check for CLI compatibility with windows (WLS should work but no plan to valid
 . multi-valued edges outbound, as well as inverse
 . edge-tags: query-time union
 . more edge tags for linking "artifacts" with "notes"
-. "reflective callback" queue
+. "reflective callback" queue -> continuations
+. simple "set status closed" thing -> singular tags
