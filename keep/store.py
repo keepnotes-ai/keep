@@ -1,5 +1,4 @@
-"""
-Vector store implementation using ChromaDb.
+"""Vector store implementation using ChromaDb.
 
 This is the first concrete store implementation. The interface is designed
 to be extractable to a Protocol when additional backends are needed.
@@ -40,8 +39,7 @@ class StoreResult:
 
 
 class ChromaStore:
-    """
-    Persistent vector store using ChromaDb.
+    """Persistent vector store using ChromaDb.
     
     Each collection maps to a ChromaDb collection. Items are stored with:
     - id: The item's URI or custom identifier
@@ -56,8 +54,7 @@ class ChromaStore:
     """
     
     def __init__(self, store_path: Path, embedding_dimension: Optional[int] = None):
-        """
-        Initialize or open a ChromaDb store.
+        """Initialize or open a ChromaDb store.
 
         Args:
             store_path: Directory for persistent storage
@@ -240,8 +237,7 @@ class ChromaStore:
         return self._collections[name]
     
     def _tags_to_metadata(self, tags: dict[str, Any]) -> dict[str, Any]:
-        """
-        Convert tags to Chroma metadata format.
+        """Convert tags to Chroma metadata format.
         
         User tags are encoded as marker booleans so multivalue tags can be
         queried without list metadata support in Chroma.
@@ -286,8 +282,7 @@ class ChromaStore:
         summary: str,
         tags: dict[str, Any],
     ) -> None:
-        """
-        Insert or update an item in the store.
+        """Insert or update an item in the store.
 
         Args:
             collection: Collection name
@@ -346,8 +341,7 @@ class ChromaStore:
         summary: str,
         tags: dict[str, Any],
     ) -> None:
-        """
-        Store an archived version with a versioned ID.
+        """Store an archived version with a versioned ID.
 
         The versioned ID format is: {id}@v{version}
         Metadata includes _version and _base_id for filtering/navigation.
@@ -398,8 +392,7 @@ class ChromaStore:
         summary: str,
         tags: dict[str, Any],
     ) -> None:
-        """
-        Store a document part with a part-numbered ID.
+        """Store a document part with a part-numbered ID.
 
         The part ID format is: {id}@p{part_num}
         Metadata includes _part_num and _base_id for filtering/navigation.
@@ -442,8 +435,7 @@ class ChromaStore:
                 self._bump_epoch()
 
     def delete_parts(self, collection: str, id: str) -> int:
-        """
-        Delete all parts for a document from the vector store.
+        """Delete all parts for a document from the vector store.
 
         Args:
             collection: Collection name
@@ -471,8 +463,7 @@ class ChromaStore:
                 return count
 
     def delete(self, collection: str, id: str, delete_versions: bool = True) -> bool:
-        """
-        Delete an item from the store.
+        """Delete an item from the store.
 
         Args:
             collection: Collection name
@@ -511,8 +502,7 @@ class ChromaStore:
                 return True
 
     def update_summary(self, collection: str, id: str, summary: str) -> bool:
-        """
-        Update just the summary of an existing item.
+        """Update just the summary of an existing item.
 
         Used by lazy summarization to replace placeholder summaries
         with real generated summaries.
@@ -556,8 +546,7 @@ class ChromaStore:
                 return True
 
     def update_tags(self, collection: str, id: str, tags: dict[str, Any]) -> bool:
-        """
-        Update tags of an existing item without changing embedding or summary.
+        """Update tags of an existing item without changing embedding or summary.
 
         Args:
             collection: Collection name
@@ -620,8 +609,7 @@ class ChromaStore:
     # -------------------------------------------------------------------------
     
     def get(self, collection: str, id: str) -> StoreResult | None:
-        """
-        Retrieve a specific item by ID.
+        """Retrieve a specific item by ID.
         
         Args:
             collection: Collection name
@@ -656,8 +644,7 @@ class ChromaStore:
             return bool(result["ids"])
 
     def get_embedding(self, collection: str, id: str) -> list[float] | None:
-        """
-        Retrieve the stored embedding for a document.
+        """Retrieve the stored embedding for a document.
 
         Args:
             collection: Collection name
@@ -677,8 +664,7 @@ class ChromaStore:
     _LIST_IDS_PAGE = 5000
 
     def list_ids(self, collection: str) -> list[str]:
-        """
-        List all document IDs in a collection.
+        """List all document IDs in a collection.
 
         Paginates internally to avoid loading all IDs in a single
         ChromaDB call, which can be slow or OOM on large collections.
@@ -706,8 +692,7 @@ class ChromaStore:
             return all_ids
 
     def find_missing_ids(self, collection: str, ids: list[str]) -> set[str]:
-        """
-        Given a list of IDs, return those not present in ChromaDB.
+        """Given a list of IDs, return those not present in ChromaDB.
 
         Checks in batches to avoid oversized requests.
 
@@ -737,8 +722,7 @@ class ChromaStore:
         limit: int = 10,
         where: dict[str, Any] | None = None,
     ) -> list[StoreResult]:
-        """
-        Query by embedding similarity.
+        """Query by embedding similarity.
         
         Args:
             collection: Collection name
@@ -783,8 +767,7 @@ class ChromaStore:
         limit: int = 100,
         offset: int = 0,
     ) -> list[StoreResult]:
-        """
-        Query by metadata filter (tag query).
+        """Query by metadata filter (tag query).
 
         Args:
             collection: Collection name
@@ -829,8 +812,7 @@ class ChromaStore:
             return [c.name for c in collections]
 
     def delete_collection(self, name: str) -> bool:
-        """
-        Delete an entire collection.
+        """Delete an entire collection.
 
         Args:
             name: Collection name
@@ -863,8 +845,7 @@ class ChromaStore:
     def get_entries_full(
         self, collection: str, ids: list[str]
     ) -> list[dict[str, Any]]:
-        """
-        Batch get entries with embeddings, summaries, and metadata.
+        """Batch get entries with embeddings, summaries, and metadata.
 
         Returns list of dicts with keys: id, embedding, summary, tags.
         Only entries that exist are returned (missing IDs are silently skipped).
@@ -907,8 +888,7 @@ class ChromaStore:
         summaries: list[str],
         tags: list[dict[str, Any]],
     ) -> None:
-        """
-        Batch upsert entries with embeddings.
+        """Batch upsert entries with embeddings.
 
         All lists must have the same length. Tags are converted to store
         metadata format internally.
@@ -929,8 +909,7 @@ class ChromaStore:
                 self._bump_epoch()
 
     def delete_entries(self, collection: str, ids: list[str]) -> None:
-        """
-        Delete specific entries by ID.
+        """Delete specific entries by ID.
 
         Unlike delete(), this does not expand version IDs — it deletes
         exactly the IDs given. Silently ignores IDs that don't exist.
@@ -952,8 +931,7 @@ class ChromaStore:
     # -------------------------------------------------------------------------
 
     def close(self) -> None:
-        """
-        Close ChromaDB client and release resources.
+        """Close ChromaDB client and release resources.
 
         Evicts the shared system cache so the underlying System (hnswlib
         indices, SQLite connections) can be garbage-collected.

@@ -1,5 +1,4 @@
-"""
-Analyzer implementations for document decomposition.
+"""Analyzer implementations for document decomposition.
 
 Two implementations:
 - SlidingWindowAnalyzer (default): Token-budgeted sliding windows with
@@ -40,8 +39,7 @@ _PREAMBLE_RE = re.compile(
 
 
 def _parse_parts(text: str) -> list[dict]:
-    """
-    Parse one-summary-per-line output from LLM.
+    """Parse one-summary-per-line output from LLM.
 
     Handles common LLM quirks: preamble lines, leaked XML tags,
     EMPTY sentinel, and very short lines.
@@ -158,8 +156,7 @@ def get_budget_for_model(model: str, provider: str = "") -> int:
 # ---------------------------------------------------------------------------
 
 class SlidingWindowAnalyzer:
-    """
-    Token-budgeted sliding-window decomposition.
+    """Token-budgeted sliding-window decomposition.
 
     Processes chunks in windows sized to the model's context budget.
     Each window uses XML-style tags to mark which chunks are analysis
@@ -176,13 +173,14 @@ class SlidingWindowAnalyzer:
         target_ratio: float = 0.6,
         prompt: str | None = None,
     ):
-        """
+        """Initialize.
+
         Args:
-            provider: A SummarizationProvider with generate() support.
-            context_budget: Total token budget per window.
-            target_ratio: Fraction of budget allocated to target chunks (vs context).
-            prompt: Fixed prompt text to use. If None, uses DEFAULT_ANALYSIS_PROMPT
-                (override with prompt_override in analyze()).
+        provider: A SummarizationProvider with generate() support.
+        context_budget: Total token budget per window.
+        target_ratio: Fraction of budget allocated to target chunks (vs context).
+        prompt: Fixed prompt text to use. If None, uses DEFAULT_ANALYSIS_PROMPT
+            (override with prompt_override in analyze()).
         """
         self._provider = provider
         self._context_budget = context_budget
@@ -380,8 +378,7 @@ Guidelines:
 
 
 def _parse_decomposition_json(text: str) -> list[dict]:
-    """
-    Parse JSON from LLM decomposition output.
+    """Parse JSON from LLM decomposition output.
 
     Handles code fences, wrapper objects, and direct JSON arrays.
     """
@@ -432,8 +429,7 @@ def _parse_decomposition_json(text: str) -> list[dict]:
 
 
 class SinglePassAnalyzer:
-    """
-    Single-pass LLM decomposition with JSON output.
+    """Single-pass LLM decomposition with JSON output.
 
     Concatenates all chunks, sends to the configured summarization provider's
     generate() method, and parses the resulting JSON into part dicts.
@@ -520,8 +516,7 @@ def extract_prompt_section(content: str) -> str:
 
 
 class TagClassifier:
-    """
-    Data-driven tag classification for analyzed parts.
+    """Data-driven tag classification for analyzed parts.
 
     Reads constrained tag specifications from the store and builds a
     classification prompt dynamically. Each part summary is classified
@@ -536,10 +531,11 @@ class TagClassifier:
         provider=None,
         confidence_threshold: float = 0.7,
     ):
-        """
+        """Initialize.
+
         Args:
-            provider: A SummarizationProvider with generate() support.
-            confidence_threshold: Minimum confidence (0-1) to apply a tag.
+        provider: A SummarizationProvider with generate() support.
+        confidence_threshold: Minimum confidence (0-1) to apply a tag.
         """
         self._provider = provider
         self._confidence_threshold = confidence_threshold
@@ -551,8 +547,7 @@ class TagClassifier:
         return extract_prompt_section(content)
 
     def load_specs(self, keeper) -> list[dict]:
-        """
-        Load constrained tag specifications from the store.
+        """Load constrained tag specifications from the store.
 
         Scans for .tag/* documents with _constrained=true, then loads
         their sub-documents to build the classification taxonomy.
@@ -625,8 +620,7 @@ class TagClassifier:
         return specs
 
     def build_prompt(self, specs: list[dict] | None = None) -> str:
-        """
-        Build a classification system prompt from tag specs.
+        """Build a classification system prompt from tag specs.
 
         The prompt is generated entirely from store data — no hardcoded
         tag names or values.  If a spec or value has a ``prompt`` field
@@ -709,8 +703,7 @@ Rules:
         parts: list[dict],
         specs: list[dict] | None = None,
     ) -> list[dict]:
-        """
-        Classify parts and add tags above the confidence threshold.
+        """Classify parts and add tags above the confidence threshold.
 
         Args:
             parts: List of part dicts (must have "summary" key).

@@ -1,5 +1,4 @@
-"""
-Logging configuration for keep.
+"""Logging configuration for keep.
 
 Suppress verbose library output by default for better UX.
 """
@@ -18,8 +17,7 @@ if not os.environ.get("KEEP_VERBOSE"):
 
 
 def configure_quiet_mode(quiet: bool = True):
-    """
-    Configure logging to suppress verbose library output.
+    """Configure logging to suppress verbose library output.
     
     This silences:
     - HuggingFace transformers progress bars

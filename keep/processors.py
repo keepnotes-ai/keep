@@ -1,5 +1,4 @@
-"""
-Pure processing functions for keep.
+"""Pure processing functions for keep.
 
 These functions encapsulate the "compute" portion of background processing
 (summarization, OCR) without any store reads or writes.  This separation

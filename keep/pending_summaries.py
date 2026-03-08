@@ -1,5 +1,4 @@
-"""
-Pending work queue using SQLite.
+"""Pending work queue using SQLite.
 
 Stores work items (summarization, analysis, etc.) for serial background
 processing. This enables fast indexing with lazy summarization, and
@@ -56,8 +55,7 @@ class PendingSummary:
 
 
 class PendingSummaryQueue:
-    """
-    SQLite-backed queue for pending background work.
+    """SQLite-backed queue for pending background work.
 
     Items are added during fast indexing (with truncated placeholder summary)
     or by enqueue_analyze, and processed later by `keep pending`
@@ -66,9 +64,10 @@ class PendingSummaryQueue:
     """
 
     def __init__(self, queue_path: Path):
-        """
+        """Initialize.
+
         Args:
-            queue_path: Path to SQLite database file
+        queue_path: Path to SQLite database file.
         """
         self._queue_path = queue_path
         self._conn: Optional[sqlite3.Connection] = None
@@ -301,8 +300,7 @@ class PendingSummaryQueue:
         task_type: str = "summarize",
         metadata: Optional[dict] = None,
     ) -> None:
-        """
-        Add an item to the pending queue.
+        """Add an item to the pending queue.
 
         If the same (id, collection, task_type) already exists, replaces it
         (resets to pending status).
@@ -320,8 +318,7 @@ class PendingSummaryQueue:
             self._conn.commit()
 
     def dequeue(self, limit: int = 10) -> list[PendingSummary]:
-        """
-        Atomically claim the oldest pending items for processing.
+        """Atomically claim the oldest pending items for processing.
 
         Uses BEGIN IMMEDIATE to get an exclusive write lock, then
         selects and claims items in a single transaction. Concurrent

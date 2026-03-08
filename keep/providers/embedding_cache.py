@@ -1,5 +1,4 @@
-"""
-Embedding cache using SQLite.
+"""Embedding cache using SQLite.
 
 Wraps any EmbeddingProvider to cache embeddings by content hash,
 avoiding redundant embedding calls for unchanged content.
@@ -21,18 +20,18 @@ logger = logging.getLogger(__name__)
 
 
 class EmbeddingCache:
-    """
-    SQLite-based embedding cache.
+    """SQLite-based embedding cache.
     
     Cache key is SHA256(model_name + content), so different models
     don't share cached embeddings.
     """
     
     def __init__(self, cache_path: Path, max_entries: int = 50000):
-        """
+        """Initialize.
+
         Args:
-            cache_path: Path to SQLite database file
-            max_entries: Maximum cache entries (LRU eviction when exceeded)
+        cache_path: Path to SQLite database file
+        max_entries: Maximum cache entries (LRU eviction when exceeded).
         """
         self._cache_path = cache_path
         self._max_entries = max_entries
@@ -86,8 +85,7 @@ class EmbeddingCache:
         return json.loads(data)
 
     def get(self, model_name: str, content: str) -> Optional[list[float]]:
-        """
-        Get cached embedding if it exists.
+        """Get cached embedding if it exists.
 
         Updates last_accessed timestamp on hit.
         """
@@ -121,8 +119,7 @@ class EmbeddingCache:
         content: str,
         embedding: list[float]
     ) -> None:
-        """
-        Cache an embedding.
+        """Cache an embedding.
 
         Evicts oldest entries if cache exceeds max_entries.
         """
@@ -248,8 +245,7 @@ class EmbeddingCache:
 
 
 class CachingEmbeddingProvider:
-    """
-    Wrapper that adds caching to any EmbeddingProvider.
+    """Wrapper that adds caching to any EmbeddingProvider.
     
     Usage:
         base_provider = SentenceTransformerEmbedding()
@@ -279,8 +275,7 @@ class CachingEmbeddingProvider:
         return self._provider.dimension
     
     def embed(self, text: str) -> list[float]:
-        """
-        Get embedding, using cache when available.
+        """Get embedding, using cache when available.
 
         Cache failures are non-fatal — falls through to the real provider.
         """
@@ -308,8 +303,7 @@ class CachingEmbeddingProvider:
         return embedding
     
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
-        """
-        Get embeddings for batch, using cache where available.
+        """Get embeddings for batch, using cache where available.
 
         Only computes embeddings for cache misses. Cache failures
         are non-fatal — falls through to the real provider.

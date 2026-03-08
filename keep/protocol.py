@@ -1,5 +1,4 @@
-"""
-Protocol definitions for Keeper and its storage backends.
+"""Protocol definitions for Keeper and its storage backends.
 
 Defines interface contracts at two levels:
 - KeeperProtocol: the public API (CLI, RemoteKeeper)
@@ -16,8 +15,7 @@ from .types import Item, ItemContext, TagMap
 
 @runtime_checkable
 class KeeperProtocol(Protocol):
-    """
-    The public interface for reflective memory operations.
+    """The public interface for reflective memory operations.
 
     Implemented by:
     - Keeper (local backend)
@@ -188,8 +186,10 @@ class KeeperProtocol(Protocol):
     # -- Data export / import --
 
     def export_iter(self, *, include_system: bool = True) -> Iterator[dict]:
-        """Stream-export documents. Yields header dict first, then one
-        self-contained dict per document (versions and parts inline).
+        """Stream-export documents.
+
+        Yields header dict first, then one self-contained dict per document
+        (versions and parts inline).
         """
         ...
 
@@ -213,8 +213,7 @@ class KeeperProtocol(Protocol):
 
 @runtime_checkable
 class VectorStoreProtocol(Protocol):
-    """
-    Abstract vector search backend.
+    """Abstract vector search backend.
 
     Provides embedding storage, similarity search, and metadata queries.
     """
@@ -329,8 +328,7 @@ class VectorStoreProtocol(Protocol):
 
 @runtime_checkable
 class DocumentStoreProtocol(Protocol):
-    """
-    Abstract document metadata backend.
+    """Abstract document metadata backend.
 
     Provides document storage, versioning, and tag-based queries.
     """
@@ -521,8 +519,7 @@ class DocumentStoreProtocol(Protocol):
 
 @runtime_checkable
 class PendingQueueProtocol(Protocol):
-    """
-    Abstract pending work queue.
+    """Abstract pending work queue.
 
     Manages background tasks: summarization, embedding, and analysis.
     """

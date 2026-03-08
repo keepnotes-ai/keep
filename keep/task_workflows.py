@@ -1,5 +1,4 @@
-"""
-Shared local task workflows for processor-backed tasks.
+"""Shared local task workflows for processor-backed tasks.
 
 These workflows encapsulate the current "magic behavior" for summarize/ocr/analyze
 so queue-driven processing and continuation-driven processing can reuse the same

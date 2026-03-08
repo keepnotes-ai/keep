@@ -1,5 +1,4 @@
-"""
-LangChain integration for Keep — reflective memory for AI agents.
+"""LangChain integration for Keep — reflective memory for AI agents.
 
 Components:
     KeepStore           LangGraph BaseStore backed by Keeper

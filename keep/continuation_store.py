@@ -1,5 +1,4 @@
-"""
-Continuation flow store adapters.
+"""Continuation flow store adapters.
 
 Defines the persistence boundary for continuation runtime state so the runtime
 logic can be shared across local and hosted implementations.
@@ -19,6 +18,8 @@ from typing import Optional, Protocol
 
 @dataclass
 class FlowRow:
+    """A continuation flow record."""
+
     flow_id: str
     state_version: int
     status: str
@@ -27,6 +28,8 @@ class FlowRow:
 
 @dataclass
 class WorkRow:
+    """A work item record within a continuation flow."""
+
     work_id: str
     flow_id: str
     kind: str
@@ -38,6 +41,8 @@ class WorkRow:
 
 @dataclass
 class MutationRow:
+    """A mutation record tracking store operations from a flow."""
+
     mutation_id: str
     flow_id: str
     work_id: Optional[str]
@@ -48,6 +53,8 @@ class MutationRow:
 
 
 class FlowStore(Protocol):
+    """Persistence boundary for continuation flow state."""
+
     def begin_immediate(self) -> None: ...
     def commit(self) -> None: ...
     def rollback(self) -> None: ...
@@ -83,6 +90,8 @@ class FlowStore(Protocol):
 
 
 class SQLiteFlowStore:
+    """SQLite-backed implementation of FlowStore."""
+
     def __init__(self, db_path: Path) -> None:
         self._db_path = db_path
         self._conn: Optional[sqlite3.Connection] = None

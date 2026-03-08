@@ -1,6 +1,4 @@
-"""
-Entry point for `python -m keep`.
-"""
+"""Entry point for `python -m keep`."""
 
 from .cli import main
 

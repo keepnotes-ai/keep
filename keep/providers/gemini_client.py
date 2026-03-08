@@ -1,5 +1,4 @@
-"""
-Shared Gemini client factory for Google AI Studio and Vertex AI.
+"""Shared Gemini client factory for Google AI Studio and Vertex AI.
 
 Supports two authentication paths:
 1. Google AI Studio: GEMINI_API_KEY or GOOGLE_API_KEY (API key)
@@ -13,8 +12,7 @@ import os
 
 
 def create_gemini_client(api_key: str | None = None):
-    """
-    Create a google-genai Client for either Google AI Studio or Vertex AI.
+    """Create a google-genai Client for either Google AI Studio or Vertex AI.
 
     Args:
         api_key: Explicit API key (overrides environment variables).

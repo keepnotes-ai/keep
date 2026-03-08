@@ -1,5 +1,4 @@
-"""
-CLI interface for reflective memory.
+"""CLI interface for reflective memory.
 
 Usage:
     keep find "query text"
@@ -134,7 +133,7 @@ def _quote_scalar_tag_value(value) -> str:
 
 
 def _render_edge_ref_value(ref: EdgeRef) -> str:
-    """Render an edge reference as: id [date] \"summary\"."""
+    r"""Render an edge reference as: id [date] \"summary\"."""
     ref_id = _shell_quote_id(ref.source_id)
     date_part = f" [{ref.date}]" if ref.date else ""
     summary_part = _quote_scalar_tag_value(ref.summary or "")
@@ -805,7 +804,7 @@ def _render_frontmatter(ctx: ItemContext) -> str:
 
 
 def _format_summary_line(item: Item, id_width: int = 0, show_tags: bool = False) -> str:
-    """Format item as single summary line: id date summary (with @V{N} only for old versions)
+    """Format item as single summary line: id date summary (with @V{N} only for old versions).
 
     Args:
         item: The item to format
@@ -867,7 +866,7 @@ def _format_summary_line(item: Item, id_width: int = 0, show_tags: bool = False)
 
 
 def _format_versioned_id(item: Item) -> str:
-    """Format item ID with version suffix only for old versions: id or id@V{N}"""
+    """Format item ID with version suffix only for old versions: id or id@V{N}."""
     base_id = item.tags.get("_base_id", item.id)
     version = item.tags.get("_version", "0")
     version_suffix = f"@V{{{version}}}" if version != "0" else ""
@@ -1014,6 +1013,8 @@ def _format_items(items: list[Item], as_json: bool = False, keeper=None, show_ta
     """Format multiple items for display.
 
     Args:
+        items: List of items to format.
+        as_json: Output as JSON instead of text.
         keeper: Optional Keeper instance. When provided, items with
                 _focus_part (uplifted from part hits) get their parts
                 manifest loaded and windowed around the hit.
@@ -1220,8 +1221,7 @@ def _parse_tags(tags: Optional[list[str]]) -> dict:
 
 
 def _filter_by_tags(items: list, tags: list[str]) -> list:
-    """
-    Filter items by tag specifications (AND logic).
+    """Filter items by tag specifications (AND logic).
 
     Each tag can be:
     - "key" - item must have this tag key (any value)
@@ -1303,8 +1303,7 @@ def find(
         help="Token budget for rich context output (includes parts and versions)"
     )] = None,
 ):
-    """
-    Find notes by hybrid search (semantic + full-text) or similarity.
+    r"""Find notes by hybrid search (semantic + full-text) or similarity.
 
     \b
     Examples:
@@ -1398,8 +1397,7 @@ def list_recent(
         help="Include hidden system notes (IDs starting with '.')"
     )] = False,
 ):
-    """
-    List recent notes, filter by tags, or list tag keys/values.
+    r"""List recent notes, filter by tags, or list tag keys/values.
 
     \b
     Examples:
@@ -1503,8 +1501,7 @@ def tag(
     )] = None,
     store: StoreOption = None,
 ):
-    """
-    Add, update, or remove tags on existing notes.
+    r"""Add, update, or remove tags on existing notes.
 
     Does not re-process the note - only updates tags.
 
@@ -1746,8 +1743,7 @@ def put(
         help="Re-process even if content is unchanged"
     )] = False,
 ):
-    """
-    Add or update a note in the store.
+    r"""Add or update a note in the store.
 
     \b
     Input modes (auto-detected):
@@ -1874,8 +1870,7 @@ def now(
         help="Max similar/meta notes to show (default 3)"
     )] = 3,
 ):
-    """
-    Get or set the current working intentions.
+    r"""Get or set the current working intentions.
 
     With no arguments, displays the current intentions.
     With content, replaces it.
@@ -1994,8 +1989,7 @@ def now(
 
 
 def _find_now_version_by_tags(kp, tags: list[str], *, scope: Optional[str] = None):
-    """
-    Search nowdoc version history for most recent version matching all tags.
+    """Search nowdoc version history for most recent version matching all tags.
 
     Checks current version first, then scans previous versions.
     """
@@ -2122,7 +2116,7 @@ def prompt(
     )] = None,
     store: StoreOption = None,
 ):
-    """Render an agent prompt with injected context.
+    r"""Render an agent prompt with injected context.
 
     \b
     The prompt doc may contain {get} and {find} placeholders:
@@ -2222,8 +2216,7 @@ def move(
     )] = False,
     store: StoreOption = None,
 ):
-    """
-    Move versions from now (or another item) into a named item.
+    """Move versions from now (or another item) into a named item.
 
     Requires either -t (tag filter) or --only (tip only).
     With -t, matching versions are extracted from the source.
@@ -2300,8 +2293,7 @@ def get(
     )] = 10,
     store: StoreOption = None,
 ):
-    """
-    Retrieve note(s) by ID.
+    r"""Retrieve note(s) by ID.
 
     Accepts one or more IDs. Version identifiers: Append @V{N} to get a specific version.
     N>=0 selects from current; N<0 selects from oldest archived (-1 oldest).
@@ -2505,7 +2497,6 @@ def _get_one(
     focus_part: Optional[int] = None,
 ) -> Optional[str]:
     """Get a single item and return its formatted output, or None on error."""
-
     # Parse @V{N} (signed) or @P{N} identifier from ID (security: check literal first)
     actual_id = one_id
     version_from_id = None
@@ -2598,8 +2589,7 @@ def del_cmd(
     id: Annotated[list[str], typer.Argument(help="ID(s) of note(s) to delete")],
     store: StoreOption = None,
 ):
-    """
-    Delete the current version of note(s), or a specific version.
+    r"""Delete the current version of note(s), or a specific version.
 
     Without @V{N}: reverts to the previous version (or fully deletes if no history).
     With @V{N}: deletes that specific archived version; other versions remain.
@@ -2695,8 +2685,7 @@ def analyze(
     )] = False,
     store: StoreOption = None,
 ):
-    """
-    Decompose a note or string into meaningful parts.
+    """Decompose a note or string into meaningful parts.
 
     For documents (URI sources): decomposes content structurally.
     For inline notes (strings): assembles version history and decomposes
@@ -2780,8 +2769,7 @@ def analyze(
 
 
 def _get_config_value(cfg, store_path: Path, path: str):
-    """
-    Get config value by dotted path.
+    """Get config value by dotted path.
 
     Special paths (not in TOML):
         file - config file location
@@ -2946,8 +2934,7 @@ def config(
     )] = False,
     store: StoreOption = None,
 ):
-    """
-    Show configuration. Optionally get a specific value by path.
+    r"""Show configuration. Optionally get a specific value by path.
 
     \b
     Examples:
@@ -3059,8 +3046,7 @@ def pending_cmd(
         help="Run as background daemon (used internally)"
     )] = False,
 ):
-    """
-    Process pending background tasks.
+    """Process pending background tasks.
 
     Starts a background processor (if not already running) and shows
     progress. Ctrl-C detaches without stopping the processor.

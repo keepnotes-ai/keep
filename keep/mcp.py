@@ -1,5 +1,4 @@
-"""
-MCP stdio server for keep — reflective memory tools for AI agents.
+"""MCP stdio server for keep — reflective memory tools for AI agents.
 
 Exposes Keeper operations as MCP tools so local AI agents (Claude Code, etc.)
 get full reflective memory capability without HTTP infrastructure.

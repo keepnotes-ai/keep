@@ -1,5 +1,4 @@
-"""
-Continuation decision support and query.auto policy logic.
+"""Continuation decision support and query.auto policy logic.
 
 This module isolates strategy/discriminator computation from the core
 continuation tick runtime to reduce engine complexity while preserving the

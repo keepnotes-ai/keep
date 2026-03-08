@@ -1,5 +1,4 @@
-"""
-Document store using SQLite.
+"""Document store using SQLite.
 
 Stores canonical document records separate from embeddings.
 This enables multiple embedding providers to index the same documents.
@@ -32,8 +31,7 @@ SCHEMA_VERSION = 12
 
 @dataclass
 class VersionInfo:
-    """
-    Information about a document version.
+    """Information about a document version.
 
     Used for version navigation and history display.
     """
@@ -46,8 +44,7 @@ class VersionInfo:
 
 @dataclass
 class PartInfo:
-    """
-    Information about a document part (structural section).
+    """Information about a document part (structural section).
 
     Parts are produced by analyze() — an LLM-driven decomposition
     of content into meaningful sections. Each part has its own summary,
@@ -62,8 +59,7 @@ class PartInfo:
 
 @dataclass
 class DocumentRecord:
-    """
-    A canonical document record.
+    """A canonical document record.
 
     This is the source of truth, independent of any embedding index.
     """
@@ -79,8 +75,7 @@ class DocumentRecord:
 
 
 class DocumentStore:
-    """
-    SQLite-backed store for canonical document records.
+    """SQLite-backed store for canonical document records.
     
     Separates document metadata from embedding storage, enabling:
     - Multiple embedding providers per document
@@ -89,9 +84,10 @@ class DocumentStore:
     """
     
     def __init__(self, store_path: Path):
-        """
+        """Initialize.
+
         Args:
-            store_path: Path to SQLite database file
+        store_path: Path to SQLite database file.
         """
         self._db_path = store_path
         self._conn: Optional[sqlite3.Connection] = None
@@ -167,8 +163,7 @@ class DocumentStore:
             raise sqlite3.DatabaseError("database disk image is malformed")
 
     def _migrate_schema(self) -> None:
-        """
-        Run schema migrations using PRAGMA user_version.
+        """Run schema migrations using PRAGMA user_version.
 
         Uses BEGIN EXCLUSIVE to serialize migrations across concurrent
         processes (e.g. hooks firing simultaneously).
@@ -682,8 +677,7 @@ class DocumentStore:
             raise
 
     def _recover_malformed(self) -> None:
-        """
-        Attempt to recover a malformed SQLite database.
+        """Attempt to recover a malformed SQLite database.
 
         Strategy: dump all readable data, rebuild the database from scratch.
         The corrupt file is preserved as .db.corrupt for inspection.
@@ -744,8 +738,7 @@ class DocumentStore:
         self._init_db()
 
     def _try_runtime_recover(self) -> bool:
-        """
-        Attempt runtime recovery when a malformed error is detected mid-session.
+        """Attempt runtime recovery when a malformed error is detected mid-session.
 
         Returns True if recovery succeeded, False otherwise.
         """
@@ -805,8 +798,7 @@ class DocumentStore:
         content_hash_full: Optional[str] = None,
         created_at: Optional[str] = None,
     ) -> tuple[DocumentRecord, bool]:
-        """
-        Insert or update a document record.
+        """Insert or update a document record.
 
         Preserves created_at on update. Updates updated_at always.
         Archives the current version to history before updating.
@@ -884,8 +876,7 @@ class DocumentStore:
         id: str,
         current: DocumentRecord,
     ) -> int:
-        """
-        Archive the current version to the versions table.
+        """Archive the current version to the versions table.
 
         Must be called within a lock context.
 
@@ -1078,8 +1069,7 @@ class DocumentStore:
                     )
     
     def update_summary(self, collection: str, id: str, summary: str) -> bool:
-        """
-        Update just the summary of an existing document.
+        """Update just the summary of an existing document.
         
         Used by lazy summarization to replace placeholder summaries.
         
@@ -1131,8 +1121,7 @@ class DocumentStore:
         id: str,
         tags: dict[str, Any],
     ) -> bool:
-        """
-        Update tags of an existing document.
+        """Update tags of an existing document.
 
         Args:
             collection: Collection name
@@ -1189,8 +1178,7 @@ class DocumentStore:
             self._conn.commit()
 
     def restore_latest_version(self, collection: str, id: str) -> Optional[DocumentRecord]:
-        """
-        Restore the most recent archived version as current.
+        """Restore the most recent archived version as current.
 
         Replaces the current document with the latest version from history,
         then deletes that version row.
@@ -1258,8 +1246,7 @@ class DocumentStore:
         )
 
     def delete_version(self, collection: str, id: str, version: int) -> bool:
-        """
-        Delete a specific archived version by version number.
+        """Delete a specific archived version by version number.
 
         Other versions are unaffected; gaps in version numbering are
         handled naturally by offset-based queries.
@@ -1288,8 +1275,7 @@ class DocumentStore:
             return cursor.rowcount > 0
 
     def delete(self, collection: str, id: str, delete_versions: bool = True) -> bool:
-        """
-        Delete a document record and optionally its version history.
+        """Delete a document record and optionally its version history.
 
         Note: this does NOT clean up edge rows. Callers that need edge
         consistency (e.g. Keeper.delete) must call delete_edges_for_source
@@ -1344,8 +1330,7 @@ class DocumentStore:
         tag_filter: Optional[dict[str, str]] = None,
         only_current: bool = False,
     ) -> tuple[list[VersionInfo], Optional[DocumentRecord], int]:
-        """
-        Extract matching versions from source into a target document.
+        """Extract matching versions from source into a target document.
 
         Moves matching archived versions (and optionally the current document)
         from source_id to target_id. If target already exists, its current is
@@ -1551,8 +1536,7 @@ class DocumentStore:
     # -------------------------------------------------------------------------
 
     def get(self, collection: str, id: str) -> Optional[DocumentRecord]:
-        """
-        Get a document by ID.
+        """Get a document by ID.
 
         Args:
             collection: Collection name
@@ -1590,8 +1574,7 @@ class DocumentStore:
         id: str,
         offset: int = 0,
     ) -> Optional[VersionInfo]:
-        """
-        Get a specific version of a document by offset.
+        """Get a specific version of a document by offset.
 
         Offset semantics:
         - 0 = current version (returns None, use get() instead)
@@ -1639,8 +1622,7 @@ class DocumentStore:
         id: str,
         limit: int = 10,
     ) -> list[VersionInfo]:
-        """
-        List version history for a document.
+        """List version history for a document.
 
         Returns versions in reverse chronological order (newest first).
 
@@ -1707,8 +1689,7 @@ class DocumentStore:
         current_version: Optional[int] = None,
         limit: int = 3,
     ) -> dict[str, list[VersionInfo]]:
-        """
-        Get version navigation info (prev/next) for display.
+        """Get version navigation info (prev/next) for display.
 
         Args:
             collection: Collection name
@@ -1799,9 +1780,7 @@ class DocumentStore:
     def copy_record(
         self, collection: str, from_id: str, to_id: str
     ) -> Optional["DocumentRecord"]:
-        """
-        Copy a document record to a new ID, preserving all fields
-        including timestamps.
+        """Copy a document record to a new ID, preserving all fields including timestamps.
 
         Returns the new DocumentRecord, or None if source not found.
         Does nothing if to_id already exists.
@@ -1833,8 +1812,7 @@ class DocumentStore:
         collection: str,
         ids: list[str],
     ) -> dict[str, DocumentRecord]:
-        """
-        Get multiple documents by ID.
+        """Get multiple documents by ID.
 
         Args:
             collection: Collection name
@@ -1920,8 +1898,7 @@ class DocumentStore:
         collection: str,
         limit: Optional[int] = None,
     ) -> list[str]:
-        """
-        List document IDs in a collection.
+        """List document IDs in a collection.
         
         Args:
             collection: Collection name
@@ -1953,8 +1930,7 @@ class DocumentStore:
         order_by: str = "updated",
         offset: int = 0,
     ) -> list[DocumentRecord]:
-        """
-        List recent documents ordered by timestamp.
+        """List recent documents ordered by timestamp.
 
         Args:
             collection: Collection name
@@ -1998,8 +1974,7 @@ class DocumentStore:
         order_by: str = "updated",
         offset: int = 0,
     ) -> list[DocumentRecord]:
-        """
-        List recent documents including archived versions.
+        """List recent documents including archived versions.
 
         Returns DocumentRecords sorted by timestamp. Archived versions
         have '_version' tag set to their offset (1=previous, 2=two ago...).
@@ -2075,8 +2050,7 @@ class DocumentStore:
         limit: int = 0,
         offset: int = 0,
     ) -> list[DocumentRecord]:
-        """
-        Query documents by ID prefix.
+        """Query documents by ID prefix.
 
         Args:
             collection: Collection name
@@ -2185,8 +2159,7 @@ class DocumentStore:
         limit: int = 10,
         tags: Optional[dict[str, str]] = None,
     ) -> list[tuple[str, str, float]]:
-        """
-        Full-text search using FTS5 indexes (documents + parts).
+        """Full-text search using FTS5 indexes (documents + parts).
 
         Searches both document summaries and part summaries/content.
         Part results are returned with ``id@p{N}`` IDs so the caller's
@@ -2387,8 +2360,7 @@ class DocumentStore:
         limit: int = 0,
         offset: int = 0,
     ) -> list[DocumentRecord]:
-        """
-        Query documents by ID glob pattern.
+        """Query documents by ID glob pattern.
 
         Supports * (any chars) and ? (single char).
 
@@ -2446,8 +2418,7 @@ class DocumentStore:
         id: str,
         parts: list[PartInfo],
     ) -> int:
-        """
-        Replace all parts for a document atomically.
+        """Replace all parts for a document atomically.
 
         Re-analysis produces a fresh decomposition — old parts are deleted
         and new ones inserted in a single transaction.
@@ -2494,8 +2465,7 @@ class DocumentStore:
         id: str,
         part: PartInfo,
     ) -> None:
-        """
-        Insert or replace a single part without affecting other parts.
+        """Insert or replace a single part without affecting other parts.
 
         Used for adding @P{0} overview after bulk parts are already stored.
 
@@ -2522,8 +2492,7 @@ class DocumentStore:
         id: str,
         part_num: int,
     ) -> Optional[PartInfo]:
-        """
-        Get a specific part by number.
+        """Get a specific part by number.
 
         Args:
             collection: Collection name
@@ -2556,8 +2525,7 @@ class DocumentStore:
         collection: str,
         id: str,
     ) -> list[PartInfo]:
-        """
-        List all parts for a document, ordered by part number.
+        """List all parts for a document, ordered by part number.
 
         Args:
             collection: Collection name
@@ -2593,8 +2561,7 @@ class DocumentStore:
         return cursor.fetchone()[0]
 
     def delete_parts(self, collection: str, id: str) -> int:
-        """
-        Delete all parts for a document.
+        """Delete all parts for a document.
 
         Args:
             collection: Collection name
@@ -2618,8 +2585,7 @@ class DocumentStore:
         part_num: int,
         tags: dict[str, Any],
     ) -> bool:
-        """
-        Update tags on a single part.
+        """Update tags on a single part.
 
         Args:
             collection: Collection name
@@ -2644,8 +2610,7 @@ class DocumentStore:
     # -------------------------------------------------------------------------
 
     def list_distinct_tag_keys(self, collection: str) -> list[str]:
-        """
-        List all distinct tag keys used in the collection.
+        """List all distinct tag keys used in the collection.
 
         Excludes system tags (prefixed with _).
 
@@ -2661,8 +2626,7 @@ class DocumentStore:
         return [row[0] for row in cursor]
 
     def list_distinct_tag_values(self, collection: str, key: str) -> list[str]:
-        """
-        List all distinct values for a given tag key.
+        """List all distinct values for a given tag key.
 
         Args:
             collection: Collection name
@@ -2711,8 +2675,7 @@ class DocumentStore:
         until_date: Optional[str] = None,
         offset: int = 0,
     ) -> list[DocumentRecord]:
-        """
-        Find documents that have a specific tag key (any value).
+        """Find documents that have a specific tag key (any value).
 
         Args:
             collection: Collection name
@@ -2783,8 +2746,7 @@ class DocumentStore:
         return [row["collection"] for row in cursor]
     
     def delete_collection(self, collection: str) -> int:
-        """
-        Delete all documents in a collection.
+        """Delete all documents in a collection.
 
         Args:
             collection: Collection name
@@ -2808,8 +2770,7 @@ class DocumentStore:
     # -------------------------------------------------------------------------
 
     def delete_collection_all(self, collection: str) -> int:
-        """
-        Delete all documents, versions, and parts in a collection.
+        """Delete all documents, versions, and parts in a collection.
 
         Unlike delete_collection(), this also clears version history
         and parts tables.
@@ -2850,8 +2811,7 @@ class DocumentStore:
         collection: str,
         documents: list[dict],
     ) -> dict:
-        """
-        Bulk-insert documents with versions and parts in a single transaction.
+        """Bulk-insert documents with versions and parts in a single transaction.
 
         Bypasses the normal upsert/archive logic — no auto-timestamping,
         no version archiving. Intended for data import/restore.

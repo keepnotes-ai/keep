@@ -1,5 +1,4 @@
-"""
-System document management — constants, loading, and migration.
+"""System document management — constants, loading, and migration.
 
 System documents are bundled .md files that provide reference material
 (tag specs, meta-doc definitions, etc.) for keep stores. They're loaded
@@ -19,8 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 def _get_system_doc_dir() -> Path:
-    """
-    Get path to system docs, works in both dev and installed environments.
+    """Get path to system docs, works in both dev and installed environments.
 
     Tries in order:
     1. Package data via importlib.resources (installed packages)
@@ -100,8 +98,7 @@ _OLD_ID_RENAMES = {
 
 
 def _load_frontmatter(path: Path) -> tuple[str, dict[str, str]]:
-    """
-    Load content and tags from a file with optional YAML frontmatter.
+    """Load content and tags from a file with optional YAML frontmatter.
 
     Returns:
         (content, tags) tuple. Tags empty if no frontmatter.
@@ -146,8 +143,7 @@ def _bundled_docs_hash() -> str:
 
 
 def migrate_system_documents(keeper: "Keeper") -> dict:
-    """
-    Migrate system documents to stable IDs and current version.
+    """Migrate system documents to stable IDs and current version.
 
     Handles:
     - Migration from old file:// URIs to stable IDs
@@ -334,8 +330,7 @@ def migrate_system_documents(keeper: "Keeper") -> dict:
 
 
 def reset_system_documents(keeper: "Keeper") -> dict:
-    """
-    Force reload all system documents from bundled content.
+    """Force reload all system documents from bundled content.
 
     This overwrites any user modifications to system documents.
     Use with caution - primarily for recovery or testing.

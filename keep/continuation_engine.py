@@ -1,5 +1,4 @@
-"""
-Backend-agnostic continuation engine.
+"""Backend-agnostic continuation engine.
 
 Implements a minimal `continue(input) -> output` loop with durable flow state
 and idempotency over pluggable storage/execution adapters.

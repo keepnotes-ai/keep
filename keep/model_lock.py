@@ -1,5 +1,4 @@
-"""
-Cross-process model lock using fcntl.flock.
+"""Cross-process model lock using fcntl.flock.
 
 Prevents multiple keep processes from loading MLX models simultaneously,
 which would exhaust GPU memory on Apple Silicon.
@@ -26,8 +25,7 @@ if _has_fcntl:
 
 
 class ModelLock:
-    """
-    Advisory file lock for serializing model access across processes.
+    """Advisory file lock for serializing model access across processes.
 
     Uses fcntl.flock which is:
     - Automatically released on process exit/crash
@@ -42,8 +40,7 @@ class ModelLock:
         self._fd: Optional[int] = None
 
     def acquire(self, blocking: bool = True, timeout: float = 30) -> bool:
-        """
-        Acquire the lock.
+        """Acquire the lock.
 
         Args:
             blocking: If True, wait until lock is available (up to timeout).
@@ -109,8 +106,7 @@ class ModelLock:
         logger.debug("Released model lock: %s", self._lock_path.name)
 
     def is_locked(self) -> bool:
-        """
-        Probe whether the lock is currently held by another process.
+        """Probe whether the lock is currently held by another process.
 
         Does not acquire the lock. Returns True if held, False if available.
         """
@@ -144,8 +140,7 @@ class ModelLock:
 
 
 class LockedEmbeddingProvider:
-    """
-    Per-call locked wrapper for an embedding provider.
+    """Per-call locked wrapper for an embedding provider.
 
     Acquires a file lock only during embed() calls to serialize GPU
     access across processes. The lock is released after each call so
@@ -194,8 +189,7 @@ class LockedEmbeddingProvider:
 
 
 class LockedSummarizationProvider:
-    """
-    Per-call locked wrapper for a summarization provider.
+    """Per-call locked wrapper for a summarization provider.
 
     Same pattern as LockedEmbeddingProvider — acquires the lock only
     during summarize() calls.
@@ -236,8 +230,7 @@ class LockedSummarizationProvider:
 
 
 class LockedMediaDescriber:
-    """
-    Per-call locked wrapper for a media describer.
+    """Per-call locked wrapper for a media describer.
 
     Same pattern as LockedSummarizationProvider — acquires the lock only
     during describe() calls.
@@ -270,8 +263,7 @@ class LockedMediaDescriber:
 
 
 class LockedContentExtractor:
-    """
-    Per-call locked wrapper for a content extractor.
+    """Per-call locked wrapper for a content extractor.
 
     Same pattern as LockedMediaDescriber — acquires the lock only
     during extract() calls.

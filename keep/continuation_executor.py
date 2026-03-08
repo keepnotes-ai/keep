@@ -1,5 +1,4 @@
-"""
-Continuation work executor registry and local default executor.
+"""Continuation work executor registry and local default executor.
 
 This module isolates runner/provider execution from continuation state control.
 """
@@ -16,6 +15,8 @@ from .processors import process_summarize
 
 @dataclass
 class RunnerExecution:
+    """Result of executing a work item runner."""
+
     outputs: dict[str, Any]
     executor_id: str
     quality: dict[str, Any]
@@ -32,6 +33,8 @@ class WorkExecutor(Protocol):
 
 
 class ContinuationExecutorRegistry:
+    """Registry mapping runner types and provider kinds to handlers."""
+
     def __init__(self) -> None:
         self._provider_resolvers: dict[str, ProviderResolver] = {}
         self._runner_handlers: dict[str, RunnerHandler] = {}
@@ -57,6 +60,8 @@ DEFAULT_CONTINUATION_EXECUTOR_REGISTRY = ContinuationExecutorRegistry()
 
 
 class LocalWorkExecutor:
+    """Executes continuation work items using local providers."""
+
     RESOLVABLE_PAYLOAD_ROOT_KEYS = {
         "content",
         "item_id",

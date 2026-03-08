@@ -1,5 +1,4 @@
-"""
-Error logging utilities for keep CLI.
+"""Error logging utilities for keep CLI.
 
 Logs full stack traces for debugging while showing clean messages to users.
 """
@@ -19,8 +18,7 @@ def _error_log_path() -> Path:
 
 
 def log_exception(exc: Exception, context: str = "") -> Path:
-    """
-    Log exception with full traceback to file.
+    """Log exception with full traceback to file.
 
     Args:
         exc: The exception that occurred

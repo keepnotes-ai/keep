@@ -1,5 +1,4 @@
-"""
-Interactive first-run setup wizard.
+"""Interactive first-run setup wizard.
 
 Runs when no store exists yet. Detects available providers and coding
 tools, presents choices, and creates the initial config.
@@ -141,8 +140,7 @@ def _patch_question(question):
 
 
 def _detect_embedding_choices(current: Optional[str] = None) -> list[dict[str, Any]]:
-    """
-    Build the list of embedding provider choices.
+    """Build the list of embedding provider choices.
 
     Each choice is a dict with:
       - name: display name
@@ -322,8 +320,7 @@ def _detect_summarization_choices(current: Optional[str] = None) -> list[dict[st
 
 
 def _detect_tool_choices() -> list[dict[str, Any]]:
-    """
-    Build list of coding tool integration choices.
+    """Build list of coding tool integration choices.
 
     Returns dicts with:
       - key: tool key (e.g. "claude_code")
@@ -352,8 +349,7 @@ def _detect_tool_choices() -> list[dict[str, Any]]:
 
 
 def _run_tool_selection(tool_choices: list[dict]) -> list[dict]:
-    """
-    Interactive tool selection with checkboxes.
+    """Interactive tool selection with checkboxes.
 
     Returns list of selected tool dicts (only found tools are selectable).
     """
@@ -396,8 +392,7 @@ def _run_provider_selection(
     label: str,
     choices: list[dict[str, Any]],
 ) -> Optional[tuple[str, dict]]:
-    """
-    Interactive single-select for a provider.
+    """Interactive single-select for a provider.
 
     Returns (provider_name, params) or None if nothing available.
     """
@@ -433,8 +428,7 @@ def run_wizard(
     store_path: Optional[Path] = None,
     restart_command: str = "keep",
 ) -> StoreConfig:
-    """
-    Run the interactive first-run setup wizard.
+    """Run the interactive first-run setup wizard.
 
     Args:
         config_dir: Where keep.toml will be created
@@ -499,7 +493,6 @@ def _run_interactive_setup(
     existing: Optional[StoreConfig] = None,
 ) -> StoreConfig:
     """Run the interactive prompts. Raises KeyboardInterrupt on Ctrl+C/Esc."""
-
     # --- Tool integrations ---
     tool_choices = _detect_tool_choices()
     any_tools_found = any(t["found"] for t in tool_choices)

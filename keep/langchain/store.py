@@ -1,5 +1,4 @@
-"""
-KeepStore — LangGraph BaseStore backed by Keep reflective memory.
+"""KeepStore — LangGraph BaseStore backed by Keep reflective memory.
 
 Maps LangGraph's namespace/key model to Keep's document model using
 configurable positional tag mapping:

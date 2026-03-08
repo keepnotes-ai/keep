@@ -1,5 +1,4 @@
-"""
-Auto-install hooks and protocol block for coding tools.
+"""Auto-install hooks and protocol block for coding tools.
 
 Detects installed tools (Claude Code, Codex, Kiro) and installs
 the keep protocol block and hooks into their global configuration.
@@ -98,8 +97,7 @@ TOOL_CONFIGS = {
 
 
 def detect_new_tools(already_known: dict[str, Any]) -> dict[str, Path]:
-    """
-    Detect installed coding tools needing install or upgrade.
+    """Detect installed coding tools needing install or upgrade.
 
     A tool needs work if:
     - Not in config yet (new install)
@@ -125,8 +123,7 @@ def detect_new_tools(already_known: dict[str, Any]) -> dict[str, Path]:
 
 
 def _strip_protocol_block(content: str) -> str:
-    """
-    Remove the existing keep protocol block from markdown content.
+    """Remove the existing keep protocol block from markdown content.
 
     Strips from the PROTOCOL_BLOCK_MARKER line to the next `## ` heading
     or end of file. Removes trailing blank lines left by the removal.
@@ -148,8 +145,7 @@ def _strip_protocol_block(content: str) -> str:
 
 
 def _install_protocol_block(target_file: Path) -> bool:
-    """
-    Install or upgrade the protocol block in a markdown file.
+    """Install or upgrade the protocol block in a markdown file.
 
     If the marker is present, strips the old block and appends the new one
     (upgrade). If absent, appends the block (new install).
@@ -201,8 +197,7 @@ def _strip_keep_hooks(existing_hooks: dict) -> dict:
 
 
 def _install_claude_code_hooks(settings_file: Path) -> bool:
-    """
-    Install keep hooks into Claude Code settings.json.
+    """Install keep hooks into Claude Code settings.json.
 
     Strips any existing keep hooks first (upgrade-safe), then merges
     current hook definitions. Returns True if file was written.
@@ -235,8 +230,7 @@ def _install_claude_code_hooks(settings_file: Path) -> bool:
 
 
 def install_claude_code(config_dir: Path) -> list[str]:
-    """
-    Install protocol block and hooks for Claude Code.
+    """Install protocol block and hooks for Claude Code.
 
     Returns list of actions taken.
     """
@@ -254,8 +248,7 @@ def install_claude_code(config_dir: Path) -> list[str]:
 
 
 def install_codex(config_dir: Path) -> list[str]:
-    """
-    Install protocol block for OpenAI Codex.
+    """Install protocol block for OpenAI Codex.
 
     Returns list of actions taken.
     """
@@ -269,8 +262,7 @@ def install_codex(config_dir: Path) -> list[str]:
 
 
 def _install_kiro_hooks(config_dir: Path) -> bool:
-    """
-    Install keep hooks into Kiro hooks directory.
+    """Install keep hooks into Kiro hooks directory.
 
     Copies .kiro.hook files from package data to ~/.kiro/hooks/.
     Returns True if any file was written.
@@ -290,8 +282,7 @@ def _install_kiro_hooks(config_dir: Path) -> bool:
 
 
 def install_kiro(config_dir: Path) -> list[str]:
-    """
-    Install protocol block and hooks for Kiro.
+    """Install protocol block and hooks for Kiro.
 
     Steering file goes in ~/.kiro/steering/keep.md.
     Hooks go in ~/.kiro/hooks/*.kiro.hook (one per event).
@@ -311,8 +302,7 @@ def install_kiro(config_dir: Path) -> list[str]:
 
 
 def _upgrade_openclaw_plugin(plugin_dir: Path) -> bool:
-    """
-    Copy plugin files from package data to an existing plugin directory.
+    """Copy plugin files from package data to an existing plugin directory.
 
     Only overwrites files that ship with keep (index.ts, package.json,
     openclaw.plugin.json). Never creates directories or touches other
@@ -335,8 +325,7 @@ def _upgrade_openclaw_plugin(plugin_dir: Path) -> bool:
 
 
 def install_openclaw(config_dir: Path) -> list[str]:
-    """
-    Auto-upgrade keep plugin for OpenClaw.
+    """Auto-upgrade keep plugin for OpenClaw.
 
     Only upgrades if the plugin is already installed (plugin_dir exists).
     Initial install still requires: openclaw plugins install -l $(keep config openclaw-plugin)
@@ -355,8 +344,7 @@ def install_openclaw(config_dir: Path) -> list[str]:
 
 
 def _check_cwd_agents_md() -> None:
-    """
-    Install protocol block into AGENTS.md in cwd if present.
+    """Install protocol block into AGENTS.md in cwd if present.
 
     OpenClaw sets cwd to its workspace directory, which contains AGENTS.md.
     This is idempotent — the marker check prevents double-install.
@@ -371,8 +359,7 @@ def _check_cwd_agents_md() -> None:
 
 
 def check_and_install(config: "StoreConfig") -> None:
-    """
-    Check for coding tools and install integrations if needed.
+    """Check for coding tools and install integrations if needed.
 
     Fast path: one stat per unknown tool (tools already in config are skipped).
     When all tools in TOOL_CONFIGS are accounted for, this does zero I/O

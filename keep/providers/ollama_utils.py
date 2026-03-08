@@ -1,6 +1,4 @@
-"""
-Shared Ollama utilities — base URL resolution, model check, auto-pull.
-"""
+"""Shared Ollama utilities — base URL resolution, model check, auto-pull."""
 
 import logging
 import os

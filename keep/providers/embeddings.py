@@ -1,6 +1,4 @@
-"""
-Embedding providers for generating vector representations of text.
-"""
+"""Embedding providers for generating vector representations of text."""
 
 import os
 
@@ -8,8 +6,7 @@ from .base import get_registry
 
 
 class SentenceTransformerEmbedding:
-    """
-    Embedding provider using sentence-transformers library.
+    """Embedding provider using sentence-transformers library.
 
     Runs locally, no API key required. Good default for getting started.
 
@@ -17,11 +14,12 @@ class SentenceTransformerEmbedding:
     """
 
     def __init__(self, model: str = "all-MiniLM-L6-v2", trust_remote_code: bool = False):
-        """
+        """Initialize.
+
         Args:
-            model: Model name from sentence-transformers hub
-            trust_remote_code: Allow models with custom code (e.g. nomic-embed-text-v1.5).
-                Disabled by default for security — only enable for models you trust.
+        model: Model name from sentence-transformers hub
+        trust_remote_code: Allow models with custom code (e.g. nomic-embed-text-v1.5).
+            Disabled by default for security — only enable for models you trust.
         """
         try:
             from sentence_transformers import SentenceTransformer
@@ -72,8 +70,7 @@ class SentenceTransformerEmbedding:
 
 
 class OpenAIEmbedding:
-    """
-    Embedding provider using OpenAI's API.
+    """Embedding provider using OpenAI's API.
     
     Requires: KEEP_OPENAI_API_KEY or OPENAI_API_KEY environment variable.
     Requires: pip install openai
@@ -91,10 +88,11 @@ class OpenAIEmbedding:
         model: str = "text-embedding-3-small",
         api_key: str | None = None,
     ):
-        """
+        """Initialize.
+
         Args:
-            model: OpenAI embedding model name
-            api_key: API key (defaults to environment variable)
+        model: OpenAI embedding model name
+        api_key: API key (defaults to environment variable).
         """
         try:
             from openai import OpenAI
@@ -150,8 +148,7 @@ class OpenAIEmbedding:
 
 
 class GeminiEmbedding:
-    """
-    Embedding provider using Google's Gemini API.
+    """Embedding provider using Google's Gemini API.
 
     Authentication (checked in priority order):
     1. api_key parameter (if provided, uses Google AI Studio)
@@ -173,13 +170,14 @@ class GeminiEmbedding:
         api_key: str | None = None,
         output_dimensionality: int | None = None,
     ):
-        """
+        """Initialize.
+
         Args:
-            model: Gemini embedding model name
-            api_key: API key (defaults to environment variable)
-            output_dimensionality: Optional reduced dimension (e.g. 768 for
-                gemini-embedding-001 which defaults to 3072). When set, the
-                API returns truncated vectors via Matryoshka representation.
+        model: Gemini embedding model name
+        api_key: API key (defaults to environment variable)
+        output_dimensionality: Optional reduced dimension (e.g. 768 for
+            gemini-embedding-001 which defaults to 3072). When set, the
+            API returns truncated vectors via Matryoshka representation.
         """
         from google.genai import types
         from .gemini_client import create_gemini_client
@@ -228,8 +226,7 @@ class GeminiEmbedding:
 
 
 class OllamaEmbedding:
-    """
-    Embedding provider using Ollama's local API.
+    """Embedding provider using Ollama's local API.
 
     Requires: Ollama running locally.
     Respects OLLAMA_HOST env var (default: http://localhost:11434).
@@ -240,10 +237,11 @@ class OllamaEmbedding:
         model: str = "nomic-embed-text",
         base_url: str | None = None,
     ):
-        """
+        """Initialize.
+
         Args:
-            model: Ollama model name
-            base_url: Ollama API base URL (default: OLLAMA_HOST or http://localhost:11434)
+        model: Ollama model name
+        base_url: Ollama API base URL (default: OLLAMA_HOST or http://localhost:11434).
         """
         self.model_name = model
         from .ollama_utils import ollama_base_url, ollama_ensure_model
@@ -316,8 +314,7 @@ class OllamaEmbedding:
 
 
 class VoyageEmbedding:
-    """
-    Embedding provider using Voyage AI's REST API.
+    """Embedding provider using Voyage AI's REST API.
 
     Voyage AI is Anthropic's recommended embedding partner.
     Works well in Claude Desktop and other Anthropic-integrated environments.
@@ -349,10 +346,11 @@ class VoyageEmbedding:
         model: str = "voyage-3.5-lite",
         api_key: str | None = None,
     ):
-        """
+        """Initialize.
+
         Args:
-            model: Voyage embedding model name
-            api_key: API key (defaults to environment variable)
+        model: Voyage embedding model name
+        api_key: API key (defaults to environment variable).
         """
         self.model_name = model
         # Use lookup table if available, otherwise detect lazily from first embedding
@@ -485,8 +483,7 @@ class VoyageEmbedding:
 
 
 class MistralEmbedding:
-    """
-    Embedding provider using Mistral AI's API.
+    """Embedding provider using Mistral AI's API.
 
     Requires: MISTRAL_API_KEY environment variable.
     Requires: pip install mistralai

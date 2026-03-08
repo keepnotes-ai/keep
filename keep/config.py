@@ -1,5 +1,4 @@
-"""
-Configuration management for reflective memory stores.
+"""Configuration management for reflective memory stores.
 
 The configuration is stored as a TOML file in the store directory.
 It specifies which providers to use and their parameters.
@@ -24,8 +23,7 @@ SYSTEM_DOCS_VERSION = 20  # Legacy — kept for backward-compat reading of old c
 
 
 def get_tool_directory() -> Path:
-    """
-    Return keep package directory (contains SKILL.md and docs/library/).
+    """Return keep package directory (contains SKILL.md and docs/library/).
 
     For installed package: the keep/ package directory itself (SKILL.md is inside).
     For development: the repository root (one level up from keep/).
@@ -59,8 +57,7 @@ class ProviderConfig:
 
 @dataclass
 class EmbeddingIdentity:
-    """
-    Identity of an embedding model for compatibility checking.
+    """Identity of an embedding model for compatibility checking.
     
     Two embeddings are compatible only if they have the same identity.
     Different models, even with the same dimension, produce incompatible vectors.
@@ -71,8 +68,7 @@ class EmbeddingIdentity:
     
     @property
     def key(self) -> str:
-        """
-        Short key for collection naming.
+        """Short key for collection naming.
         
         Format: {provider}_{model_slug}
         e.g., "st_MiniLM_L6_v2", "openai_3_small"
@@ -185,8 +181,7 @@ class StoreConfig:
 
 
 def _detect_ollama() -> dict | None:
-    """
-    Check if Ollama is running locally and discover available models.
+    """Check if Ollama is running locally and discover available models.
 
     Respects OLLAMA_HOST environment variable (default: http://localhost:11434).
     Uses a short timeout (0.5s) to avoid blocking during provider detection.
@@ -214,8 +209,7 @@ def _detect_ollama() -> dict | None:
 
 
 def _ollama_pick_models(models: list[str]) -> tuple[str, str | None]:
-    """
-    Choose the best Ollama models for embeddings and summarization.
+    """Choose the best Ollama models for embeddings and summarization.
 
     Returns (embed_model, chat_model). chat_model is None if only
     embedding-specific models are available.
@@ -268,8 +262,7 @@ def _detect_content_extractor() -> "ProviderConfig | None":
 
 
 def detect_default_providers() -> dict[str, ProviderConfig | None]:
-    """
-    Detect the best default providers for the current environment.
+    """Detect the best default providers for the current environment.
 
     Priority for embeddings:
     1. API keys: VOYAGE_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY
@@ -456,8 +449,7 @@ def detect_default_providers() -> dict[str, ProviderConfig | None]:
 
 
 def create_default_config(config_dir: Path, store_path: Optional[Path] = None) -> StoreConfig:
-    """
-    Create a new config with minimal defaults.
+    """Create a new config with minimal defaults.
 
     Fallback providers (truncate, None) are not persisted to keep.toml.
     On next load, load_config() re-detects if better options are available.
@@ -489,8 +481,7 @@ def create_default_config(config_dir: Path, store_path: Optional[Path] = None) -
 
 
 def load_config(config_dir: Path) -> StoreConfig:
-    """
-    Load configuration from a config directory.
+    """Load configuration from a config directory.
 
     The config_dir is where keep.toml lives. The actual store location
     may be different if store.path is set in the config.
@@ -662,8 +653,7 @@ def parse_embedding_identity(data: dict | None) -> EmbeddingIdentity | None:
 
 
 def save_config(config: StoreConfig) -> None:
-    """
-    Save configuration to the config directory.
+    """Save configuration to the config directory.
 
     Creates the directory if it doesn't exist.
     """
@@ -771,8 +761,7 @@ def save_config(config: StoreConfig) -> None:
 
 
 def load_or_create_config(config_dir: Path, store_path: Optional[Path] = None) -> StoreConfig:
-    """
-    Load existing config or create a new one with defaults.
+    """Load existing config or create a new one with defaults.
 
     This is the main entry point for config management.
 

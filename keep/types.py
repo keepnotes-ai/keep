@@ -1,6 +1,4 @@
-"""
-Data types for reflective memory.
-"""
+"""Data types for reflective memory."""
 
 import re
 import unicodedata
@@ -344,8 +342,7 @@ def casefold_tags_for_index(tags: dict[str, Any]) -> TagMap:
 
 
 def filter_non_system_tags(tags: dict[str, Any]) -> TagMap:
-    """
-    Filter out any system tags (those starting with '_').
+    """Filter out any system tags (those starting with '_').
 
     Use this to ensure source tags and derived tags cannot
     overwrite system-managed values.
@@ -355,8 +352,7 @@ def filter_non_system_tags(tags: dict[str, Any]) -> TagMap:
 
 @dataclass(frozen=True)
 class Item:
-    """
-    An item retrieved from the reflective memory store.
+    """An item retrieved from the reflective memory store.
     
     This is a read-only snapshot. To modify an item, use api.put()
     which returns a new Item with updated values.

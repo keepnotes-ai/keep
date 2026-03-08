@@ -1,5 +1,4 @@
-"""
-Pluggable storage backend factory.
+"""Pluggable storage backend factory.
 
 Creates storage backends (DocumentStore, VectorStore, PendingQueue) based on
 configuration. External backends register via the ``keep.backends`` entry
@@ -100,8 +99,7 @@ class NullPendingQueue:
 
 
 def create_stores(config: StoreConfig) -> StoreBundle:
-    """
-    Create storage backends from configuration.
+    """Create storage backends from configuration.
 
     For ``backend = "local"`` (default), creates local storage backends.
     For other values, loads the backend via the ``keep.backends`` entry

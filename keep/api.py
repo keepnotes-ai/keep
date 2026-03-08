@@ -1,5 +1,4 @@
-"""
-Core API for reflective memory.
+"""Core API for reflective memory.
 
 This is the minimal working implementation focused on:
 - put(): fetch/embed → summarize → store
@@ -21,8 +20,7 @@ _ESCALATION_PLACEHOLDER_RE = re.compile(r"\{\{\s*([a-zA-Z0-9_.-]+)\s*\}\}")
 
 
 def _parse_date_param(value: str) -> str:
-    """
-    Parse a date/duration parameter and return a YYYY-MM-DD date.
+    """Parse a date/duration parameter and return a YYYY-MM-DD date.
 
     Accepts:
     - ISO 8601 duration: P3D (3 days), P1W (1 week), PT1H (1 hour), P1DT12H, etc.
@@ -178,8 +176,7 @@ def _truncate_ts(ts: str) -> str:
 
 
 def _record_to_item(rec, score: float = None, changed: bool = None) -> "Item":
-    """
-    Convert a DocumentRecord to an Item with timestamp tags.
+    """Convert a DocumentRecord to an Item with timestamp tags.
 
     Adds _updated, _created, _updated_date from the record's columns
     to ensure consistent timestamp exposure across all retrieval methods.
@@ -276,8 +273,7 @@ _META_PREREQ_KEY = re.compile(r'^([a-zA-Z_][a-zA-Z0-9_]*)=\*$')
 _MARKDOWN_EXTENSIONS = {".md", ".markdown", ".mdx"}
 
 def _extract_markdown_frontmatter(content: str) -> tuple[str, dict]:
-    """
-    Extract YAML frontmatter from markdown content.
+    """Extract YAML frontmatter from markdown content.
 
     Returns (body, tags) where:
     - body: content with frontmatter stripped
@@ -340,8 +336,7 @@ def _extract_markdown_frontmatter(content: str) -> tuple[str, dict]:
 
 
 def _parse_meta_doc(content: str) -> tuple[list[dict[str, str]], list[str], list[str]]:
-    """
-    Parse meta-doc content into query lines, context-match keys, and prerequisites.
+    """Parse meta-doc content into query lines, context-match keys, and prerequisites.
 
     Returns:
         (query_lines, context_keys, prereq_keys) where:
@@ -389,8 +384,7 @@ def _parse_meta_doc(content: str) -> tuple[list[dict[str, str]], list[str], list
 
 # Old IDs for migration (maps old → new)
 def _get_env_tags() -> dict[str, str]:
-    """
-    Collect tags from KEEP_TAG_* environment variables.
+    """Collect tags from KEEP_TAG_* environment variables.
 
     KEEP_TAG_PROJECT=foo -> {"project": "foo"}
     KEEP_TAG_MyTag=bar   -> {"mytag": "bar"}
@@ -410,8 +404,7 @@ from .processors import _content_hash, _content_hash_full  # noqa: F401
 
 
 def _user_tags_changed(old_tags: dict, new_tags: dict) -> bool:
-    """
-    Check if non-system tags differ between old and new.
+    """Check if non-system tags differ between old and new.
 
     Used for contextual re-summarization: when user tags change,
     the summary context changes and should be regenerated.
@@ -520,8 +513,7 @@ def _apply_tag_mutations(
 
 
 def _text_content_id(content: str) -> str:
-    """
-    Generate a content-addressed ID for text updates.
+    """Generate a content-addressed ID for text updates.
 
     This makes text updates versioned by content:
     - `keep put "my note"` → ID = %{hash[:12]}
@@ -543,8 +535,7 @@ def _text_content_id(content: str) -> str:
 # -------------------------------------------------------------------------
 
 class Keeper:
-    """
-    Reflective memory keeper - persistent storage with similarity search.
+    """Reflective memory keeper - persistent storage with similarity search.
 
     Example:
         kp = Keeper()
@@ -562,8 +553,7 @@ class Keeper:
         vector_store: Optional["VectorStoreProtocol"] = None,
         pending_queue: Optional["PendingQueueProtocol"] = None,
     ) -> None:
-        """
-        Initialize or open an existing reflective memory store.
+        """Initialize or open an existing reflective memory store.
 
         Args:
             store_path: Path to store directory. Uses default if not specified.
@@ -994,8 +984,7 @@ class Keeper:
                 self._ensure_inverse_tagdoc(td.id[5:], inverse, doc_coll)
 
     def _get_embedding_provider(self) -> EmbeddingProvider:
-        """
-        Get embedding provider, creating it lazily on first use.
+        """Get embedding provider, creating it lazily on first use.
 
         Thread-safe: uses a lock to prevent concurrent model loading
         when the reconcile thread and main thread both need embeddings.
@@ -1138,8 +1127,7 @@ class Keeper:
                     cache.close()
 
     def _get_media_describer(self) -> Optional[MediaDescriber]:
-        """
-        Get media describer, creating it lazily on first use.
+        """Get media describer, creating it lazily on first use.
 
         Returns None if no media provider is configured or creation fails.
         """
@@ -1165,8 +1153,7 @@ class Keeper:
         return self._media_describer
 
     def _get_content_extractor(self):
-        """
-        Get content extractor, creating it lazily on first use.
+        """Get content extractor, creating it lazily on first use.
 
         Used by the background OCR processor. Returns None if no content
         extractor is configured or creation fails.
@@ -1227,8 +1214,7 @@ class Keeper:
         prefix: str,
         doc_tags: dict[str, str],
     ) -> str | None:
-        """
-        Find a .prompt/* doc matching the given tags and return its prompt text.
+        """Find a .prompt/* doc matching the given tags and return its prompt text.
 
         Scans .prompt/{prefix}/* documents. For each, parses match rules
         from content (same DSL as .meta/* docs) and checks against doc_tags.
@@ -1389,8 +1375,7 @@ class Keeper:
         id: str,
         tags: dict[str, str],
     ) -> str | None:
-        """
-        Gather related item summaries that share any user tag.
+        """Gather related item summaries that share any user tag.
 
         Uses OR union (any tag matches), not AND intersection.
         Boosts score when multiple tags match.
@@ -1454,8 +1439,7 @@ class Keeper:
         return "Related topics: " + ", ".join(sorted(topic_values))
 
     def _validate_embedding_identity(self, provider: EmbeddingProvider) -> None:
-        """
-        Validate embedding provider matches stored identity, or record it.
+        """Validate embedding provider matches stored identity, or record it.
 
         On first use, records the embedding identity to config.
         On subsequent uses, if the provider changed, silently updates config
@@ -1585,8 +1569,7 @@ class Keeper:
     # -------------------------------------------------------------------------
 
     def export_iter(self, *, include_system: bool = True) -> Iterator[dict]:
-        """
-        Stream-export all documents as an iterator of dicts.
+        """Stream-export all documents as an iterator of dicts.
 
         Yields dicts one at a time so that arbitrarily large stores can be
         exported without loading everything into memory.
@@ -1681,8 +1664,7 @@ class Keeper:
             yield doc_dict
 
     def export_data(self, *, include_system: bool = True) -> dict:
-        """
-        Export all documents, versions, and parts as a single dict.
+        """Export all documents, versions, and parts as a single dict.
 
         Convenience wrapper around :meth:`export_iter` that collects everything
         into memory.  Fine for small/medium stores; for large stores use
@@ -1697,8 +1679,7 @@ class Keeper:
         return header
 
     def import_data(self, data: dict, *, mode: str = "merge") -> dict:
-        """
-        Import documents from an export dict.
+        """Import documents from an export dict.
 
         All SQLite writes happen in a single transaction for speed.
         Re-embedding is queued for background processing (not done inline).
@@ -2415,8 +2396,7 @@ class Keeper:
         created_at: Optional[str] = None,
         force: bool = False,
     ) -> Item:
-        """
-        Store content in the memory.
+        """Store content in the memory.
 
         Provide either inline content or a URI to fetch — not both.
 
@@ -2427,6 +2407,15 @@ class Keeper:
 
         **URI mode** (uri provided):
         - Fetches the document, extracts text, generates embeddings.
+
+        Args:
+            content: Inline text content to store.
+            uri: URI of a document to fetch and index.
+            id: Explicit item ID (auto-generated if omitted).
+            summary: Pre-computed summary (skips auto-summarization).
+            tags: Tag map to attach to the item.
+            created_at: Override creation timestamp (ISO 8601).
+            force: Re-process even if content is unchanged.
         - Supports file://, http://, https:// URIs.
         - Non-text content (images, audio, PDF) gets media description.
 
@@ -2632,8 +2621,7 @@ class Keeper:
     # -------------------------------------------------------------------------
     
     def _apply_recency_decay(self, items: list[Item]) -> list[Item]:
-        """
-        Apply ACT-R style recency decay to search results.
+        """Apply ACT-R style recency decay to search results.
         
         Multiplies each item's similarity score by a decay factor based on
         time since last update. Uses exponential decay with configurable half-life.
@@ -2683,8 +2671,7 @@ class Keeper:
         k: int = 60,
         fts_weight: float = 2.0,
     ) -> list[Item]:
-        """
-        Fuse two ranked lists using weighted Reciprocal Rank Fusion.
+        """Fuse two ranked lists using weighted Reciprocal Rank Fusion.
 
         score(d) = 1/(k + rank_sem) + fts_weight/(k + rank_fts)
 
@@ -2735,6 +2722,9 @@ class Keeper:
         collection so a single popular document doesn't consume all slots.
 
         Args:
+            primary_items: Items from the primary search results.
+            chroma_coll: Chroma collection name.
+            doc_coll: Document store collection name.
             embedding: Query embedding for semantic tiebreaking (optional).
             top_k: Number of top primary items to collect tags from.
             per_tag_fetch: Max raw items to fetch per tag query.
@@ -2900,6 +2890,9 @@ class Keeper:
         token budget.
 
         Args:
+            primary_items: Items from the primary search results.
+            chroma_coll: Chroma collection name.
+            doc_coll: Document store collection name.
             query: Original search query text (used for FTS pre-filter).
             embedding: Query embedding vector.
             top_k: Number of top primary items to follow edges from.
@@ -3252,8 +3245,7 @@ class Keeper:
         include_hidden: bool = False,
         deep: bool = False,
     ) -> list[Item]:
-        """
-        Find items by hybrid search (semantic + FTS5) or similarity to an existing note.
+        """Find items by hybrid search (semantic + FTS5) or similarity to an existing note.
 
         When an embedding provider is configured, runs both semantic and full-text
         search and fuses results with Reciprocal Rank Fusion (RRF). Falls back to
@@ -3913,8 +3905,7 @@ class Keeper:
         )
 
     def resolve_version_offset(self, id: str, selector: int | None) -> Optional[int]:
-        """
-        Resolve a public version selector to a concrete offset.
+        """Resolve a public version selector to a concrete offset.
 
         Public selector semantics:
         - None or 0: current version (offset 0)
@@ -4060,8 +4051,7 @@ class Keeper:
         *,
         limit: int = 3,
     ) -> list[Item]:
-        """
-        Find similar items for frontmatter display using stored embedding.
+        """Find similar items for frontmatter display using stored embedding.
 
         Optimized for display: uses stored embedding (no re-embedding),
         filters to distinct base documents, excludes source document versions.
@@ -4112,8 +4102,7 @@ class Keeper:
         return filtered
 
     def get_version_offset(self, item: Item) -> int:
-        """
-        Get version offset (0=current, 1=previous, ...) for an item.
+        """Get version offset (0=current, 1=previous, ...) for an item.
 
         Converts the internal version number (1=oldest, 2=next...) to the
         user-visible offset format (0=current, 1=previous, 2=two-ago...).
@@ -4141,8 +4130,7 @@ class Keeper:
         *,
         limit_per_doc: int = 3,
     ) -> dict[str, list[Item]]:
-        """
-        Resolve all .meta/* docs against an item's tags.
+        """Resolve all .meta/* docs against an item's tags.
 
         Meta-docs define tag-based queries that surface contextually relevant
         items — open commitments, past learnings, decisions to revisit.
@@ -4205,8 +4193,7 @@ class Keeper:
         *,
         limit: int = 3,
     ) -> list[Item]:
-        """
-        Resolve an inline meta query against an item's tags.
+        """Resolve an inline meta query against an item's tags.
 
         Like resolve_meta() but with ad-hoc queries instead of persistent
         .meta/* documents. Queries use the same tag-based syntax.
@@ -4330,8 +4317,7 @@ class Keeper:
         anchor_id: str,
         candidates: list[Item],
     ) -> list[Item]:
-        """
-        Rank candidate items by similarity to anchor + recency decay.
+        """Rank candidate items by similarity to anchor + recency decay.
 
         Uses stored embeddings — no re-embedding needed.
         Falls back to recency-only ranking if embeddings unavailable.
@@ -4387,8 +4373,7 @@ class Keeper:
         self,
         key: Optional[str] = None,
     ) -> list[str]:
-        """
-        List distinct tag keys or values.
+        """List distinct tag keys or values.
 
         Args:
             key: If provided, list distinct values for this key.
@@ -4411,8 +4396,7 @@ class Keeper:
     # -------------------------------------------------------------------------
     
     def get(self, id: str) -> Optional[Item]:
-        """
-        Retrieve a specific item by ID.
+        """Retrieve a specific item by ID.
 
         Reads from document store (canonical), falls back to vector store for legacy data.
         Touches accessed_at on successful retrieval.
@@ -4452,8 +4436,7 @@ class Keeper:
         id: str,
         offset: int = 0,
     ) -> Optional[Item]:
-        """
-        Get a specific version of a document by public selector.
+        """Get a specific version of a document by public selector.
 
         Selector semantics:
         - 0 = current version
@@ -4497,8 +4480,7 @@ class Keeper:
         id: str,
         limit: int = 10,
     ) -> list[VersionInfo]:
-        """
-        List version history for a document.
+        """List version history for a document.
 
         Returns versions in reverse chronological order (newest archived first).
         Does not include the current version.
@@ -4537,8 +4519,7 @@ class Keeper:
         current_version: Optional[int] = None,
         limit: int = 3,
     ) -> dict[str, list[VersionInfo]]:
-        """
-        Get version navigation info (prev/next) for display.
+        """Get version navigation info (prev/next) for display.
 
         Args:
             id: Document identifier
@@ -4552,9 +4533,7 @@ class Keeper:
         return self._document_store.get_version_nav(doc_coll, id, current_version, limit)
 
     def exists(self, id: str) -> bool:
-        """
-        Check if an item exists in the store.
-        """
+        """Check if an item exists in the store."""
         id = normalize_id(id)
         doc_coll = self._resolve_doc_collection()
         chroma_coll = self._resolve_chroma_collection()
@@ -4567,8 +4546,7 @@ class Keeper:
         *,
         delete_versions: bool = True,
     ) -> bool:
-        """
-        Delete an item from both stores.
+        """Delete an item from both stores.
 
         Args:
             id: Document identifier
@@ -4596,8 +4574,7 @@ class Keeper:
         return doc_deleted or chroma_deleted
 
     def revert(self, id: str) -> Optional[Item]:
-        """
-        Revert to the previous version, or delete if no versions exist.
+        """Revert to the previous version, or delete if no versions exist.
 
         Returns the restored item, or None if the item was fully deleted.
         """
@@ -4650,8 +4627,7 @@ class Keeper:
         return self.get(id)
 
     def delete_version(self, id: str, offset: int) -> bool:
-        """
-        Delete a specific archived version by public selector.
+        """Delete a specific archived version by public selector.
 
         Selector semantics match get_version:
         - 1=previous, 2=two ago, ...
@@ -4688,8 +4664,7 @@ class Keeper:
     # -------------------------------------------------------------------------
 
     def get_now(self, *, scope: Optional[str] = None) -> Item:
-        """
-        Get the current working intentions.
+        """Get the current working intentions.
 
         A singleton document representing what you're currently working on.
         If it doesn't exist, creates one with default content and tags from
@@ -4725,8 +4700,7 @@ class Keeper:
         scope: Optional[str] = None,
         tags: Optional[TagMap] = None,
     ) -> Item:
-        """
-        Set the current working intentions.
+        """Set the current working intentions.
 
         Updates the singleton intentions with new content. Uses put()
         internally with the fixed NOWDOC_ID.
@@ -4754,8 +4728,7 @@ class Keeper:
         tags: Optional[TagMap] = None,
         only_current: bool = False,
     ) -> Item:
-        """
-        Move versions from a source document into a named item.
+        """Move versions from a source document into a named item.
 
         Moves matching versions (filtered by tags if provided) from source_id
         to a named item. If the target already exists, extracted versions are
@@ -4959,8 +4932,7 @@ class Keeper:
         remove: Optional[list[str]] = None,
         remove_values: Optional[dict[str, Any]] = None,
     ) -> Optional[Item]:
-        """
-        Update tags on an existing document without re-processing.
+        """Update tags on an existing document without re-processing.
 
         Does NOT re-fetch, re-embed, or re-summarize. Only updates tags.
 
@@ -5063,8 +5035,7 @@ class Keeper:
         remove: Optional[list[str]] = None,
         remove_values: Optional[dict[str, Any]] = None,
     ) -> Optional[PartInfo]:
-        """
-        Update user tags on a part without re-analyzing.
+        """Update user tags on a part without re-analyzing.
 
         Parts are machine-generated, so summaries and content are immutable.
         Tags can be edited to correct or override analyzer tagging decisions.
@@ -5200,8 +5171,7 @@ class Keeper:
         tags: Optional[list[str]] = None,
         force: bool = False,
     ) -> list[PartInfo]:
-        """
-        Decompose a note or string into meaningful parts.
+        """Decompose a note or string into meaningful parts.
 
         For URI-sourced documents: decomposes the document content structurally.
         For inline notes (strings): assembles the version history and decomposes
@@ -5385,8 +5355,7 @@ class Keeper:
         return result
 
     def get_part(self, id: str, part_num: int) -> Optional[Item]:
-        """
-        Get a specific part of a document.
+        """Get a specific part of a document.
 
         Returns the part as an Item with _part_num, _base_id, and
         _total_parts metadata tags.  Part 0 is the overview summary
@@ -5422,8 +5391,7 @@ class Keeper:
         )
 
     def list_parts(self, id: str) -> list[PartInfo]:
-        """
-        List all parts for a document.
+        """List all parts for a document.
 
         Args:
             id: Document identifier
@@ -5439,17 +5407,14 @@ class Keeper:
     # -------------------------------------------------------------------------
 
     def list_collections(self) -> list[str]:
-        """
-        List all collections in the store.
-        """
+        """List all collections in the store."""
         # Merge collections from both stores
         doc_collections = set(self._document_store.list_collections())
         chroma_collections = set(self._store.list_collections())
         return sorted(doc_collections | chroma_collections)
     
     def count(self) -> int:
-        """
-        Count items in a collection.
+        """Count items in a collection.
 
         Returns count from document store if available, else vector store.
         """
@@ -5478,8 +5443,7 @@ class Keeper:
         include_history: bool = False,
         limit: int = 10,
     ) -> list[Item]:
-        """
-        List items with composable filters.
+        """List items with composable filters.
 
         All filters are AND'd together. Prefix narrows by ID, tags narrow
         by metadata, date narrows by time.
@@ -5628,8 +5592,7 @@ class Keeper:
         tags: Optional[list[str]] = None,
         force: bool = False,
     ) -> bool:
-        """
-        Enqueue a note for background analysis (decomposition into parts).
+        """Enqueue a note for background analysis (decomposition into parts).
 
         Validates the document exists, then adds it to the pending work
         queue for serial processing by the background daemon.
@@ -5697,8 +5660,7 @@ class Keeper:
         )
 
     def process_pending(self, limit: int = 10) -> dict:
-        """
-        Process pending work items (embedding, summaries, OCR, and analysis).
+        """Process pending work items (embedding, summaries, OCR, and analysis).
 
         Handles task types serially:
         - "embed": computes and stores embeddings (cloud mode deferred writes)
@@ -6501,8 +6463,7 @@ class Keeper:
         return self._pending_queue.count()
 
     def pending_stats(self) -> dict:
-        """
-        Get pending summary queue statistics.
+        """Get pending summary queue statistics.
 
         Returns dict with: pending, collections, max_attempts, oldest, queue_path, by_type
         """
@@ -6513,8 +6474,7 @@ class Keeper:
         return self._pending_queue.stats_by_type()
 
     def pending_status(self, id: str) -> Optional[dict]:
-        """
-        Get pending task status for a specific note.
+        """Get pending task status for a specific note.
 
         Returns dict with id, task_type, status, queued_at if the note
         has pending work, or None if no work is pending. Requires a
@@ -6561,8 +6521,7 @@ class Keeper:
         return lock.is_locked()
 
     def _spawn_processor(self) -> bool:
-        """
-        Spawn a background processor if not already running.
+        """Spawn a background processor if not already running.
 
         Uses an exclusive file lock to prevent TOCTOU race conditions
         where two processes could both check, find no processor, and
@@ -6647,8 +6606,7 @@ class Keeper:
         fix: bool = False,
         _doc_store: "Optional[DocumentStore]" = None,
     ) -> dict:
-        """
-        Check and optionally fix consistency between document store and vector store.
+        """Check and optionally fix consistency between document store and vector store.
 
         Detects:
         - Documents in document store missing from vector store (not searchable)
@@ -6727,8 +6685,7 @@ class Keeper:
         return self._config
 
     def close(self) -> None:
-        """
-        Close resources (stores, caches, queues).
+        """Close resources (stores, caches, queues).
 
         Waits for background reconcile to finish before tearing down stores,
         then releases model locks (freeing GPU memory) before file locks.

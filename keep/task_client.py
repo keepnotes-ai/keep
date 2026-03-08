@@ -1,5 +1,4 @@
-"""
-HTTP client for the keepnotes.ai Task API.
+"""HTTP client for the keepnotes.ai Task API.
 
 Submits delegatable processing tasks (summarize, OCR) to the hosted service
 and polls for results.  Used by Keeper.process_pending() when a remote

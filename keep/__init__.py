@@ -1,5 +1,4 @@
-"""
-Keep - Reflective Memory
+"""Keep - Reflective Memory.
 
 A persistent reflective memory with similarity search, full-text search,
 and tag-based retrieval. Remember everything, find by meaning.

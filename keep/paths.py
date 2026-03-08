@@ -1,5 +1,4 @@
-"""
-Utility functions for locating paths.
+"""Utility functions for locating paths.
 
 Config and store discovery follows this priority:
 
@@ -28,8 +27,7 @@ if TYPE_CHECKING:
 
 
 def find_config_dir(start_path: Optional[Path] = None) -> Path:
-    """
-    Find config directory by tree-walking from start_path up to home.
+    """Find config directory by tree-walking from start_path up to home.
 
     Looks for .keep/keep.toml at each directory level, stopping at home.
     Returns the .keep/ directory containing the config, or ~/.keep/ if none found.
@@ -61,8 +59,7 @@ def find_config_dir(start_path: Optional[Path] = None) -> Path:
 
 
 def get_config_dir() -> Path:
-    """
-    Get the config directory.
+    """Get the config directory.
 
     Priority:
     1. KEEP_CONFIG environment variable
@@ -78,8 +75,7 @@ def get_config_dir() -> Path:
 
 
 def get_default_store_path(config: Optional[StoreConfig] = None) -> Path:
-    """
-    Get the default store path.
+    """Get the default store path.
 
     Priority:
     1. KEEP_STORE_PATH environment variable

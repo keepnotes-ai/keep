@@ -1,5 +1,4 @@
-"""
-KeepNotesMiddleware — auto-inject memory context into every LLM call.
+"""KeepNotesMiddleware — auto-inject memory context into every LLM call.
 
 Prepends ``now`` context and relevant search results to the message
 list as a system message. Uses LCEL RunnableLambda (langchain-core only,

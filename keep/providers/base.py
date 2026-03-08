@@ -1,5 +1,4 @@
-"""
-Base provider protocols.
+"""Base provider protocols.
 
 These define the interfaces that concrete providers must implement.
 Using Protocol for structural subtyping - no explicit inheritance required.
@@ -18,8 +17,7 @@ from typing import Any, Protocol, runtime_checkable
 
 @dataclass
 class Document:
-    """
-    A fetched document ready for processing.
+    """A fetched document ready for processing.
     
     Attributes:
         uri: Original URI that was fetched
@@ -37,8 +35,7 @@ class Document:
 
 @runtime_checkable
 class DocumentProvider(Protocol):
-    """
-    Fetches document content from a URI.
+    """Fetches document content from a URI.
     
     Implementations handle specific URI schemes (file://, https://, s3://, etc.)
     and convert the content to text.
@@ -55,8 +52,7 @@ class DocumentProvider(Protocol):
     """
     
     def supports(self, uri: str) -> bool:
-        """
-        Check if this provider can handle the given URI.
+        """Check if this provider can handle the given URI.
         
         Args:
             uri: The URI to check
@@ -67,8 +63,7 @@ class DocumentProvider(Protocol):
         ...
     
     def fetch(self, uri: str) -> Document:
-        """
-        Fetch and return the document content.
+        """Fetch and return the document content.
         
         Args:
             uri: The URI to fetch
@@ -89,8 +84,7 @@ class DocumentProvider(Protocol):
 
 @runtime_checkable
 class EmbeddingProvider(Protocol):
-    """
-    Generates vector embeddings from text.
+    """Generates vector embeddings from text.
     
     Embeddings enable semantic similarity search. The same provider instance
     must be used for both indexing and querying to ensure consistent vectors.
@@ -114,8 +108,7 @@ class EmbeddingProvider(Protocol):
     
     @property
     def dimension(self) -> int:
-        """
-        The dimensionality of the embedding vectors.
+        """The dimensionality of the embedding vectors.
         
         This must be consistent across all calls. ChromaDb and other vector
         stores need this to configure the index.
@@ -123,8 +116,7 @@ class EmbeddingProvider(Protocol):
         ...
     
     def embed(self, text: str) -> list[float]:
-        """
-        Generate an embedding vector for the given text.
+        """Generate an embedding vector for the given text.
         
         Args:
             text: The text to embed
@@ -135,8 +127,7 @@ class EmbeddingProvider(Protocol):
         ...
     
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
-        """
-        Generate embeddings for multiple texts.
+        """Generate embeddings for multiple texts.
         
         Batch processing is often more efficient than individual calls.
         
@@ -175,8 +166,7 @@ def _is_conversation(content: str) -> bool:
 
 
 def build_summarization_prompt(content: str, context: str | None = None) -> str:
-    """
-    Build the summarization prompt, optionally including context.
+    """Build the summarization prompt, optionally including context.
 
     When context is provided (as topic keywords), it gives the LLM
     thematic context without leaking specific phrases from other summaries.
@@ -219,8 +209,7 @@ Document:
 
 
 def strip_summary_preamble(text: str) -> str:
-    """
-    Remove common LLM preambles from summaries.
+    """Remove common LLM preambles from summaries.
 
     Many models add introductory phrases despite instructions not to.
     This post-processes the output to strip them.
@@ -252,8 +241,7 @@ def strip_summary_preamble(text: str) -> str:
 
 @runtime_checkable
 class SummarizationProvider(Protocol):
-    """
-    Generates concise summaries of document content.
+    """Generates concise summaries of document content.
     
     Summaries are stored alongside items and enable quick recall without
     fetching the original document. They're also used for full-text search.
@@ -283,8 +271,7 @@ class SummarizationProvider(Protocol):
         max_length: int = 500,
         context: str | None = None,
     ) -> str:
-        """
-        Generate a summary of the content.
+        """Generate a summary of the content.
 
         Args:
             content: The full document content
@@ -303,8 +290,7 @@ class SummarizationProvider(Protocol):
         *,
         max_tokens: int = 4096,
     ) -> str | None:
-        """
-        Send a raw system+user prompt to the underlying LLM and return text.
+        """Send a raw system+user prompt to the underlying LLM and return text.
 
         This enables callers (e.g. decomposition) to use the configured LLM
         without introspecting provider internals. Providers that don't wrap
@@ -327,8 +313,7 @@ class SummarizationProvider(Protocol):
 
 @runtime_checkable
 class MediaDescriber(Protocol):
-    """
-    Generates text descriptions of media files.
+    """Generates text descriptions of media files.
 
     Image describers produce visual descriptions of what's in an image.
     Audio describers produce transcriptions of speech content.
@@ -338,8 +323,7 @@ class MediaDescriber(Protocol):
     """
 
     def describe(self, path: str, content_type: str) -> str | None:
-        """
-        Generate a text description of a media file.
+        """Generate a text description of a media file.
 
         Args:
             path: Absolute filesystem path to the media file
@@ -358,8 +342,7 @@ class MediaDescriber(Protocol):
 
 @runtime_checkable
 class ContentExtractor(Protocol):
-    """
-    Recovers actual text content from media files (OCR, speech-to-text).
+    """Recovers actual text content from media files (OCR, speech-to-text).
 
     Unlike MediaDescriber which generates *descriptions* (semantic),
     ContentExtractor recovers the *original text* present in the media.
@@ -370,8 +353,7 @@ class ContentExtractor(Protocol):
     """
 
     def extract(self, path: str, content_type: str) -> str | None:
-        """
-        Extract text content from a media file.
+        """Extract text content from a media file.
 
         Args:
             path: Absolute filesystem path to the media file
@@ -390,8 +372,7 @@ class ContentExtractor(Protocol):
 
 @dataclass
 class AnalysisChunk:
-    """
-    A chunk of content for analysis.
+    """A chunk of content for analysis.
 
     Analyzers receive a sequence of chunks — for version-strings these are
     the individual versions, for monolithic documents a single chunk.
@@ -404,8 +385,7 @@ class AnalysisChunk:
 
 @runtime_checkable
 class AnalyzerProvider(Protocol):
-    """
-    Decomposes content into meaningful parts with summaries and tags.
+    """Decomposes content into meaningful parts with summaries and tags.
 
     The default implementation uses token-budgeted sliding windows with
     XML-style target marking, suited to small local models. Alternative
@@ -422,8 +402,7 @@ class AnalyzerProvider(Protocol):
         chunks: Iterable[AnalysisChunk],
         guide_context: str = "",
     ) -> list[dict]:
-        """
-        Decompose content chunks into parts.
+        """Decompose content chunks into parts.
 
         Args:
             chunks: Content chunks to analyze (versions, sections, or
@@ -475,8 +454,7 @@ def parse_tag_json(text: str | None) -> dict[str, str]:
 
 @runtime_checkable
 class TaggingProvider(Protocol):
-    """
-    Generates structured tags from document content.
+    """Generates structured tags from document content.
     
     Tags enable traditional navigation and filtering. The provider analyzes
     content and returns relevant key-value pairs.
@@ -497,8 +475,7 @@ class TaggingProvider(Protocol):
     """
     
     def tag(self, content: str) -> dict[str, str]:
-        """
-        Generate tags for the content.
+        """Generate tags for the content.
         
         Args:
             content: The full document content
@@ -519,8 +496,7 @@ class TaggingProvider(Protocol):
 # -----------------------------------------------------------------------------
 
 class ProviderRegistry:
-    """
-    Registry for discovering and instantiating providers.
+    """Registry for discovering and instantiating providers.
 
     Providers are registered by name and can be instantiated from configuration.
     This allows the store configuration (TOML) to specify providers by name

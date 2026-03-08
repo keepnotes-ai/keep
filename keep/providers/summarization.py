@@ -1,5 +1,4 @@
-"""
-Default summarization providers.
+"""Default summarization providers.
 
 Simple, zero-dependency summarizers for getting started.
 """
@@ -8,18 +7,18 @@ from .base import get_registry
 
 
 class TruncationSummarizer:
-    """
-    Simple summarizer that truncates content to a max length.
+    """Simple summarizer that truncates content to a max length.
     
     Zero dependencies. Good enough to get started; replace with
     LLM-based summarization when quality matters.
     """
     
     def __init__(self, max_length: int = 500, suffix: str = "..."):
-        """
+        """Initialize.
+
         Args:
-            max_length: Maximum summary length in characters
-            suffix: Suffix to add when truncated
+        max_length: Maximum summary length in characters
+        suffix: Suffix to add when truncated.
         """
         self.max_length = max_length
         self.suffix = suffix
@@ -31,8 +30,7 @@ class TruncationSummarizer:
         max_length: int | None = None,
         context: str | None = None,
     ) -> str:
-        """
-        Summarize by taking first N characters.
+        """Summarize by taking first N characters.
 
         Tries to break at word boundaries. Context is ignored (non-LLM provider).
         """
@@ -56,8 +54,7 @@ class TruncationSummarizer:
 
 
 class FirstParagraphSummarizer:
-    """
-    Summarizer that extracts the first paragraph or meaningful chunk.
+    """Summarizer that extracts the first paragraph or meaningful chunk.
     
     Better than pure truncation for documents with structure.
     """

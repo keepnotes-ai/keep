@@ -1,5 +1,4 @@
-"""
-Remote Keeper — HTTP client for the keepnotes.ai API.
+"""Remote Keeper — HTTP client for the keepnotes.ai API.
 
 Implements KeeperProtocol by mapping method calls to REST endpoints.
 Used when a [remote] section is configured in keep.toml or when
@@ -28,8 +27,7 @@ DEFAULT_TIMEOUT = 30.0
 
 
 class RemoteKeeper:
-    """
-    Keeper backend that delegates to a remote keepnotes.ai API.
+    """Keeper backend that delegates to a remote keepnotes.ai API.
 
     Satisfies KeeperProtocol — the CLI uses it interchangeably with
     the local Keeper class.

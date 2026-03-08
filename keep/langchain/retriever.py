@@ -1,5 +1,4 @@
-"""
-KeepNotesRetriever — LangChain BaseRetriever backed by Keep.
+"""KeepNotesRetriever — LangChain BaseRetriever backed by Keep.
 
 Returns Keep notes as LangChain Documents, with optional ``now``
 context prepended to results.

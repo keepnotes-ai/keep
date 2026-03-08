@@ -1,6 +1,4 @@
-"""
-Document providers for fetching content from various URI schemes.
-"""
+"""Document providers for fetching content from various URI schemes."""
 
 from pathlib import Path
 
@@ -8,8 +6,7 @@ from .base import Document, DocumentProvider, get_registry
 
 
 def extract_html_text(html_content: str) -> str:
-    """
-    Extract readable text from HTML, removing scripts and styles.
+    """Extract readable text from HTML, removing scripts and styles.
 
     Used by both FileDocumentProvider and HttpDocumentProvider to ensure
     consistent content regularization for embedding and summarization.
@@ -41,8 +38,7 @@ def extract_html_text(html_content: str) -> str:
 
 
 class FileDocumentProvider:
-    """
-    Fetches documents from the local filesystem.
+    """Fetches documents from the local filesystem.
 
     Supports file:// URIs and attempts to detect content type from extension.
     Performs text extraction for PDF and HTML files.
@@ -631,6 +627,8 @@ class FileDocumentProvider:
         """Render PDF pages to images and OCR them.
 
         Args:
+            path: Path to the PDF file.
+            page_indices: Zero-based page indices to OCR.
             extractor: ContentExtractor to use. Falls back to
                        self._content_extractor if not provided.
         """
@@ -802,17 +800,17 @@ def _extract_via_file_provider(
 
 
 class HttpDocumentProvider:
-    """
-    Fetches documents from HTTP/HTTPS URLs.
+    """Fetches documents from HTTP/HTTPS URLs.
 
     Requires the `requests` library (optional dependency).
     """
     
     def __init__(self, timeout: int = 30, max_size: int = 10_000_000):
-        """
+        """Initialize.
+
         Args:
-            timeout: Request timeout in seconds
-            max_size: Maximum content size in bytes
+        timeout: Request timeout in seconds
+        max_size: Maximum content size in bytes.
         """
         self.timeout = timeout
         self.max_size = max_size
@@ -969,16 +967,16 @@ class HttpDocumentProvider:
 
 
 class CompositeDocumentProvider:
-    """
-    Combines multiple document providers, delegating to the appropriate one.
+    """Combines multiple document providers, delegating to the appropriate one.
     
     This is the default provider used by Keeper.
     """
     
     def __init__(self, providers: list[DocumentProvider] | None = None):
-        """
+        """Initialize.
+
         Args:
-            providers: List of providers to try. If None, uses defaults.
+        providers: List of providers to try. If None, uses defaults.
         """
         if providers is None:
             self._providers = [

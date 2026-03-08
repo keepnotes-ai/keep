@@ -1,5 +1,4 @@
-"""
-MLX providers for Apple Silicon.
+"""MLX providers for Apple Silicon.
 
 MLX is Apple's ML framework optimized for Apple Silicon. These providers
 run entirely locally with no API keys required.
@@ -17,8 +16,7 @@ from .base import (
 
 
 class MLXEmbedding:
-    """
-    Embedding provider using MPS (Metal) acceleration on Apple Silicon.
+    """Embedding provider using MPS (Metal) acceleration on Apple Silicon.
 
     Uses sentence-transformer models with GPU acceleration via Metal Performance Shaders.
 
@@ -26,10 +24,11 @@ class MLXEmbedding:
     """
 
     def __init__(self, model: str = "all-MiniLM-L6-v2"):
-        """
+        """Initialize.
+
         Args:
-            model: Model name from sentence-transformers hub.
-                   Default: all-MiniLM-L6-v2 (384 dims, fast, no auth required)
+        model: Model name from sentence-transformers hub.
+               Default: all-MiniLM-L6-v2 (384 dims, fast, no auth required).
         """
         try:
             import mlx.core as mx
@@ -82,8 +81,7 @@ class MLXEmbedding:
 
 
 class MLXSummarization:
-    """
-    Summarization provider using MLX-LM on Apple Silicon.
+    """Summarization provider using MLX-LM on Apple Silicon.
 
     Runs local LLMs optimized for Apple Silicon. No API key required.
 
@@ -95,15 +93,16 @@ class MLXSummarization:
         model: str = "mlx-community/Llama-3.2-3B-Instruct-4bit",
         max_tokens: int = 300,
     ):
-        """
+        """Initialize.
+
         Args:
-            model: Model name from mlx-community hub or local path.
-                   Good options for summarization:
-                   - mlx-community/Llama-3.2-3B-Instruct-4bit (fast, small)
-                   - mlx-community/Llama-3.2-8B-Instruct-4bit (better quality)
-                   - mlx-community/Mistral-7B-Instruct-v0.3-4bit (good balance)
-                   - mlx-community/Phi-3.5-mini-instruct-4bit (very fast)
-            max_tokens: Maximum tokens in generated summary
+        model: Model name from mlx-community hub or local path.
+               Good options for summarization:
+               - mlx-community/Llama-3.2-3B-Instruct-4bit (fast, small)
+               - mlx-community/Llama-3.2-8B-Instruct-4bit (better quality)
+               - mlx-community/Mistral-7B-Instruct-v0.3-4bit (good balance)
+               - mlx-community/Phi-3.5-mini-instruct-4bit (very fast)
+        max_tokens: Maximum tokens in generated summary.
         """
         try:
             from mlx_lm import load
@@ -179,8 +178,7 @@ class MLXSummarization:
 
 
 class MLXTagging:
-    """
-    Tagging provider using MLX-LM on Apple Silicon.
+    """Tagging provider using MLX-LM on Apple Silicon.
     
     Uses local LLMs to generate structured tags. No API key required.
     
@@ -192,10 +190,11 @@ class MLXTagging:
         model: str = "mlx-community/Llama-3.2-3B-Instruct-4bit",
         max_tokens: int = 150,
     ):
-        """
+        """Initialize.
+
         Args:
-            model: Model name from mlx-community hub
-            max_tokens: Maximum tokens in generated response
+        model: Model name from mlx-community hub
+        max_tokens: Maximum tokens in generated response.
         """
         try:
             from mlx_lm import load
@@ -250,8 +249,7 @@ class MLXTagging:
 
 
 class MLXVisionDescriber:
-    """
-    Image description using MLX-VLM on Apple Silicon.
+    """Image description using MLX-VLM on Apple Silicon.
 
     Uses local vision-language models to generate text descriptions of images.
     No API key required.
@@ -317,8 +315,7 @@ class MLXVisionDescriber:
 
 
 class MLXWhisperDescriber:
-    """
-    Audio transcription using MLX-Whisper on Apple Silicon.
+    """Audio transcription using MLX-Whisper on Apple Silicon.
 
     Uses local Whisper models to transcribe speech to text.
     No API key required.
@@ -357,8 +354,7 @@ class MLXWhisperDescriber:
 
 
 class MLXContentExtractor:
-    """
-    OCR content extraction using MLX-VLM on Apple Silicon.
+    """OCR content extraction using MLX-VLM on Apple Silicon.
 
     Uses GLM-OCR to extract text from document images. Unlike MLXVisionDescriber
     which generates semantic descriptions, this recovers the actual text content.
@@ -421,8 +417,7 @@ class MLXContentExtractor:
 
 
 class MLXMediaDescriber:
-    """
-    Combined media describer for Apple Silicon.
+    """Combined media describer for Apple Silicon.
 
     Handles both image description (via mlx-vlm) and audio transcription
     (via mlx-whisper). Sub-providers are created lazily — only loaded when

@@ -1,5 +1,4 @@
-"""
-Local continuation runtime wiring.
+"""Local continuation runtime wiring.
 
 Binds the shared continuation engine to local SQLite storage and local
 execution adapters.

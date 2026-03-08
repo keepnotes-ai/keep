@@ -1,5 +1,4 @@
-"""
-Continuation runtime environment adapters.
+"""Continuation runtime environment adapters.
 
 This module provides a stable dependency surface for continuation runtime
 logic so the runtime can be shared across local and hosted implementations.

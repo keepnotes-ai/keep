@@ -1,5 +1,4 @@
-"""
-KeepNotesToolkit — 4 curated tools for LangChain agents.
+"""KeepNotesToolkit — 4 curated tools for LangChain agents.
 
 Tools:
     remember        Store a fact, preference, or decision for later recall

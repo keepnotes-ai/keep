@@ -1,6 +1,4 @@
-"""
-Summarization and tagging providers using LLMs.
-"""
+"""Summarization and tagging providers using LLMs."""
 
 import json
 import os
@@ -19,8 +17,7 @@ from .base import (
 # -----------------------------------------------------------------------------
 
 class AnthropicSummarization:
-    """
-    Summarization provider using Anthropic's Claude API.
+    """Summarization provider using Anthropic's Claude API.
 
     Authentication (checked in priority order):
     1. api_key parameter (if provided)
@@ -102,8 +99,7 @@ class AnthropicSummarization:
 
 
 class OpenAISummarization:
-    """
-    Summarization provider using OpenAI's chat API.
+    """Summarization provider using OpenAI's chat API.
 
     Requires: KEEP_OPENAI_API_KEY or OPENAI_API_KEY environment variable.
 
@@ -179,8 +175,7 @@ class OpenAISummarization:
 
 
 class OllamaSummarization:
-    """
-    Summarization provider using Ollama's local API.
+    """Summarization provider using Ollama's local API.
 
     Respects OLLAMA_HOST env var (default: http://localhost:11434).
     """
@@ -240,8 +235,7 @@ class OllamaSummarization:
 
 
 class GeminiSummarization:
-    """
-    Summarization provider using Google's Gemini API.
+    """Summarization provider using Google's Gemini API.
 
     Authentication (checked in priority order):
     1. api_key parameter (if provided, uses Google AI Studio)
@@ -293,8 +287,7 @@ class GeminiSummarization:
 
 
 class PassthroughSummarization:
-    """
-    Summarization provider that returns the first N characters.
+    """Summarization provider that returns the first N characters.
 
     Useful for testing or when LLM summarization is not needed.
     """
@@ -331,8 +324,7 @@ class PassthroughSummarization:
 # -----------------------------------------------------------------------------
 
 class AnthropicTagging:
-    """
-    Tagging provider using Anthropic's Claude API with JSON output.
+    """Tagging provider using Anthropic's Claude API with JSON output.
 
     Authentication (checked in priority order):
     1. api_key parameter (if provided)
@@ -385,9 +377,7 @@ class AnthropicTagging:
 
 
 class OpenAITagging:
-    """
-    Tagging provider using OpenAI's chat API with JSON output.
-    """
+    """Tagging provider using OpenAI's chat API with JSON output."""
 
     def __init__(
         self,
@@ -431,8 +421,7 @@ class OpenAITagging:
 
 
 class OllamaTagging:
-    """
-    Tagging provider using Ollama's local API.
+    """Tagging provider using Ollama's local API.
 
     Respects OLLAMA_HOST env var (default: http://localhost:11434).
     """
@@ -475,8 +464,7 @@ class OllamaTagging:
 
 
 class GeminiTagging:
-    """
-    Tagging provider using Google's Gemini API with JSON output.
+    """Tagging provider using Google's Gemini API with JSON output.
 
     Authentication (checked in priority order):
     1. api_key parameter (if provided, uses Google AI Studio)
@@ -509,8 +497,7 @@ class GeminiTagging:
 
 
 class NoopTagging:
-    """
-    Tagging provider that returns empty tags.
+    """Tagging provider that returns empty tags.
 
     Useful when tagging is disabled or for testing.
     """
@@ -525,8 +512,7 @@ class NoopTagging:
 # -----------------------------------------------------------------------------
 
 class OllamaMediaDescriber:
-    """
-    Media description using Ollama's vision models.
+    """Media description using Ollama's vision models.
 
     Supports image description via multimodal models (llava, moondream, etc.).
     Audio transcription is not supported via Ollama.
@@ -588,8 +574,7 @@ class OllamaMediaDescriber:
 
 
 class OllamaContentExtractor:
-    """
-    OCR content extraction using Ollama.
+    """OCR content extraction using Ollama.
 
     Uses GLM-OCR via Ollama's /api/generate endpoint (recommended for
     vision tasks with this model). Extracts actual text from document images.
@@ -642,8 +627,7 @@ class OllamaContentExtractor:
 
 
 class MistralSummarization:
-    """
-    Summarization provider using Mistral AI's chat API.
+    """Summarization provider using Mistral AI's chat API.
 
     Requires: MISTRAL_API_KEY environment variable.
 
@@ -709,8 +693,7 @@ class MistralSummarization:
 
 
 class MistralTagging:
-    """
-    Tagging provider using Mistral AI's chat API with JSON output.
+    """Tagging provider using Mistral AI's chat API with JSON output.
 
     Requires: MISTRAL_API_KEY environment variable.
     """
@@ -759,8 +742,7 @@ class MistralTagging:
 
 
 class MistralContentExtractor:
-    """
-    Content extraction (OCR) using Mistral's OCR API.
+    """Content extraction (OCR) using Mistral's OCR API.
 
     Supports images (PNG, JPEG, etc.) and PDFs.
     Uses mistral-ocr-latest model which returns structured markdown.
