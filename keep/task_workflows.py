@@ -98,8 +98,11 @@ def _run_ocr(keeper: "Keeper", req: TaskRequest) -> TaskRunResult:
         logger.warning("File no longer exists for OCR: %s", path)
         return TaskRunResult(status="skipped", details={"reason": "missing_file"})
 
-    home = Path.home().resolve()
-    if not path.is_relative_to(home):
+    from .paths import validate_path_within_home
+
+    try:
+        validate_path_within_home(path)
+    except ValueError:
         logger.warning("OCR path outside home directory, skipping: %s", path)
         return TaskRunResult(status="skipped", details={"reason": "path_outside_home"})
 

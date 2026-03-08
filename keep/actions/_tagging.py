@@ -34,28 +34,15 @@ def _item_tags(item: Any) -> dict[str, Any]:
 
 def load_tag_specs(context: Any, *, limit: int = 5000) -> list[dict[str, Any]]:
     """Load constrained `.tag/*` specs through action context adapters."""
-    # Local runtime path: use Keeper-native loader for full spec fidelity.
-    env = getattr(context, "_env", None)
-    keeper = getattr(env, "_keeper", None) if env is not None else None
-    if keeper is not None:
-        try:
-            classifier = TagClassifier(provider=None)
-            specs = classifier.load_specs(keeper)
-            if specs:
-                return specs
-        except Exception:
-            pass
-
     fetch_limit = max(int(limit), 1)
     try:
         docs = context.list_items(
+            prefix=".tag/",
             include_hidden=True,
             limit=fetch_limit,
         )
     except Exception:
         return []
-    if isinstance(docs, list):
-        docs = [item for item in docs if _item_id(item).startswith(".tag/")]
     if not isinstance(docs, list) or not docs:
         return []
 

@@ -412,16 +412,23 @@ class MockDocumentStore:
             return True
         return False
 
-    def list_recent(self, collection: str, limit: int = 10, order_by: str = "updated") -> list:
+    def list_recent(
+        self,
+        collection: str,
+        limit: int = 10,
+        order_by: str = "updated",
+        offset: int = 0,
+    ) -> list:
         if collection not in self._data:
             return []
         records = []
-        for id, rec in list(self._data[collection].items())[:limit]:
+        rows = list(self._data[collection].items())
+        for id, rec in rows[offset:offset + limit]:
             records.append(self._make_record(collection, id, rec))
         return records
 
     def query_by_tag_key(self, collection: str, key: str, limit: int = 100,
-                         since_date: str = None, until_date: str = None) -> list:
+                         since_date: str = None, until_date: str = None, offset: int = 0) -> list:
         if collection not in self._data:
             return []
         results = []
@@ -434,7 +441,7 @@ class MockDocumentStore:
             if until_date and updated >= until_date:
                 continue
             results.append(self._make_record(collection, id, rec))
-        return results[:limit]
+        return results[offset:offset + limit]
 
     def list_distinct_tag_keys(self, collection: str) -> list[str]:
         keys = set()
@@ -570,14 +577,22 @@ class MockDocumentStore:
     def _fts_available(self) -> bool:
         return True
 
-    def query_by_id_prefix(self, collection: str, prefix: str) -> list:
+    def query_by_id_prefix(
+        self,
+        collection: str,
+        prefix: str,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> list:
         if collection not in self._data:
             return []
         results = []
         for id, rec in self._data[collection].items():
             if id.startswith(prefix):
                 results.append(self._make_record(collection, id, rec))
-        return results
+        if limit is None:
+            return results[offset:]
+        return results[offset:offset + limit]
 
     def touch_many(self, collection: str, ids: list[str]) -> None:
         pass

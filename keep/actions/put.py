@@ -13,7 +13,10 @@ def _content_id(content: str) -> str:
 
 @action
 class Put:
+    """Create a new item by returning a `put_item` mutation."""
+
     def run(self, params: dict[str, Any], context) -> dict[str, Any]:
+        """Build a `put_item` mutation from public put-action parameters."""
         del context
         content = params.get("content")
         uri = params.get("uri")
@@ -42,14 +45,6 @@ class Put:
             op["tags"] = normalized_tags
         if summary is not None:
             op["summary"] = str(summary)
-        if "created_at" in params:
-            op["created_at"] = params.get("created_at")
-        if "force" in params:
-            op["force"] = bool(params.get("force"))
-        if "queue_background_tasks" in params:
-            op["queue_background_tasks"] = bool(params.get("queue_background_tasks"))
-        if "capture_write_context" in params:
-            op["capture_write_context"] = bool(params.get("capture_write_context"))
 
         return {
             "id": resolved_id,

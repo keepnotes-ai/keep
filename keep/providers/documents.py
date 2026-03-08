@@ -114,8 +114,11 @@ class FileDocumentProvider:
             raise IOError(f"Not a file: {path}")
 
         # Reject paths outside user's home directory as a safety boundary
-        home = Path.home().resolve()
-        if not path.is_relative_to(home):
+        from ..paths import validate_path_within_home
+
+        try:
+            validate_path_within_home(path)
+        except ValueError:
             raise IOError(f"Path traversal blocked: {path} is outside home directory")
 
         # Check file size before processing

@@ -33,6 +33,7 @@ This split exists because:
 
 ```python
 class ActionContext(Protocol):
+    # Store queries
     def get(self, id: str) -> Item | None: ...
     def find(self, query: str | None = None, *, tags: dict | None = None,
              similar_to: str | None = None, limit: int = 10,
@@ -42,17 +43,38 @@ class ActionContext(Protocol):
                    since: str | None = None, until: str | None = None,
                    order_by: str = "updated", include_hidden: bool = False,
                    limit: int = 10) -> list[Item]: ...
+    def traverse(self, item_ids: list[str], limit: int = 5) -> dict[str, list[Item]]: ...
     def get_document(self, id: str) -> Any | None: ...
     def resolve_meta(self, id: str, limit_per_doc: int = 3) -> dict[str, list[Item]]: ...
     def resolve_provider(self, kind: str, name: str | None = None) -> Any: ...
+
+    # Work-input accessors (current item being processed)
+    @property
+    def item_id(self) -> str | None: ...
+    @property
+    def item_content(self) -> str | None: ...
 ```
 
 This replaces `ContinuationRuntimeEnv` as the surface actions see.
 Read-only: no `put_item`, no `upsert_item`, no `enqueue_task` —
 mutations go through the output dict. Methods and signatures are
-defined by this protocol, not inherited from the current env. The
-`find` action internally decides whether to call `context.find()`
-(search mode) or `context.list_items()` (tag-only listing mode).
+defined by this protocol, not inherited from the current env.
+
+**Content resolution** is an item-layer concern: `get()` returns
+items with resolved content (the item itself knows how to resolve
+its canonical content from its URI). This is not a flow concern —
+actions simply call `context.get(item_id)` and receive content.
+
+`item_id` and `item_content` are convenience accessors for the
+current work input's target item. They are equivalent to reading
+from the work input dict but provide a stable, typed surface.
+
+`traverse()` follows edges from a set of items and returns related
+items grouped by source. The `traverse` action wraps this method.
+
+The `find` action internally decides whether to call `context.find()`
+(search mode) or `context.list_items()` (tag-only listing mode) —
+the action owns this routing decision.
 The `resolve_meta` action uses `context.resolve_meta()` for
 meta-doc query resolution.
 
@@ -66,7 +88,7 @@ their output dict. The runtime interprets and applies them:
 {
     "summary": "A concise summary of the document",
     "mutations": [
-        {"op": "set_summary", "summary": "$output.summary"}
+        {"op": "set_summary", "target": "item-id", "summary": "$output.summary"}
     ]
 }
 ```
@@ -74,11 +96,20 @@ their output dict. The runtime interprets and applies them:
 The `mutations` list uses the same typed ops the current engine already
 supports: `upsert_item`, `set_tags`, `set_summary`, `put_item`.
 
+**Mutation target**: actions include `target` explicitly in each
+mutation. The runtime fills `target` as a fallback when it is omitted
+and the work input has `item_id` — but actions should be explicit.
+Cross-item mutations (like `put_item`) always use explicit IDs.
+
 **Reference resolution**: the runtime resolves `$output.*` references
 against the action's output dict and `$input.*` against the work input.
-For item-scoped actions (summarize, tag, ocr, analyze), `target` is
-omitted — the runtime fills it from the flow's current item. Only
-cross-item mutations (like `put_item`) need explicit targets.
+
+**Mutation ops vs runtime hints**: mutation dicts contain only store
+operations (`op`, `target`, and op-specific fields). Runtime behavior
+hints — `created_at`, `force`, `queue_background_tasks` — are
+separate from the mutation op. The `put` action includes these as
+top-level keys in its output; the runtime reads them when applying
+the `put_item` mutation. They are not part of the mutation op itself.
 
 Actions that don't mutate (pure queries, analysis) just return their
 output without a `mutations` key.
@@ -88,8 +119,13 @@ output without a `mutations` key.
 Each action lists its parameters, what it reads, what it outputs,
 and what mutations it returns. Parameters come from the rule's
 `with:` block. Item-scoped actions (summarize, tag, ocr, analyze)
-implicitly operate on the flow's current item — they receive item
-content via the runtime, not via params.
+receive `item_id` and resolve content via `context.get(item_id)`.
+
+**Enriched item view**: `context.get()` returns an enriched item
+with `content` (resolved from the item's URI) and `uri` alongside
+the standard `id`, `summary`, and `tags`. Content resolution is
+handled by the item layer — the action does not need to know how
+content is stored or fetched.
 
 ### find
 
@@ -135,10 +171,12 @@ separate "refine" action.
 | `include_hidden` | bool | false | Include system notes (dot-prefix IDs) |
 | `order_by` | str | — | Sort order for list mode: `updated`, `accessed`, `created` |
 
-When `query` or `similar_to` is provided, wraps `Keeper.find()` —
-hybrid search with RRF scoring. Otherwise wraps
-`Keeper.list_items()` — structured listing with optional ordering.
-`prefix` maps to `list_items(prefix=...)`.
+The `find` action owns the search-vs-list routing decision. When
+`query` or `similar_to` is provided, it calls `context.find()` —
+hybrid search with RRF scoring. Otherwise it calls
+`context.list_items()` — structured listing with optional ordering.
+`prefix` maps to `list_items(prefix=...)`. This routing is internal
+to the action; callers just use `do: find` with the appropriate params.
 
 `similar_to` and `query` are mutually exclusive.
 
@@ -217,9 +255,10 @@ so that edge-following behavior is customizable via state docs.
 | `items` | list | required | Items to follow edges from (list of IDs or result items) |
 | `limit` | int | 5 | Max related items per source |
 
-For each source item, finds items linked via `_inverse` tag
-relationships. If no edges exist in the store, falls back to
-grouping by shared tag facets.
+For each source item, traverses deep-related items using edge-follow
+logic and tag-facet grouping. If no edges exist for a source item,
+the result for that source is an empty list — there is no fuzzy-match
+fallback.
 
 **Output**:
 
@@ -239,9 +278,9 @@ of related items across all groups. Items appearing in the `items`
 input set are excluded from results (dedup against primaries).
 Within each group, results are capped at `limit`.
 
-**Implementation**: wraps the edge-following logic currently in
-`Keeper._deep_follow_edges()` and `_deep_follow_tags()`.
-Current code: `api.py:3100-3350`.
+**Implementation**: the action calls `context.traverse()`, which
+uses deep edge-follow and tag-facet grouping. When no edges exist,
+returns an empty group — no `similar_to` fallback.
 
 ### resolve_meta
 
@@ -289,7 +328,7 @@ Current code: `api.py:4739`.
 
 ### summarize
 
-Generate a summary for the flow's current item.
+Generate a summary for a target item.
 
 ```yaml
 - do: summarize
@@ -297,6 +336,7 @@ Generate a summary for the flow's current item.
 # With optional params:
 - do: summarize
   with:
+    item_id: "{params.item_id}"
     max_length: 500
     context: "related context for better summary"
 ```
@@ -305,12 +345,12 @@ Generate a summary for the flow's current item.
 
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
+| `item_id` | str | required | Target item ID to summarize |
 | `max_length` | int | 500 | Target max summary length in characters (hint, not hard cap — LLM output may vary) |
 | `context` | str | — | Related context for contextual summarization |
 
-Content comes from the flow's current item (`item.*`), not from
-params. The action reads the item content and sends it to the
-summarization provider.
+The action resolves the target via `context.get(item_id)` and sends
+its current content to the summarization provider.
 
 **Output**: `{summary: "..."}`
 **Mutations**: `[{op: "set_summary", summary: "$output.summary"}]`
@@ -321,13 +361,15 @@ Current code: `continuation_executor.py:180`.
 
 ### tag
 
-Classify the flow's current item against tag specs from the store.
+Classify a target item against tag specs from the store.
 
 ```yaml
 - do: tag
+  with:
+    item_id: "{params.item_id}"
 ```
 
-No parameters. Content comes from the flow's current item. The
+`item_id` is required. Content comes from `context.get(item_id)`. The
 action loads all `.tag/*` spec docs from the store, builds
 classification prompts from their definitions, and classifies the
 item against each taxonomy. Results are merged into the item's tags.
@@ -355,12 +397,13 @@ Current code: `analyzers.py:522`.
 
 ### ocr
 
-Extract text from the flow's current item (images or scanned PDF
+Extract text from a target item (images or scanned PDF
 pages).
 
 ```yaml
 - do: ocr
   with:
+    item_id: "{params.item_id}"
     pages: [1, 3, 5]
 ```
 
@@ -368,6 +411,7 @@ pages).
 
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
+| `item_id` | str | required | Target item ID to OCR |
 | `pages` | list[int] | — | Zero-indexed page numbers to OCR (PDF only) |
 
 The item's URI provides the file path. The item's `_content_type`
@@ -386,12 +430,13 @@ summarize rule handles that — OCR itself is purely extraction.
 
 ### analyze
 
-Decompose the flow's current item into parts using an analysis
+Decompose a target item into parts using an analysis
 provider.
 
 ```yaml
 - do: analyze
   with:
+    item_id: "{params.item_id}"
     guide_context: "optional decomposition guidance"
 ```
 
@@ -399,10 +444,11 @@ provider.
 
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
+| `item_id` | str | required | Target item ID to decompose |
 | `guide_context` | str | — | Tag descriptions for guided decomposition |
 
-Content comes from the flow's current item. The analyzer chunks the
-content and decomposes each chunk. Analysis prompts are loaded
+The analyzer resolves content via `context.get(item_id)`, chunks it,
+and decomposes each chunk. Analysis prompts are loaded
 automatically from `.prompt/analyze/*` docs if they exist. Tag specs
 from `.tag/*` are used for classification of generated parts.
 
@@ -417,9 +463,9 @@ from `.tag/*` are used for classification of generated parts.
     "mutations": [
         {
             "op": "put_item",
-            "id": "{target}@p1",       # runtime resolves {target}
+            "id": "{item_id}@p1",
             "content": "...",
-            "tags": {"_base_id": "{target}", "_part_num": "1", ...},
+            "tags": {"_base_id": "{item_id}", "_part_num": "1", ...},
         },
         ...
     ]
@@ -428,8 +474,7 @@ from `.tag/*` are used for classification of generated parts.
 
 Part IDs follow the existing `{base_id}@p{N}` convention. The
 `_base_id` and `_part_num` tags enable lineage tracking and
-part-to-parent resolution. `{target}` in mutations is resolved by
-the runtime to the flow's current item ID.
+part-to-parent resolution.
 
 `parts` is available as data for downstream predicates
 (`analyze.parts`). The `put_item` mutations store each part via
@@ -502,7 +547,7 @@ Create a new item in the store.
 | `tags` | dict | — | Tags for the new item |
 | `summary` | str | — | Pre-computed summary (skips summarization) |
 
-**Output**: `{}`
+**Output**: `{id: "..."}` (resolved ID; content-addressed when auto-generated)
 **Mutations**: `[{op: "put_item", content: "...", tags: {...}, ...}]`
 
 The `put` action is pure — it returns a `put_item` mutation. The
@@ -510,9 +555,10 @@ runtime applies it, generating the item ID. The created item goes
 through normal `after-write` processing as a separate flow with
 its own budget. Budget-based termination prevents runaway chains.
 
-As an additional guard, the runtime tracks flow depth. A put inside
-a flow creates a child flow at depth N+1. Flows beyond a
-configurable max depth (default: 3) skip `after-write` processing.
+As an additional guard, the `put` action's output includes the
+runtime hint `queue_background_tasks: false` to suppress
+`after-write` processing when running inside an existing flow.
+This is a simple boolean — no depth counter needed.
 
 **Implementation**: the action constructs the mutation dict from
 params. The runtime applies it via the mutation pipeline (same
@@ -624,3 +670,6 @@ class Transcribe:
       `query` or `similar_to`. The `find` action routes tag-only
       queries to `Keeper.list_items()` with `order_by`. This is a new
       routing layer in the action, not a change to the Keeper API.
+- [ ] **Migration path**: document how the old runner system
+      (`_run_provider_*` methods, `ContinuationRuntimeEnv`) transitions
+      to the new action system. Both can coexist during migration.

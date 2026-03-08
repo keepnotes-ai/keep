@@ -51,6 +51,8 @@ class Analyze:
             raw_parts = proc.parts or []
 
         parts = [_normalize_part(part) for part in raw_parts]
+        for idx, part in enumerate(parts, start=1):
+            part["part_num"] = idx
         parts = classify_parts_with_specs(parts, context)
         out: dict[str, Any] = {"parts": parts}
 

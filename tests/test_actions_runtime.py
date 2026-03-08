@@ -67,7 +67,6 @@ def test_action_put_applies_output_mutations_without_apply_block(mock_providers,
                         "params": {
                             "content": content,
                             "tags": {"topic": "actions"},
-                            "queue_background_tasks": False,
                         },
                     },
                     "input_mode": "none",
@@ -275,5 +274,44 @@ def test_action_traverse_uses_related_groups(mock_providers, tmp_path):
         group_ids = {row["id"] for row in groups["note:source"]}
         assert "note:source" not in group_ids
         assert "note:related" in group_ids
+    finally:
+        kp.close()
+
+
+def test_action_analyze_includes_part_num(mock_providers, tmp_path):
+    kp = Keeper(store_path=tmp_path)
+    try:
+        content = "Analyze me."
+        kp.put(content=content, id="note:action:analyze", summary="placeholder")
+
+        class _MockAnalyzer:
+            def analyze(self, chunks, guide_context):
+                del chunks, guide_context
+                return [
+                    {"summary": "first", "content": "one", "tags": {"topic": "x"}},
+                    {"summary": "second", "content": "two", "tags": {"topic": "y"}},
+                ]
+
+        kp._analyzer = _MockAnalyzer()
+
+        first = kp.continue_flow(
+            _continue_with_single_step(
+                "act-analyze-1",
+                {
+                    "kind": "analyze",
+                    "runner": {
+                        "type": "action.analyze",
+                        "params": {"item_id": "note:action:analyze"},
+                    },
+                    "input_mode": "none",
+                    "output_contract": {"must_return": ["parts"]},
+                },
+            )
+        )
+        assert first["status"] == "waiting_work"
+        work_result = kp.continue_run_work(first["cursor"], first["work"][0]["work_id"])
+        parts = work_result["outputs"]["parts"]
+        assert parts[0]["part_num"] == 1
+        assert parts[1]["part_num"] == 2
     finally:
         kp.close()

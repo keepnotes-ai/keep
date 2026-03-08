@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from ..paths import validate_path_within_home
 from ..processors import ocr_image, ocr_pdf
 from . import action
 from ._item_scope import resolve_item
@@ -36,7 +37,7 @@ class Ocr:
         uri = str(getattr(item, "uri", "") or tags.get("_source_uri") or item_id).strip()
         if not uri:
             raise ValueError("ocr requires uri source")
-        path = Path(uri.removeprefix("file://")).expanduser().resolve()
+        path = validate_path_within_home(Path(uri.removeprefix("file://")))
         if not path.exists():
             raise ValueError(f"ocr source does not exist: {path}")
 

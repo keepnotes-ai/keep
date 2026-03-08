@@ -42,7 +42,7 @@ class Traverse:
             if isinstance(raw_group, list) and raw_group:
                 related = sorted(raw_group, key=_updated_key, reverse=True)
             else:
-                related = context.find(similar_to=source_id, limit=limit + len(source_set))
+                related = []
             dedup: list[dict[str, Any]] = []
             seen: set[str] = set()
             for item in related:

@@ -27,9 +27,6 @@ class Action(Protocol):
 
 @runtime_checkable
 class ActionContext(Protocol):
-    item_id: str | None
-    item_content: str | None
-
     def get(self, id: str) -> Any | None: ...
 
     def find(
@@ -58,7 +55,6 @@ class ActionContext(Protocol):
 
     def get_document(self, id: str) -> Any | None: ...
     def resolve_meta(self, id: str, limit_per_doc: int = 3) -> dict[str, list[Any]]: ...
-    def traverse(self, source_ids: list[str], *, limit: int = 5) -> dict[str, list[Any]]: ...
     def resolve_provider(self, kind: str, name: str | None = None) -> Any: ...
 
 
