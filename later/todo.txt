@@ -1,6 +1,11 @@
 
 * chatgpt import
 
+* debounce
+
+* poc: "an append-only journal narrated in first person (experiences, not task logs)"
+    (also: "with periodic consolidation that compresses episodes into thematic structures" - our `analyze`)
+
 * `keep put --no-version` for volatile items
 
 * how to optimize the "get... relevant things"

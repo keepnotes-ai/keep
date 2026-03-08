@@ -16,6 +16,7 @@ from typing import Any, Optional
 
 from .continuation_env import ContinuationRuntimeEnv
 from .continuation_executor import LocalWorkExecutor, WorkExecutor
+from .state_doc import EvalResult, StateDoc, parse_state_doc, evaluate_state_doc
 from .continuation_policy import (
     DECISION_STRATEGIES,
     DECISION_SUPPORT_VERSION,
@@ -669,6 +670,166 @@ class ContinuationEngine:
                 },
             ],
         }
+
+    # -----------------------------------------------------------------------
+    # State-doc integration
+    # -----------------------------------------------------------------------
+
+    def _load_state_doc(self, name: str) -> Optional[StateDoc]:
+        """Load a compiled state doc from the store.
+
+        State docs are keep notes at `.state/{name}` whose summary field
+        contains the YAML body.  Returns None if the note does not exist or
+        has no parseable YAML body.
+        """
+        note_id = f".state/{name}" if not name.startswith(".state/") else name
+        doc_note = self._env.get(note_id)
+        if doc_note is None:
+            return None
+
+        body = str(getattr(doc_note, "summary", "") or "").strip()
+        if not body:
+            return None
+
+        try:
+            return parse_state_doc(name, body)
+        except (ValueError, RuntimeError) as exc:
+            logger.warning("Failed to compile state doc %r: %s", note_id, exc)
+            return None
+
+    def _build_write_eval_context(
+        self,
+        target_id: str,
+        program: dict[str, Any],
+        write_context: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Build the CEL evaluation context for after-write state docs.
+
+        Exposes the written item's full observable state so predicates can
+        reference any field without the wiring layer pre-selecting which
+        fields are available.
+
+        Context namespaces:
+            ``item.*``   — written item state (tags, content_length, source, …)
+            ``params.*`` — caller-supplied write parameters
+            ``write.*``  — write context (content_type, ocr_pages, …)
+        """
+        params = program.get("params") or {}
+        if not isinstance(params, dict):
+            params = {}
+
+        content = write_context.get("content") or ""
+        uri = write_context.get("uri") or ""
+        ocr_pages = write_context.get("ocr_pages") or []
+
+        # Fetch the written item to inspect current state
+        item_note = self._env.get(target_id)
+        item_tags: dict[str, Any] = {}
+        item_summary = ""
+        if item_note is not None:
+            raw_tags = getattr(item_note, "tags", None)
+            item_tags = dict(raw_tags) if isinstance(raw_tags, dict) else {}
+            item_summary = str(getattr(item_note, "summary", "") or "")
+
+        # has_summary: True only if the caller explicitly provided a summary.
+        # The auto-truncated summary from put_item doesn't count — the purpose
+        # of after-write is to decide whether AI summarization is needed.
+        has_summary = bool(params.get("summary"))
+
+        source = str(item_tags.get("_source") or "inline").strip().lower()
+        is_system_note = target_id.startswith(".")
+
+        item_ctx: dict[str, Any] = {
+            "id": target_id,
+            "content_length": len(content) if isinstance(content, str) else 0,
+            "has_summary": has_summary,
+            "is_system_note": is_system_note,
+            "source": source,
+            "has_uri": bool(uri),
+            "uri": uri,
+            "summary": item_summary,
+            "tags": item_tags,
+            "ocr_pages": list(ocr_pages) if isinstance(ocr_pages, list) else [],
+        }
+
+        params_ctx = dict(params)
+        params_ctx["item_id"] = target_id
+
+        write_ctx: dict[str, Any] = {
+            "content_type": str(write_context.get("content_type") or ""),
+            "uri": uri,
+            "ocr_pages": item_ctx["ocr_pages"],
+        }
+
+        return {"item": item_ctx, "params": params_ctx, "write": write_ctx}
+
+    def _state_doc_followup_ops(
+        self,
+        *,
+        flow_id: str,
+        doc: StateDoc,
+        context: dict[str, Any],
+        target_id: str,
+        write_context: dict[str, Any],
+    ) -> tuple[list[dict[str, Any]], Optional[EvalResult], Optional[dict[str, str]]]:
+        """Evaluate state doc and convert fired actions to enqueue_task ops.
+
+        Returns ``(ops, eval_result, error)``.  The caller uses
+        ``eval_result`` to inspect terminal/transition status from the
+        state doc.  Action ``with:`` params are passed through generically
+        as task metadata — the wiring layer does not filter or gate actions.
+        """
+        try:
+            result = evaluate_state_doc(doc, context)
+        except Exception as exc:
+            logger.warning("State doc %r evaluation failed: %s", doc.name, exc)
+            return [], None, {"code": "state_doc_eval_error", "message": str(exc)}
+
+        if not result.actions:
+            return [], result, None
+
+        doc_coll = self._env.resolve_doc_collection()
+        content = str(write_context.get("content") or "")
+        item_tags = context.get("item", {}).get("tags")
+        ops: list[dict[str, Any]] = []
+
+        for action_entry in result.actions:
+            action_name = str(action_entry.get("action") or "").strip()
+            if not action_name:
+                continue
+
+            # State doc with: params become task metadata (generic passthrough)
+            action_params = action_entry.get("params") or {}
+            metadata = dict(action_params) if isinstance(action_params, dict) else {}
+
+            # Merge write-context defaults that the task workflow may need.
+            # State doc with: params take precedence over these defaults.
+            write_defaults = {
+                "uri": write_context.get("uri") or "",
+                "content_type": write_context.get("content_type") or "",
+            }
+            ocr_pages = write_context.get("ocr_pages")
+            if isinstance(ocr_pages, list):
+                write_defaults["ocr_pages"] = self._coerce_ocr_pages(ocr_pages)
+            for key, default_val in write_defaults.items():
+                if key not in metadata and default_val:
+                    metadata[key] = default_val
+
+            op: dict[str, Any] = {
+                "op": "enqueue_task",
+                "task_type": action_name,
+                "target": target_id,
+                "collection": doc_coll,
+                "content": content,
+            }
+            if metadata:
+                op["metadata"] = metadata
+            if isinstance(item_tags, dict):
+                op["tags"] = dict(item_tags)
+
+            ops.append(op)
+
+        return ops, result, None
 
     @staticmethod
     def _parse_template_document(raw: str, *, template_id: str) -> tuple[Optional[dict[str, Any]], Optional[dict[str, str]]]:
@@ -1937,10 +2098,7 @@ class ContinuationEngine:
             elif params.get("uri"):
                 target_id = str(params.get("uri"))
 
-        followups, followup_err = self._template_followups(program)
-        if followup_err is not None:
-            return [], followup_err
-        if followups and target_id and write_status != "noop":
+        if target_id and write_status != "noop":
             write_context = self._env.consume_write_context(target_id) or {}
             if not isinstance(write_context, dict):
                 write_context = {}
@@ -1953,15 +2111,60 @@ class ContinuationEngine:
             if "content_type" not in write_context:
                 write_context["content_type"] = ""
 
-            followup_ops, followup_build_err = self._followup_ops_from_template(
-                flow_id=flow_id,
-                program=program,
-                followups=followups,
-                target_id=target_id,
-                write_context=write_context,
-            )
-            if followup_build_err is not None:
-                return [], followup_build_err
+            # Try state-doc evaluation first; fall back to template followups.
+            # Skip state-doc evaluation for system notes (id starts with "."):
+            # these are infrastructure and should not trigger user-defined
+            # processing flows.
+            followup_ops: list[dict[str, Any]] = []
+            state_doc = None
+            if not target_id.startswith("."):
+                state_doc = self._load_state_doc("after-write")
+            if state_doc is not None:
+                eval_ctx = self._build_write_eval_context(target_id, program, write_context)
+                followup_ops, eval_result, sd_err = self._state_doc_followup_ops(
+                    flow_id=flow_id,
+                    doc=state_doc,
+                    context=eval_ctx,
+                    target_id=target_id,
+                    write_context=write_context,
+                )
+                if sd_err is not None:
+                    logger.warning(
+                        "State doc after-write eval failed, falling back to template: %s",
+                        sd_err.get("message"),
+                    )
+                    followup_ops = []
+                    state_doc = None  # trigger fallback
+                elif eval_result is not None:
+                    if eval_result.terminal == "error":
+                        return applied, {
+                            "code": "state_doc_terminal_error",
+                            "message": (
+                                eval_result.terminal_data.get("reason", "state doc returned error")
+                                if isinstance(eval_result.terminal_data, dict)
+                                else "state doc returned error"
+                            ),
+                        }
+                    if eval_result.transition is not None:
+                        # Record transition for the flow to act on
+                        frontier = state.setdefault("frontier", {})
+                        frontier["state_doc_transition"] = eval_result.transition
+
+            if state_doc is None:
+                followups, followup_err = self._template_followups(program)
+                if followup_err is not None:
+                    return [], followup_err
+                if followups:
+                    followup_ops, followup_build_err = self._followup_ops_from_template(
+                        flow_id=flow_id,
+                        program=program,
+                        followups=followups,
+                        target_id=target_id,
+                        write_context=write_context,
+                    )
+                    if followup_build_err is not None:
+                        return [], followup_build_err
+
             if followup_ops:
                 followup_applied, followup_apply_err = self._apply_mutation_ops(
                     followup_ops,

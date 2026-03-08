@@ -8,6 +8,13 @@ Related:
 
 ## 1) What this is for
 
+State docs orchestrate **memory operations** — storing, retrieving,
+enriching, and relating items in the keep store. This is not a
+general-purpose automation or workflow system. Every action in the
+vocabulary operates on the store: writing items, searching for items,
+summarizing content, applying tags, extracting text, traversing
+relationships. The scope is memory-centric by design.
+
 keep has two main paths: **write** (put content in) and **query**
 (get content out). Both paths involve processing steps that may need
 to run in sequence, in parallel, or conditionally:
@@ -317,6 +324,49 @@ are how loops work — each iteration starts fresh, runs its own rules,
 produces its own named outputs. Data from a prior iteration only
 persists if explicitly passed via `with:`.
 
+## 8b) Return payload contract
+
+`return: done` ends the flow successfully. The caller receives:
+
+```python
+{"status": "done", "results": <payload>, ...}
+```
+
+**Default payload**: when `return: done` has no `with:` block,
+the runtime collects results from all named action outputs
+(`id:` bindings) and returns them as the `results` dict. Each
+key is the rule's `id`, each value is the action's output.
+
+```yaml
+# return: done without with: → results = {search: {...}, tags: {...}}
+rules:
+  - id: search
+    do: find
+    with: { query: "..." }
+  - id: tags
+    do: tag
+post:
+  - return: done   # results = {"search": search_output, "tags": tags_output}
+```
+
+**Explicit payload**: when `return: done` includes a `with:` block,
+the `with:` values become the results. Template resolution applies.
+
+```yaml
+  - return:
+      status: done
+      with:
+        results: "{search.results}"
+        count: "{size(search.results)}"
+```
+
+**`return: error`** sets `status: "error"`. The `with.reason` value
+(if present) becomes the error message. No results are returned.
+
+**`return: stopped`** sets `status: "stopped"`. The `with.reason`
+value determines the stop reason. Partial results from completed
+actions are included.
+
 ## 9) Predicate language
 
 CEL-like expressions. Safe, side-effect-free, guaranteed to terminate.
@@ -425,8 +475,16 @@ Code worth reusing:
 - [x] Terminal states: three terminals (`done`, `error`, `stopped`).
       No structured decision protocol. `stopped` covers budget
       exhaustion, ambiguous results, and background work.
-- [ ] `post:` block semantics (can it transition? always sequence?)
-- [ ] Error propagation in `match: all` (one fails, others succeed)
+- [x] `post:` block semantics: always evaluated in sequence (top-
+      to-bottom). Can include `return:` terminals and `then:`
+      transitions. Template resolution in `then.with:` is supported.
+      This is implemented in `state_doc.py` and tested.
+- [x] Error propagation in `match: all`: a failed action's `id`
+      binding is left unset. Post-block predicates check for missing
+      bindings (e.g. `when: "!summary.text"`) to detect failure.
+      The flow does not abort — other actions' results are preserved.
+      This is implemented in `state_doc.py` and documented in
+      STATE-ACTIONS.md §error-handling.
 - [ ] Serialization format (YAML in markdown body? pure YAML?)
 - [x] Constants in state docs: all thresholds and tunable values
       come from config via `params.*`. State docs never contain

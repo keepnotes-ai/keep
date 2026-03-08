@@ -152,7 +152,7 @@ rules:
   - id: parts
     do: find
     with:
-      prefix: "{params.item_id}@P"
+      prefix: "{params.item_id}@p"
       limit: 100
   - id: edges
     do: traverse
@@ -172,7 +172,7 @@ item's stored embedding. Returns items with highest cosine
 similarity, deduplicated to distinct base documents.
 
 **Parts** (`find` with `prefix`): lists the item's decomposition
-parts by ID prefix convention (`id@P{N}`).
+parts by ID prefix convention (`id@p{N}`).
 
 **Edges** (`traverse`): follows both explicit edges (tag values
 referencing other items) and inverse edges (items whose tags point
@@ -247,13 +247,13 @@ parallel re-searches to break the tie.
 rules:
   - id: pivot1
     do: find
-    with: { query: "{params.query}", tags: "{params.facets_1}", limit: 5 }
+    with: { query: "{params.query}", tags: "{params.facets_1}", limit: "{params.pivot_limit}" }
   - id: pivot2
     do: find
-    with: { query: "{params.query}", tags: "{params.facets_2}", limit: 5 }
+    with: { query: "{params.query}", tags: "{params.facets_2}", limit: "{params.pivot_limit}" }
   - id: bridge
     do: find
-    with: { query: "{params.query}", limit: "{params.limit + 5}" }
+    with: { query: "{params.query}", limit: "{params.bridge_limit}" }
 post:
   - when: "pivot1.margin > params.margin_high || pivot2.margin > params.margin_high || bridge.margin > params.margin_high"
     return: done
@@ -265,6 +265,9 @@ post:
       results: "{best_of(pivot1, pivot2, bridge)}"
 ```
 
+The caller injects `pivot_limit` (default 5) and `bridge_limit`
+(default `limit + 5`) via params from config.
+
 ### .state/query-explore
 
 Mixed signals — broaden the search and try again.
@@ -275,16 +278,19 @@ Mixed signals — broaden the search and try again.
 rules:
   - id: search
     do: find
-    with: { query: "{params.query}", limit: "{params.limit + 5}" }
+    with: { query: "{params.query}", limit: "{params.explore_limit}" }
   - when: "search.margin > params.margin_high"
     return: done
   - when: "budget.remaining > 0"
     do: find
-    with: { query: "{params.query}", limit: "{params.limit + 10}" }
+    with: { query: "{params.query}", limit: "{params.explore_limit_wide}" }
     then: query-resolve
   - return: stopped
     with: { reason: "budget" }
 ```
+
+The caller injects `explore_limit` (default `limit + 5`) and
+`explore_limit_wide` (default `limit + 10`) via params from config.
 
 ---
 

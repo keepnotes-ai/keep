@@ -12,10 +12,11 @@ How do results surface to the caller (person or agent)?
 When does the caller see anything? When does the caller act?
 What is the relationship between the flow and decision-making?
 
-Actions are either **sync** (store queries — milliseconds) or
-**async** (provider calls — seconds). Async actions dispatch
-immediately and the flow continues. Sync and async mix freely;
-the flow waits for results only when it needs them.
+State docs orchestrate memory operations — every action reads
+from or enriches the keep store. Within that scope, actions are
+either **sync** (store queries — milliseconds) or **async**
+(provider calls that enrich items — seconds). Sync and async
+mix freely; the flow waits for results only when it needs them.
 
 ## 2) Write path: immediate return, background processing
 
@@ -155,13 +156,23 @@ continues evaluating subsequent rules without blocking.
 | `analyze` | async | LLM provider call |
 | `generate` | async | LLM provider call |
 
-`match: all` handles this naturally: dispatch summarize (async)
-and tag (async), both run concurrently, `post:` runs when all
-complete. In `match: sequence`, the flow waits for each action's
-result before evaluating the next rule (since the next rule may
-reference the output by `id`). The flow returns `stopped` (reason:
-`"background"`) when it has dispatched async work and has nothing
-left to do synchronously.
+**`match: all`**: All matching rules dispatch their actions.
+Async actions run concurrently in the background. The `post:`
+block runs only after all actions complete (the runtime
+suspends with `stopped` reason `"background"` while waiting).
+
+**`match: sequence`**: Rules evaluate top-to-bottom. Each
+action completes before the next rule is evaluated, because
+the next rule may reference the previous action's output by
+`id:`. Sync actions (store queries) complete inline. Async
+actions (provider calls) cause the flow to suspend with
+`stopped` reason `"background"` — the flow resumes from the
+same rule position when the result arrives.
+
+In both strategies, the flow returns `stopped` (reason:
+`"background"`) when it has dispatched async work and has
+nothing left to do synchronously. The caller polls or waits
+for notification, then resumes with the cursor.
 
 ### Reflection flow: sync and async mixed
 
@@ -314,11 +325,19 @@ and which require Judgment (interactive)?**
 
 ## 7) What the caller sees: the surface contract
 
-Every `continue()` call returns a status and a `flow_id`.
-The `flow_id` is the handle to the full execution trace —
-mutations, work results, state transitions — stored in
-`continuation_store`. It's always present, even for one-tick
-flows.
+Every `continue()` call returns a status. Flows that dispatch
+async work, apply mutations, or suspend with `stopped` are
+**persisted** — the `flow_id` in the response is the handle
+to the full execution trace (mutations, work results, state
+transitions) stored in `continuation_store`.
+
+Flows that complete synchronously with no mutations and no
+async work (e.g. a pure-query `match: sequence` that returns
+`done` in one tick) are **ephemeral** — they run entirely in
+memory with zero writes to the flow database (see §3). The
+response still includes a `flow_id` for API consistency, but
+nothing is stored. This keeps sync queries indistinguishable
+in cost from calling `find()` directly.
 
 ```python
 # Resolved
@@ -367,8 +386,34 @@ elif result.status == "error":
 Three statuses, one resume pattern. This is the entire
 caller-side contract.
 
-## 8) Open questions
+## 8) Parallel mutation ordering
 
-- [ ] Should `stopped` with reason `"background"` support push
+`match: all` dispatches independent actions that run concurrently.
+When multiple actions produce mutations targeting the same item,
+the ordering is non-deterministic. This is by design — `match: all`
+is for independent tasks that don't interfere.
+
+**Known interaction**: OCR changes item content while summarize and
+tag read content. If all three fire for the same item:
+
+- OCR extracts text and updates the item's content.
+- Summarize and tag read content at dispatch time, before OCR
+  completes.
+- Result: summary and tags reflect pre-OCR content.
+
+**Mitigation**: this is the correct behavior for the current
+after-write flow. OCR augments content with extracted text; the
+initial summary and tags are based on what the user actually wrote.
+A second pass (re-summarize/re-tag after OCR) is a separate flow
+that can be triggered by the OCR action's completion, not by
+imposing ordering constraints on `match: all`.
+
+If ordering matters, use `match: sequence` — rules execute in
+order, each action completes before the next rule is evaluated.
+
+## 9) Open questions
+
+- [x] Should `stopped` with reason `"background"` support push
       notifications (webhooks, SSE) instead of requiring polling?
+      **No.** Polling is sufficient. The caller resumes with `cursor`.
 - [ ] Audit trail: can the caller inspect what happened after?

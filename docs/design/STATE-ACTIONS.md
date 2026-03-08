@@ -9,9 +9,14 @@ Related:
 
 ## 1) What is an action?
 
-An action is a callable registered by name. State docs invoke actions
-via `do: <name>`. The runtime calls the action, passing params and
-context, and receives an output dict.
+An action is a callable registered by name that operates on the
+keep store — searching, reading, enriching, or producing items.
+The action vocabulary is memory-centric: every action either reads
+from the store or produces data that the runtime writes back to it.
+This is not a general-purpose task system.
+
+State docs invoke actions via `do: <name>`. The runtime calls the
+action, passing params and context, and receives an output dict.
 
 ```python
 class Action(Protocol):
