@@ -3,6 +3,10 @@
 
 * `keep put --no-version` for volatile items
 
+* how to optimize the "get... relevant things"
+
+* how to optimize the "do... skillful things"
+
 * edge migration over versioning and move
 
 * blog: the unreasonable "as if";

@@ -4105,6 +4105,12 @@ class Keeper:
             include_versions: Whether to include version navigation
         """
         id = normalize_id(id)
+        target_id = self._resolve_get_target_via_continuation(
+            id=id,
+            version=version,
+        )
+        if target_id:
+            id = target_id
         resolved = self.resolve_version_offset(id, version)
         if resolved is None:
             return None
@@ -4299,6 +4305,184 @@ class Keeper:
             prev=prev_refs,
             next=next_refs,
         )
+
+    @staticmethod
+    def _normalize_continuation_get_projection(
+        *,
+        id: str,
+        projection: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        raw = projection if isinstance(projection, dict) else {}
+
+        seed_mode = str(raw.get("seed_mode") or "id").strip().lower()
+        if seed_mode not in {"id", "query", "similar_to"}:
+            seed_mode = "id"
+
+        seed_value_raw = raw.get("seed_value")
+        seed_value = str(seed_value_raw).strip() if seed_value_raw is not None else ""
+        if not seed_value:
+            seed_value = str(id)
+
+        try:
+            rank = int(raw.get("rank", 0))
+        except Exception:
+            rank = 0
+        rank = max(rank, 0)
+
+        try:
+            max_nodes = int(raw.get("max_nodes", 10))
+        except Exception:
+            max_nodes = 10
+        max_nodes = min(max(max_nodes, 1), 100)
+
+        metadata_level = str(raw.get("metadata") or "basic").strip().lower()
+        if metadata_level not in {"none", "basic", "rich"}:
+            metadata_level = "basic"
+
+        where_tags_in = raw.get("where_tags")
+        where_tags: dict[str, Any] = {}
+        if isinstance(where_tags_in, dict):
+            for key, value in where_tags_in.items():
+                key_str = str(key).strip()
+                if not key_str:
+                    continue
+                if isinstance(value, list):
+                    values = [str(v).strip() for v in value if str(v).strip()]
+                    if not values:
+                        continue
+                    where_tags[key_str] = values if len(values) > 1 else values[0]
+                    continue
+                value_str = str(value).strip()
+                if value_str:
+                    where_tags[key_str] = value_str
+
+        return {
+            "seed_mode": seed_mode,
+            "seed_value": seed_value,
+            "rank": rank,
+            "max_nodes": max_nodes,
+            "metadata": metadata_level,
+            "deep": bool(raw.get("deep")),
+            "where_tags": where_tags,
+            "prefer_base_id": bool(raw.get("prefer_base_id", True)),
+        }
+
+    @staticmethod
+    def _frame_request_from_get_projection(projection: dict[str, Any]) -> dict[str, Any]:
+        seed_mode = str(projection.get("seed_mode") or "id")
+        seed_value = str(projection.get("seed_value") or "")
+        max_nodes = int(projection.get("max_nodes") or 10)
+        metadata_level = str(projection.get("metadata") or "basic")
+        where_tags = projection.get("where_tags") if isinstance(projection.get("where_tags"), dict) else {}
+
+        pipeline: list[dict[str, Any]] = []
+        if where_tags:
+            facts: list[str] = []
+            for key in sorted(where_tags.keys()):
+                value = where_tags[key]
+                if isinstance(value, list):
+                    for one in value:
+                        one_str = str(one).strip()
+                        if one_str:
+                            facts.append(f"{key}={one_str}")
+                    continue
+                value_str = str(value).strip()
+                if value_str:
+                    facts.append(f"{key}={value_str}")
+            if facts:
+                pipeline.append({"op": "where", "args": {"facts": facts}})
+        pipeline.append({"op": "slice", "args": {"limit": max_nodes}})
+
+        return {
+            "seed": {"mode": seed_mode, "value": seed_value},
+            "pipeline": pipeline,
+            "budget": {"max_nodes": max_nodes},
+            "options": {
+                "metadata": metadata_level,
+                "deep": bool(projection.get("deep")),
+            },
+        }
+
+    @staticmethod
+    def _project_get_target_id(
+        continuation_output: dict[str, Any],
+        *,
+        projection: dict[str, Any],
+    ) -> Optional[str]:
+        frame = continuation_output.get("frame") if isinstance(continuation_output, dict) else {}
+        if not isinstance(frame, dict):
+            return None
+        evidence = frame.get("evidence")
+        if not isinstance(evidence, list) or not evidence:
+            return None
+
+        rank = int(projection.get("rank") or 0)
+        idx = min(max(rank, 0), len(evidence) - 1)
+        entry = evidence[idx] if isinstance(evidence[idx], dict) else {}
+        if not isinstance(entry, dict):
+            return None
+
+        target_id = str(entry.get("id") or "").strip()
+        if bool(projection.get("prefer_base_id", True)):
+            metadata = entry.get("metadata")
+            if isinstance(metadata, dict):
+                base_id = str(metadata.get("base_id") or "").strip()
+                if base_id:
+                    target_id = base_id
+
+        if not target_id:
+            return None
+        try:
+            return normalize_id(target_id)
+        except Exception:
+            return target_id
+
+    def _resolve_get_target_via_continuation(
+        self,
+        id: str,
+        *,
+        version: int | None = None,
+        projection: Optional[dict[str, Any]] = None,
+    ) -> Optional[str]:
+        """
+        Resolve target ID for get-context through continuation evidence.
+
+        Internal-only helper: keeps public get/get_context surface unchanged while
+        allowing continuation-backed targeting.
+        """
+        id = normalize_id(id)
+        normalized_projection = self._normalize_continuation_get_projection(
+            id=id,
+            projection=projection,
+        )
+        frame_request = self._frame_request_from_get_projection(normalized_projection)
+        payload = {
+            "goal": "get",
+            "params": {
+                "id": id,
+                "version": version,
+                "projection": normalized_projection,
+            },
+            "frame_request": frame_request,
+            "work_results": [],
+        }
+
+        fallback_to_direct = str(normalized_projection.get("seed_mode") or "id") == "id"
+        try:
+            out = self.continue_flow(payload)
+        except Exception as exc:
+            logger.debug("Continuation get failed for %s: %s", id, exc)
+            if fallback_to_direct:
+                return id
+            return None
+
+        if str(out.get("status") or "") == "failed":
+            if fallback_to_direct:
+                return id
+            return None
+
+        target_id = self._project_get_target_id(out, projection=normalized_projection)
+        return target_id or (id if fallback_to_direct else None)
 
     def resolve_version_offset(self, id: str, selector: int | None) -> Optional[int]:
         """Resolve a public version selector to a concrete offset.
@@ -5850,7 +6034,7 @@ class Keeper:
             tag_keys: Tag key-only filters (item must have key, any value).
             since: Only items updated since (ISO duration like P3D, or date).
             until: Only items updated before (ISO duration or date).
-            order_by: Sort order - "updated" (default) or "accessed".
+            order_by: Sort order - "updated" (default), "accessed", or "created".
             include_hidden: Include system notes (dot-prefix IDs).
             include_history: Include previous versions alongside current items.
             limit: Maximum results to return.

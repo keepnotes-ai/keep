@@ -1941,10 +1941,10 @@ class DocumentStore:
         Returns:
             List of DocumentRecords, most recent first
         """
-        allowed_order = {"updated": "updated_at", "accessed": "accessed_at"}
+        allowed_order = {"updated": "updated_at", "accessed": "accessed_at", "created": "created_at"}
         order_col = allowed_order.get(order_by)
         if order_col is None:
-            raise ValueError(f"Invalid order_by: {order_by!r} (expected 'updated' or 'accessed')")
+            raise ValueError(f"Invalid order_by: {order_by!r} (expected 'updated', 'accessed', or 'created')")
         cursor = self._execute(f"""
             SELECT id, collection, summary, tags_json, created_at, updated_at, content_hash, accessed_at
             FROM documents
@@ -1980,10 +1980,10 @@ class DocumentStore:
         have '_version' tag set to their offset (1=previous, 2=two ago...).
         Current versions have no '_version' tag (equivalent to offset 0).
         """
-        allowed_order = {"updated": "updated_at", "accessed": "accessed_at"}
+        allowed_order = {"updated": "updated_at", "accessed": "accessed_at", "created": "created_at"}
         order_col = allowed_order.get(order_by)
         if order_col is None:
-            raise ValueError(f"Invalid order_by: {order_by!r} (expected 'updated' or 'accessed')")
+            raise ValueError(f"Invalid order_by: {order_by!r} (expected 'updated', 'accessed', or 'created')")
 
         cursor = self._execute(f"""
             SELECT id, summary, tags_json, {order_col} as sort_ts,
