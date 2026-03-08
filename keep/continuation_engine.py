@@ -1303,32 +1303,43 @@ class ContinuationEngine:
     def _mutation_ops_from_work(
         self, work_input: dict[str, Any], outputs: dict[str, Any],
     ) -> tuple[list[dict[str, Any]], Optional[dict[str, str]]]:
+        raw_lists: list[list[Any]] = []
+
+        output_mutations = outputs.get("mutations")
+        if output_mutations is not None:
+            if not isinstance(output_mutations, list):
+                return [], {"code": "invalid_input", "message": "output.mutations must be a list"}
+            raw_lists.append(output_mutations)
+
         apply_spec = work_input.get("apply") or {}
         if not isinstance(apply_spec, dict):
             return [], {"code": "invalid_input", "message": "work input apply spec must be an object"}
-        ops = apply_spec.get("ops")
-        if ops is None:
+        apply_ops = apply_spec.get("ops")
+        if apply_ops is not None:
+            if not isinstance(apply_ops, list):
+                return [], {"code": "invalid_input", "message": "apply.ops must be a list"}
+            raw_lists.append(apply_ops)
+        if not raw_lists:
             return [], None
-        if not isinstance(ops, list):
-            return [], {"code": "invalid_input", "message": "apply.ops must be a list"}
 
         default_target = work_input.get("item_id")
         normalized: list[dict[str, Any]] = []
-        for raw in ops:
-            if not isinstance(raw, dict):
-                return [], {"code": "invalid_input", "message": "apply.ops entries must be objects"}
-            op = {str(k): v for k, v in raw.items()}
-            op_name = str(op.get("op") or "")
-            if not op_name:
-                return [], {"code": "invalid_input", "message": "mutation op requires op field"}
-            if "target" not in op and default_target:
-                op["target"] = default_target
+        for raw_ops in raw_lists:
+            for raw in raw_ops:
+                if not isinstance(raw, dict):
+                    return [], {"code": "invalid_input", "message": "mutation op entries must be objects"}
+                op = {str(k): v for k, v in raw.items()}
+                op_name = str(op.get("op") or "")
+                if not op_name:
+                    return [], {"code": "invalid_input", "message": "mutation op requires op field"}
+                if "target" not in op and default_target:
+                    op["target"] = default_target
 
-            resolved = {
-                str(k): self._resolve_mutation_value(v, outputs=outputs, work_input=work_input)
-                for k, v in op.items()
-            }
-            normalized.append(resolved)
+                resolved = {
+                    str(k): self._resolve_mutation_value(v, outputs=outputs, work_input=work_input)
+                    for k, v in op.items()
+                }
+                normalized.append(resolved)
         return normalized, None
 
     def _validate_mutation_op(

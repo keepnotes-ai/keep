@@ -9,6 +9,7 @@ import json
 from dataclasses import dataclass
 from typing import Any, Callable, Protocol
 
+from .actions import get_action
 from .continuation_env import ContinuationRuntimeEnv
 from .processors import process_summarize
 
@@ -20,6 +21,19 @@ class RunnerExecution:
     outputs: dict[str, Any]
     executor_id: str
     quality: dict[str, Any]
+
+
+@dataclass
+class _ActionItem:
+    """Action-facing item view with best-available content and source URI."""
+
+    id: str
+    summary: str
+    tags: dict[str, Any]
+    score: float | None = None
+    changed: bool | None = None
+    content: str | None = None
+    uri: str | None = None
 
 
 ProviderResolver = Callable[["LocalWorkExecutor", str | None, dict[str, Any] | None], tuple[Any, str]]
@@ -143,8 +157,161 @@ class LocalWorkExecutor:
         runner_type = str(runner.get("type") or "").strip()
         if not runner_type:
             raise ValueError("runner.type is required for local run_work execution")
+        if runner_type == "action":
+            return _run_action(self, payload, runner, action_name=str(runner.get("name") or "").strip())
+        if runner_type.startswith("action."):
+            return _run_action(self, payload, runner, action_name=runner_type[7:])
         handler = self._registry.get_runner(runner_type)
         return handler(self, payload, runner)
+
+
+class _ActionRunnerContext:
+    """Read-only action context backed by continuation runtime adapters."""
+
+    def __init__(self, executor: LocalWorkExecutor, payload: dict[str, Any]) -> None:
+        """Bind runtime environment and current work payload."""
+        self._executor = executor
+        self._env = executor._env
+        self._cache: dict[str, Any] = {}
+        item_id = payload.get("item_id")
+        self.item_id = str(item_id) if item_id is not None else None
+        content = payload.get("content")
+        self.item_content = str(content) if content is not None else None
+
+    def get(self, id: str) -> Any | None:
+        """Return an action item, enriching URI-backed notes with fetched content."""
+        key = str(id).strip()
+        if not key:
+            return None
+        if key in self._cache:
+            return self._cache[key]
+        base = self._env.get(key)
+        if base is None:
+            self._cache[key] = None
+            return None
+
+        tags_raw = getattr(base, "tags", None)
+        tags = dict(tags_raw) if isinstance(tags_raw, dict) else {}
+        source = str(tags.get("_source") or "").strip().lower()
+        source_uri = str(tags.get("_source_uri") or "").strip()
+        uri = source_uri or (key if source == "uri" else "")
+        content: str | None = None
+        if uri:
+            try:
+                provider = self.resolve_provider("document")
+                fetch = getattr(provider, "fetch", None)
+                if callable(fetch):
+                    doc = fetch(uri)
+                    raw_content = getattr(doc, "content", None)
+                    if raw_content is not None:
+                        content = str(raw_content)
+            except Exception:
+                content = None
+
+        if content is None and self.item_id and key == self.item_id and self.item_content is not None:
+            content = str(self.item_content)
+        if content is None:
+            content = str(getattr(base, "summary", "") or "")
+
+        item = _ActionItem(
+            id=str(getattr(base, "id", key) or key),
+            summary=str(getattr(base, "summary", "") or ""),
+            tags=tags,
+            score=(float(getattr(base, "score")) if isinstance(getattr(base, "score", None), (int, float)) else None),
+            changed=(bool(getattr(base, "changed")) if getattr(base, "changed", None) is not None else None),
+            content=content,
+            uri=(uri or None),
+        )
+        self._cache[key] = item
+        return item
+
+    def find(
+        self,
+        query: str | None = None,
+        *,
+        tags: dict[str, Any] | None = None,
+        similar_to: str | None = None,
+        limit: int = 10,
+        since: str | None = None,
+        until: str | None = None,
+        include_hidden: bool = False,
+    ) -> list[Any]:
+        return self._env.find(
+            query,
+            tags=tags,
+            similar_to=similar_to,
+            limit=limit,
+            since=since,
+            until=until,
+            include_hidden=include_hidden,
+            deep=False,
+        )
+
+    def list_items(
+        self,
+        *,
+        prefix: str | None = None,
+        tags: dict[str, Any] | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        order_by: str = "updated",
+        include_hidden: bool = False,
+        limit: int = 10,
+    ) -> list[Any]:
+        return self._env.list_items(
+            prefix=prefix,
+            tags=tags,
+            since=since,
+            until=until,
+            order_by=order_by,
+            include_hidden=include_hidden,
+            limit=limit,
+        )
+
+    def get_document(self, id: str) -> Any | None:
+        return self._env.get_document(id)
+
+    def resolve_meta(self, id: str, limit_per_doc: int = 3) -> dict[str, list[Any]]:
+        return self._env.resolve_meta(id, limit_per_doc=limit_per_doc)
+
+    def traverse(self, source_ids: list[str], *, limit: int = 5) -> dict[str, list[Any]]:
+        return self._env.traverse_related(source_ids, limit_per_source=limit)
+
+    def resolve_provider(self, kind: str, name: str | None = None) -> Any:
+        resolver = self._executor._registry.get_provider_resolver(str(kind))
+        provider, _ = resolver(self._executor, name, None)
+        return provider
+
+
+def _run_action(
+    executor: LocalWorkExecutor,
+    payload: dict[str, Any],
+    runner: dict[str, Any],
+    *,
+    action_name: str,
+) -> RunnerExecution:
+    """Execute a registered state action and normalize its outputs."""
+    if not action_name:
+        raise ValueError("runner action requires name")
+    raw_params = runner.get("params")
+    if raw_params is None:
+        raw_params = {}
+    if not isinstance(raw_params, dict):
+        raise ValueError("runner action params must be an object")
+    params = executor.resolve_value(raw_params, payload)
+    if not isinstance(params, dict):
+        raise ValueError("resolved action params must be an object")
+
+    action = get_action(action_name)
+    context = _ActionRunnerContext(executor, payload)
+    outputs = action.run(params, context)
+    if not isinstance(outputs, dict):
+        raise ValueError(f"action {action_name!r} must return an object")
+    return RunnerExecution(
+        outputs={str(k): v for k, v in outputs.items()},
+        executor_id=str(runner.get("executor_id") or f"action.{action_name}"),
+        quality=LocalWorkExecutor.default_quality(),
+    )
 
 
 def _resolve_summarization_provider(
@@ -160,26 +327,57 @@ def _resolve_summarization_provider(
     return registry.create_summarization(str(name), params), str(name)
 
 
-def _resolve_tagging_provider(
-    _executor: LocalWorkExecutor, name: str | None, params: dict[str, Any] | None,
+def _resolve_document_provider(
+    executor: LocalWorkExecutor, name: str | None, params: dict[str, Any] | None,
 ) -> tuple[Any, str]:
+    """Resolve a document provider for URI-backed content refresh."""
+    if name is None and params is None:
+        return executor._env.get_default_document_provider(), "document.default"
+    if name is None:
+        raise ValueError("runner.provider.name is required when document provider params are provided")
+    from .providers.base import get_registry
+
+    registry = get_registry()
+    return registry.create_document(str(name), params), str(name)
+
+
+def _resolve_tagging_provider(
+    executor: LocalWorkExecutor, name: str | None, params: dict[str, Any] | None,
+) -> tuple[Any, str]:
+    if name is None and params is None:
+        return executor._env.get_default_tagging_provider(), "tagging.default"
     from .providers.base import get_registry
 
     registry = get_registry()
     if name is None:
-        name = "noop"
+        raise ValueError("runner.provider.name is required when tagging provider params are provided")
     return registry.create_tagging(str(name), params), str(name)
 
 
 def _resolve_analyzer_provider(
-    _executor: LocalWorkExecutor, name: str | None, params: dict[str, Any] | None,
+    executor: LocalWorkExecutor, name: str | None, params: dict[str, Any] | None,
 ) -> tuple[Any, str]:
+    if name is None and params is None:
+        return executor._env.get_default_analyzer_provider(), "analyzer.default"
     if name is None:
-        raise ValueError("runner.provider.name is required for analyzer provider")
+        raise ValueError("runner.provider.name is required when analyzer provider params are provided")
     from .providers.base import get_registry
 
     registry = get_registry()
     return registry.create_analyzer(str(name), params), str(name)
+
+
+def _resolve_content_extractor_provider(
+    executor: LocalWorkExecutor, name: str | None, params: dict[str, Any] | None,
+) -> tuple[Any, str]:
+    if name is None and params is None:
+        return executor._env.get_default_content_extractor_provider(), "content_extractor.default"
+    if name is None:
+        raise ValueError("runner.provider.name is required when content extractor params are provided")
+    from .providers.base import get_registry
+
+    registry = get_registry()
+    return registry.create_content_extractor(str(name), params), str(name)
 
 
 def _run_provider_summarize(
@@ -330,8 +528,10 @@ def _run_local_task(
 
 
 DEFAULT_CONTINUATION_EXECUTOR_REGISTRY.register_provider_kind("summarization", _resolve_summarization_provider)
+DEFAULT_CONTINUATION_EXECUTOR_REGISTRY.register_provider_kind("document", _resolve_document_provider)
 DEFAULT_CONTINUATION_EXECUTOR_REGISTRY.register_provider_kind("tagging", _resolve_tagging_provider)
 DEFAULT_CONTINUATION_EXECUTOR_REGISTRY.register_provider_kind("analyzer", _resolve_analyzer_provider)
+DEFAULT_CONTINUATION_EXECUTOR_REGISTRY.register_provider_kind("content_extractor", _resolve_content_extractor_provider)
 
 DEFAULT_CONTINUATION_EXECUTOR_REGISTRY.register_runner("provider.summarize", _run_provider_summarize)
 DEFAULT_CONTINUATION_EXECUTOR_REGISTRY.register_runner("provider.tag", _run_provider_tag)
