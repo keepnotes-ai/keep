@@ -8,7 +8,7 @@ Related:
 
 ## 1) Purpose
 
-These examples draft continuation-based processes more complex than
+These examples draft flow-based processes more complex than
 get/put. They combine query, analysis, and update within a single
 flow. They're intended to test the expressiveness of the state doc
 schema and surface any missing primitives.

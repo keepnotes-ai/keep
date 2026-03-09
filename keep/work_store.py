@@ -1,6 +1,6 @@
 """Work store adapters.
 
-Defines the persistence boundary for continuation runtime state so the runtime
+Defines the persistence boundary for flow runtime state so the runtime
 logic can be shared across local and hosted implementations.
 """
 
@@ -18,7 +18,7 @@ from typing import Optional, Protocol
 
 @dataclass
 class FlowRow:
-    """A continuation flow record."""
+    """A flow record."""
 
     flow_id: str
     state_version: int
@@ -28,7 +28,7 @@ class FlowRow:
 
 @dataclass
 class WorkRow:
-    """A work item record within a continuation flow."""
+    """A work item record within a flow."""
 
     work_id: str
     flow_id: str
@@ -60,7 +60,7 @@ class MutationRow:
 
 
 class FlowStore(Protocol):
-    """Persistence boundary for continuation flow state."""
+    """Persistence boundary for flow state."""
 
     def begin_immediate(self) -> None: ...
     def commit(self) -> None: ...

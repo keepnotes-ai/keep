@@ -1,4 +1,4 @@
-"""Backend-agnostic continuation engine.
+"""Backend-agnostic flow engine.
 
 Implements a minimal `continue(input) -> output` loop with durable flow state
 and idempotency over pluggable storage/execution adapters.
@@ -14,14 +14,14 @@ import threading
 import uuid
 from typing import Any, Optional
 
-from .continuation_env import ContinuationRuntimeEnv
-from .continuation_executor import LocalWorkExecutor, WorkExecutor
+from .flow_env import FlowRuntimeEnv
+from .flow_executor import LocalWorkExecutor, WorkExecutor
 from .state_doc import EvalResult, StateDoc, parse_state_doc, evaluate_state_doc
-from .continuation_policy import (
+from .flow_policy import (
     DECISION_STRATEGIES,
     DECISION_SUPPORT_VERSION,
     DEFAULT_DECISION_POLICY,
-    ContinuationDecisionPolicy,
+    FlowDecisionPolicy,
 )
 from .work_store import (
     FlowRow,
@@ -43,14 +43,14 @@ MAX_CONTINUE_EVENTS_PER_FLOW = 500
 CONTINUE_RESPONSE_MODES = {"standard", "debug"}
 PROGRAM_OVERRIDE_KEYS = {"params", "frame_request", "decision_policy"}
 
-class ContinuationEngine:
-    """Durable local continuation runtime."""
+class FlowEngine:
+    """Durable local flow runtime."""
 
     def __init__(
         self,
         *,
         flow_store: FlowStore,
-        env: ContinuationRuntimeEnv,
+        env: FlowRuntimeEnv,
         work_executor: WorkExecutor | None = None,
     ) -> None:
         self._env = env
@@ -61,7 +61,7 @@ class ContinuationEngine:
         self._state_doc_loader = make_state_doc_loader(env, builtins=BUILTIN_STATE_DOCS)
         self._flow_store = flow_store
         self._lock = threading.RLock()
-        self._decision_policy = ContinuationDecisionPolicy(
+        self._decision_policy = FlowDecisionPolicy(
             env=env,
             parse_where_tags=self._parse_where_tags,
             pipeline_limit=self._pipeline_limit,
@@ -1053,12 +1053,12 @@ class ContinuationEngine:
             return value
         if isinstance(value, list):
             return [
-                ContinuationEngine._resolve_mutation_value(v, outputs=outputs, work_input=work_input)
+                FlowEngine._resolve_mutation_value(v, outputs=outputs, work_input=work_input)
                 for v in value
             ]
         if isinstance(value, dict):
             return {
-                str(k): ContinuationEngine._resolve_mutation_value(v, outputs=outputs, work_input=work_input)
+                str(k): FlowEngine._resolve_mutation_value(v, outputs=outputs, work_input=work_input)
                 for k, v in value.items()
             }
         return value
@@ -1476,22 +1476,22 @@ class ContinuationEngine:
 
     @staticmethod
     def _empty_discriminators() -> dict[str, Any]:
-        return ContinuationDecisionPolicy.empty_discriminators()
+        return FlowDecisionPolicy.empty_discriminators()
 
     @staticmethod
     def _as_float(value: Any, default: float) -> float:
-        return ContinuationDecisionPolicy.as_float(value, default)
+        return FlowDecisionPolicy.as_float(value, default)
 
     @staticmethod
     def _clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
-        return ContinuationDecisionPolicy.clamp(value, low, high)
+        return FlowDecisionPolicy.clamp(value, low, high)
 
     def _decision_policy_from_program(self, program: dict[str, Any]) -> dict[str, Any]:
         return self._decision_policy.decision_policy_from_program(program)
 
     @staticmethod
     def _empty_lineage_signal() -> dict[str, Any]:
-        return ContinuationDecisionPolicy.empty_lineage_signal()
+        return FlowDecisionPolicy.empty_lineage_signal()
 
     def _lineage_signal(
         self, evidence: list[dict[str, Any]], *, field: str, topk: int,
@@ -1504,7 +1504,7 @@ class ContinuationEngine:
     def _decision_override_from_payload(
         self, payload: dict[str, Any],
     ) -> tuple[Optional[dict[str, Any]], Optional[dict[str, str]]]:
-        return ContinuationDecisionPolicy.decision_override_from_payload(payload)
+        return FlowDecisionPolicy.decision_override_from_payload(payload)
 
     def _candidate_subject_keys(
         self, frame_request: dict[str, Any], evidence: list[dict[str, Any]],
@@ -1518,7 +1518,7 @@ class ContinuationEngine:
     def _best_fact_from_counts(
         counts: dict[tuple[str, str], int], *, total: int,
     ) -> Optional[str]:
-        return ContinuationDecisionPolicy.best_fact_from_counts(counts, total=total)
+        return FlowDecisionPolicy.best_fact_from_counts(counts, total=total)
 
     def _tag_profile(self, evidence: list[dict[str, Any]], *, topk: int) -> dict[str, Any]:
         return self._decision_policy.tag_profile(evidence, topk=topk)
@@ -1557,7 +1557,7 @@ class ContinuationEngine:
 
     @staticmethod
     def _pivot_ids(evidence: list[dict[str, Any]], *, strategy: str, max_pivots: int) -> list[str]:
-        return ContinuationDecisionPolicy.pivot_ids(evidence, strategy=strategy, max_pivots=max_pivots)
+        return FlowDecisionPolicy.pivot_ids(evidence, strategy=strategy, max_pivots=max_pivots)
 
     def _decision_capsule(
         self,
@@ -1601,7 +1601,7 @@ class ContinuationEngine:
     def _query_auto_branch_utility(
         *, discriminators: dict[str, Any], evidence_count: int,
     ) -> float:
-        return ContinuationDecisionPolicy.query_auto_branch_utility(
+        return FlowDecisionPolicy.query_auto_branch_utility(
             discriminators=discriminators,
             evidence_count=evidence_count,
         )
@@ -2184,7 +2184,7 @@ class ContinuationEngine:
                 state_bytes = len(state_json.encode("utf-8"))
                 if state_bytes > MAX_CONTINUE_STATE_BYTES:
                     raise ValueError(
-                        f"continuation state exceeds max size ({state_bytes} > {MAX_CONTINUE_STATE_BYTES} bytes)"
+                        f"flow state exceeds max size ({state_bytes} > {MAX_CONTINUE_STATE_BYTES} bytes)"
                     )
                 self._flow_store.update_flow(
                     flow.flow_id,

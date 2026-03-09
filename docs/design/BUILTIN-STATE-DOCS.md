@@ -13,7 +13,7 @@ and exercised by tests. They implement the core behaviors.
 
 | State doc | Entry for | Wired in |
 |-----------|-----------|----------|
-| `.state/after-write` | `put` | `continuation_engine.py` |
+| `.state/after-write` | `put` | `flow_engine.py` |
 | `.state/get-context` | `get` (display) | `api.py:get_context()` |
 | `.state/find-deep` | `find(deep)` | `api.py:_deep_follow_via_flow()` |
 
@@ -249,7 +249,7 @@ like `when: "search.margin > 0.18"`.
 
 > **Status: unproven.** These state docs express the strategy
 > selection logic from the first-draft continuations work
-> (`continuation_policy.choose_strategy()`). That code path exists
+> (`flow_policy.choose_strategy()`). That code path exists
 > but has never been validated against real get/find behavior. The
 > thresholds and branching strategies below are hypothetical — they
 > may or may not reflect useful decision boundaries.
@@ -261,7 +261,7 @@ like `when: "search.margin > 0.18"`.
 Three state docs — `query-resolve`, `query-branch`,
 `query-explore` — are defined in `builtin_state_docs.py` but have
 no callers. They reference threshold params (`margin_high`,
-`entropy_low`, etc.) from `continuation_policy.py` defaults.
+`entropy_low`, etc.) from `flow_policy.py` defaults.
 
 ### .state/query-resolve (draft)
 
@@ -339,5 +339,5 @@ entropy_high:   0.72    # scattered results
 lineage_strong: 0.75    # version/part concentration
 ```
 
-These values come from `continuation_policy.DEFAULT_DECISION_POLICY`.
+These values come from `flow_policy.DEFAULT_DECISION_POLICY`.
 They have not been validated against real query patterns.

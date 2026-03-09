@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Run continuation-based retrieval traces on LoCoMo QA items.
+Run flow-based retrieval traces on LoCoMo QA items.
 
 Writes a full per-step log with exact continue payloads and outputs so the
 interaction can be inspected post-run.
@@ -236,7 +236,7 @@ def run_trace(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Simulate continuation traces on LoCoMo queries")
+    parser = argparse.ArgumentParser(description="Simulate flow traces on LoCoMo queries")
     parser.add_argument("--store", required=True, help="Path to keep store")
     parser.add_argument("--qa", required=True, help="Path to qa_dataset.json")
     parser.add_argument("--out", required=True, help="Output trace JSON path")

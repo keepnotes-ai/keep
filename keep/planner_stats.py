@@ -1,4 +1,4 @@
-"""Planner statistics store for continuation discriminators.
+"""Planner statistics store for flow discriminators.
 
 Maintains precomputed priors (fanout, selectivity, facet cardinality) in a
 separate SQLite database (planner_stats.db).  Updated incrementally via an

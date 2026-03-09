@@ -1,6 +1,6 @@
-"""Continuation runtime environment adapters.
+"""Flow runtime environment adapters.
 
-This module provides a stable dependency surface for continuation runtime
+This module provides a stable dependency surface for flow runtime
 logic so the runtime can be shared across local and hosted implementations.
 """
 
@@ -18,8 +18,8 @@ if TYPE_CHECKING:
     from .api import Keeper
 
 
-class ContinuationRuntimeEnv(Protocol):
-    """Environment contract consumed by continuation runtime and executors."""
+class FlowRuntimeEnv(Protocol):
+    """Environment contract consumed by flow runtime and executors."""
 
     def get(self, id: str) -> Any | None: ...
 
@@ -134,7 +134,7 @@ class ContinuationRuntimeEnv(Protocol):
     ) -> dict[str, Any]: ...
 
 
-class LocalContinuationEnvironment:
+class LocalFlowEnvironment:
     """Adapter from local Keeper APIs/private internals to runtime env contract."""
 
     def __init__(self, keeper: "Keeper") -> None:

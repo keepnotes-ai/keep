@@ -4,8 +4,8 @@ Date: 2026-03-07
 Status: Draft
 Related:
 - `docs/design/STATE-DOC-SCHEMA.md`
-- `keep/continuation_executor.py` (current runner system)
-- `keep/continuation_env.py` (current env protocol)
+- `keep/flow_executor.py` (current runner system)
+- `keep/flow_env.py` (current env protocol)
 
 ## 1) What is an action?
 
@@ -362,7 +362,7 @@ its current content to the summarization provider.
 
 **Implementation**: wraps `SummarizationProvider.summarize(content,
 max_length, context)`. Provider selection uses the configured default.
-Current code: `continuation_executor.py:180`.
+Current code: `flow_executor.py:180`.
 
 ### tag
 
@@ -527,7 +527,7 @@ This is the escape hatch for custom processing not covered by
 other actions.
 
 **Implementation**: wraps `SummarizationProvider.generate(system,
-user, max_tokens)`. Current code: `continuation_executor.py:231`.
+user, max_tokens)`. Current code: `flow_executor.py:231`.
 
 ### put
 

@@ -1,6 +1,6 @@
-"""Local continuation runtime wiring.
+"""Local flow runtime wiring.
 
-Binds the shared continuation engine to local SQLite storage and local
+Binds the shared flow engine to local SQLite storage and local
 execution adapters.
 """
 
@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .continuation_engine import (
+from .flow_engine import (
     ALLOWED_FRAME_OPS,
     BUILTIN_QUERY_AUTO_PROFILES,
     DECISION_STRATEGIES,
@@ -20,17 +20,17 @@ from .continuation_engine import (
     MAX_CONTINUE_WORK_INPUT_BYTES,
     MAX_CONTINUE_WORK_RESULT_BYTES,
     SYSTEM_NOTE_PREFIX,
-    ContinuationEngine,
+    FlowEngine,
 )
-from .continuation_env import ContinuationRuntimeEnv
-from .continuation_executor import LocalWorkExecutor
+from .flow_env import FlowRuntimeEnv
+from .flow_executor import LocalWorkExecutor
 from .work_store import SQLiteFlowStore
 
 
-class LocalContinuationRuntime(ContinuationEngine):
-    """Local runtime composition for continuation engine."""
+class LocalFlowRuntime(FlowEngine):
+    """Local runtime composition for flow engine."""
 
-    def __init__(self, db_path: Path, env: ContinuationRuntimeEnv) -> None:
+    def __init__(self, db_path: Path, env: FlowRuntimeEnv) -> None:
         super().__init__(
             flow_store=SQLiteFlowStore(db_path),
             env=env,

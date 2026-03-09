@@ -25,8 +25,8 @@ to run in sequence, in parallel, or conditionally:
   good enough, optionally re-search with different parameters,
   decide when to stop.
 
-Today this logic is hardcoded in Python (`continuation_engine.py`,
-`continuation_policy.py`). The goal is to move it into **state docs**:
+Today this logic is hardcoded in Python (`flow_engine.py`,
+`flow_policy.py`). The goal is to move it into **state docs**:
 editable documents in the keep store that define what processing
 happens and under what conditions.
 
@@ -38,7 +38,7 @@ A user calls `keep put`:
 keeper.put("Meeting notes: we decided to ship v2 by Friday", tags={"topic": "v2"})
 ```
 
-`put` stores the item, then starts a continuation flow to process it:
+`put` stores the item, then starts a flow to process it:
 
 ```python
 continue({
@@ -73,7 +73,7 @@ A query works the same way. A user calls `keep find`:
 keeper.find("authentication patterns", limit=10)
 ```
 
-Under the hood, `find` starts a continuation flow:
+Under the hood, `find` starts a flow:
 
 ```python
 continue({
@@ -82,10 +82,10 @@ continue({
         "query": "authentication patterns",
         "limit": 10,
         # All thresholds from config — never hardcoded in state docs
-        "margin_high": config.continuation.margin_high,      # default 0.18
-        "entropy_low": config.continuation.entropy_low,      # default 0.45
-        "margin_low": config.continuation.margin_low,        # default 0.08
-        "entropy_high": config.continuation.entropy_high,    # default 0.72
+        "margin_high": config.flow.margin_high,      # default 0.18
+        "entropy_low": config.flow.entropy_low,      # default 0.45
+        "margin_low": config.flow.margin_low,        # default 0.08
+        "entropy_high": config.flow.entropy_high,    # default 0.72
     },
     "budget": {"ticks": 5},
 })
@@ -96,7 +96,7 @@ them (if there's a clear winner) or refines the search. The
 thresholds come from the caller's config, not the state doc.
 
 In both cases, the existing API surface doesn't change. `put` and
-`find` work exactly as before — the continuation flow runs behind
+`find` work exactly as before — the flow runs behind
 them.
 
 Note: the current code has a `goal` field ("write", "query") used as
@@ -463,7 +463,7 @@ The draft branch (`feat/continuation-store-foundation`) is throwaway.
 Code worth reusing:
 
 - `work_store.py` — flow/work/mutation persistence
-- `continuation_env.py` — environment adapter pattern
+- `flow_env.py` — environment adapter pattern
 - Wire contract shape (`continue(input) -> output`)
 - Optimistic concurrency, idempotency, mutation dedup primitives
 

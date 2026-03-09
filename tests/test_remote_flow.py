@@ -1,4 +1,4 @@
-"""Remote continuation transport delegation tests."""
+"""Remote flow transport delegation tests."""
 
 from unittest.mock import MagicMock, patch
 

@@ -1,7 +1,7 @@
 """Shared local task workflows for processor-backed tasks.
 
 These workflows encapsulate the current "magic behavior" for summarize/ocr/analyze
-so queue-driven processing and continuation-driven processing can reuse the same
+so queue-driven processing and flow-driven processing can reuse the same
 execution logic without duplication.
 """
 
@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class TaskRequest:
-    """Minimal task request shape shared by queue and continuation paths."""
+    """Minimal task request shape shared by queue and flow paths."""
 
     task_type: str
     id: str

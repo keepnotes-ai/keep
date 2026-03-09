@@ -224,8 +224,8 @@ from .types import (
     parse_utc_timestamp, validate_tag_key, validate_id, normalize_id, is_part_id,
     MAX_TAG_VALUE_LENGTH,
 )
-from .continuation import LocalContinuationRuntime
-from .continuation_env import LocalContinuationEnvironment
+from .flow import LocalFlowRuntime
+from .flow_env import LocalFlowEnvironment
 
 
 class FindResults(list):
@@ -737,7 +737,7 @@ class Keeper:
             except Exception as e:
                 logger.warning("Failed to initialize TaskClient: %s", e)
 
-        # --- Planner stats (precomputed priors for continuation) ---
+        # --- Planner stats (precomputed priors for flow discriminators) ---
         self._planner_stats = None
         if self._is_local:
             from .planner_stats import PlannerStatsStore
@@ -762,12 +762,12 @@ class Keeper:
             self._config.system_docs_hash != _bundled_docs_hash()
         )
 
-        # Local continuation runtime (API-first path), initialized lazily on first use.
-        self._continuation = None
-        self._continuation_lock = threading.Lock()
-        self._deferred_continuation_tasks: list[dict[str, Any]] = []
-        self._deferred_continuation_lock = threading.Lock()
-        self._flushing_deferred_continuation = False
+        # Local flow runtime (API-first path), initialized lazily on first use.
+        self._flow_runtime = None
+        self._flow_runtime_lock = threading.Lock()
+        self._deferred_flow_tasks: list[dict[str, Any]] = []
+        self._deferred_flow_lock = threading.Lock()
+        self._flushing_deferred_flow = False
         self._write_context_by_id: dict[str, dict[str, Any]] = {}
         self._write_context_lock = threading.Lock()
 
@@ -2092,7 +2092,7 @@ class Keeper:
         digest = hashlib.sha256(f"{metadata_material}|{tag_material}".encode("utf-8")).hexdigest()[:12]
         return f"bg:{task_type}:{id}:{_content_hash(content)}:{digest}"
 
-    def _schedule_task_via_continuation(
+    def _schedule_task_via_flow(
         self,
         *,
         task_type: str,
@@ -2150,15 +2150,15 @@ class Keeper:
             "steps": [step],
             "work_results": [],
         }
-        runtime = self._get_continuation_runtime()
+        runtime = self._get_flow_runtime()
         if runtime._flow_store.in_transaction():
-            raise RuntimeError("continuation runtime transaction is active")
+            raise RuntimeError("flow runtime transaction is active")
         out = runtime.continue_flow(payload)
         if str(out.get("status") or "") == "failed":
             errors = out.get("errors") or []
             first = errors[0] if isinstance(errors, list) and errors and isinstance(errors[0], dict) else {}
             raise RuntimeError(
-                f"continuation {task} schedule failed: {first.get('code') or 'unknown'}: {first.get('message') or 'no message'}"
+                f"flow {task} schedule failed: {first.get('code') or 'unknown'}: {first.get('message') or 'no message'}"
             )
 
     def _fallback_enqueue_pending_task(self, pending: dict[str, Any]) -> None:
@@ -2178,18 +2178,18 @@ class Keeper:
                 metadata=dict(metadata or {}),
             )
 
-    def _flush_deferred_continuation_tasks(self) -> None:
-        if self._flushing_deferred_continuation:
+    def _flush_deferred_flow_tasks(self) -> None:
+        if self._flushing_deferred_flow:
             return
-        self._flushing_deferred_continuation = True
+        self._flushing_deferred_flow = True
         try:
             while True:
-                with self._deferred_continuation_lock:
-                    if not self._deferred_continuation_tasks:
+                with self._deferred_flow_lock:
+                    if not self._deferred_flow_tasks:
                         break
-                    pending = self._deferred_continuation_tasks.pop(0)
+                    pending = self._deferred_flow_tasks.pop(0)
                 try:
-                    self._schedule_task_via_continuation(
+                    self._schedule_task_via_flow(
                         task_type=str(pending.get("task_type") or ""),
                         id=str(pending.get("id") or ""),
                         doc_coll=str(pending.get("doc_coll") or self._resolve_doc_collection()),
@@ -2199,12 +2199,12 @@ class Keeper:
                     )
                 except Exception as exc:
                     logger.warning(
-                        "Deferred continuation task scheduling failed for %s/%s; falling back to pending queue: %s",
+                        "Deferred flow task scheduling failed for %s/%s; falling back to pending queue: %s",
                         pending.get("task_type"), pending.get("id"), exc,
                     )
                     self._fallback_enqueue_pending_task(pending)
         finally:
-            self._flushing_deferred_continuation = False
+            self._flushing_deferred_flow = False
 
     def _enqueue_task_background(
         self,
@@ -2227,13 +2227,13 @@ class Keeper:
         if not self._is_local:
             self._fallback_enqueue_pending_task(pending)
             return
-        runtime = self._get_continuation_runtime()
+        runtime = self._get_flow_runtime()
         if runtime._flow_store.in_transaction():
-            with self._deferred_continuation_lock:
-                self._deferred_continuation_tasks.append(pending)
+            with self._deferred_flow_lock:
+                self._deferred_flow_tasks.append(pending)
             return
         try:
-            self._schedule_task_via_continuation(
+            self._schedule_task_via_flow(
                 task_type=task_type,
                 id=id,
                 doc_coll=doc_coll,
@@ -2801,7 +2801,7 @@ class Keeper:
                 )
             return result
 
-    def _put_via_continuation(
+    def _put_via_flow(
         self,
         content: Optional[str] = None,
         *,
@@ -2833,9 +2833,9 @@ class Keeper:
             if isinstance(errors, list) and errors:
                 first = errors[0] if isinstance(errors[0], dict) else {}
                 code = str(first.get("code") or "write_failed")
-                message = str(first.get("message") or "Continuation write failed")
+                message = str(first.get("message") or "Flow write failed")
                 raise ValueError(f"{code}: {message}")
-            raise ValueError("Continuation write failed")
+            raise ValueError("Flow write failed")
 
         work = out.get("work") or []
         if isinstance(work, list) and work:
@@ -2870,11 +2870,11 @@ class Keeper:
                 target_id = _text_content_id(content)
 
         if not target_id:
-            raise ValueError("Continuation write did not return an item id")
+            raise ValueError("Flow write did not return an item id")
 
         item = self.get(target_id)
         if item is None:
-            raise ValueError(f"Continuation write item not found: {target_id}")
+            raise ValueError(f"Flow write item not found: {target_id}")
 
         if isinstance(applied_ops, list):
             if any(str(op.get("op") or "") == "enqueue_task" for op in applied_ops if isinstance(op, dict)):
@@ -2898,9 +2898,9 @@ class Keeper:
         force: bool = False,
     ) -> Item:
         """
-        Store content in memory through continuation write execution.
+        Store content in memory through flow write execution.
         """
-        return self._put_via_continuation(
+        return self._put_via_flow(
             content=content,
             uri=uri,
             id=id,
@@ -4160,7 +4160,7 @@ class Keeper:
             include_versions: Whether to include version navigation
         """
         id = normalize_id(id)
-        target_id = self._resolve_get_target_via_continuation(
+        target_id = self._resolve_get_target_via_flow(
             id=id,
             version=version,
         )
@@ -4257,7 +4257,7 @@ class Keeper:
         )
 
     @staticmethod
-    def _normalize_continuation_get_projection(
+    def _normalize_flow_get_projection(
         *,
         id: str,
         projection: Optional[dict[str, Any]] = None,
@@ -4355,11 +4355,11 @@ class Keeper:
 
     @staticmethod
     def _project_get_target_id(
-        continuation_output: dict[str, Any],
+        flow_output: dict[str, Any],
         *,
         projection: dict[str, Any],
     ) -> Optional[str]:
-        frame = continuation_output.get("frame") if isinstance(continuation_output, dict) else {}
+        frame = flow_output.get("frame") if isinstance(flow_output, dict) else {}
         if not isinstance(frame, dict):
             return None
         evidence = frame.get("evidence")
@@ -4387,7 +4387,7 @@ class Keeper:
         except Exception:
             return target_id
 
-    def _resolve_get_target_via_continuation(
+    def _resolve_get_target_via_flow(
         self,
         id: str,
         *,
@@ -4395,13 +4395,13 @@ class Keeper:
         projection: Optional[dict[str, Any]] = None,
     ) -> Optional[str]:
         """
-        Resolve target ID for get-context through continuation evidence.
+        Resolve target ID for get-context through flow evidence.
 
         Internal-only helper: keeps public get/get_context surface unchanged while
-        allowing continuation-backed targeting.
+        allowing flow-backed targeting.
         """
         id = normalize_id(id)
-        normalized_projection = self._normalize_continuation_get_projection(
+        normalized_projection = self._normalize_flow_get_projection(
             id=id,
             projection=projection,
         )
@@ -4421,7 +4421,7 @@ class Keeper:
         try:
             out = self.continue_flow(payload)
         except Exception as exc:
-            logger.debug("Continuation get failed for %s: %s", id, exc)
+            logger.debug("Flow get failed for %s: %s", id, exc)
             if fallback_to_direct:
                 return id
             return None
@@ -6525,7 +6525,7 @@ class Keeper:
         scope_key: str | None = None,
         candidates: list[str] | None = None,
     ) -> dict:
-        """Return minimal planner priors for continuation discriminators.
+        """Return minimal planner priors for flow discriminators.
 
         Shape:
         {
@@ -6977,10 +6977,10 @@ class Keeper:
         return self._pending_queue.count()
 
     def continuation_pending_count(self, *, claimable_only: bool = False) -> int:
-        """Get count of requested continuation work items."""
+        """Get count of requested flow work items."""
         if not self._is_local:
             return 0
-        runtime = self._get_continuation_runtime()
+        runtime = self._get_flow_runtime()
         return runtime.count_requested_work(claimable_only=claimable_only)
 
     def process_continuation_work(
@@ -6990,10 +6990,10 @@ class Keeper:
         worker_id: Optional[str] = None,
         lease_seconds: int = 120,
     ) -> dict:
-        """Process a batch of requested continuation work items."""
+        """Process a batch of requested flow work items."""
         if not self._is_local:
             return {"claimed": 0, "processed": 0, "failed": 0, "dead_lettered": 0, "errors": []}
-        runtime = self._get_continuation_runtime()
+        runtime = self._get_flow_runtime()
         worker = worker_id or f"local-daemon:{os.getpid()}"
         return runtime.process_requested_work_batch(
             worker_id=worker,
@@ -7022,32 +7022,32 @@ class Keeper:
         return self._pending_queue.get_status(id)
 
     # -------------------------------------------------------------------------
-    # Continuation API (local-only preview)
+    # Flow API (local-only preview)
     # -------------------------------------------------------------------------
 
-    def _get_continuation_runtime(self) -> LocalContinuationRuntime:
-        runtime = self._continuation
+    def _get_flow_runtime(self) -> LocalFlowRuntime:
+        runtime = self._flow_runtime
         if runtime is not None:
             return runtime
-        with self._continuation_lock:
-            runtime = self._continuation
+        with self._flow_runtime_lock:
+            runtime = self._flow_runtime
             if runtime is None:
-                runtime = LocalContinuationRuntime(
+                runtime = LocalFlowRuntime(
                     self._store_path / "continuation.db",
-                    LocalContinuationEnvironment(self),
+                    LocalFlowEnvironment(self),
                 )
-                self._continuation = runtime
+                self._flow_runtime = runtime
         return runtime
 
     def continue_flow(self, payload: dict) -> dict:
-        """Run one continuation tick for local API-first flows."""
-        result = self._get_continuation_runtime().continue_flow(payload)
-        self._flush_deferred_continuation_tasks()
+        """Run one flow tick for local API-first flows."""
+        result = self._get_flow_runtime().continue_flow(payload)
+        self._flush_deferred_flow_tasks()
         return result
 
     def continue_run_work(self, cursor: str, work_id: str) -> dict:
         """Execute a pending local work item and return a work_result envelope."""
-        return self._get_continuation_runtime().run_work(cursor, work_id)
+        return self._get_flow_runtime().run_work(cursor, work_id)
 
     def _run_read_flow(
         self,
@@ -7081,7 +7081,7 @@ class Keeper:
             run_flow,
         )
 
-        env = LocalContinuationEnvironment(self)
+        env = LocalFlowEnvironment(self)
         if query_embedding is not None:
             env._query_embedding = query_embedding
         loader = make_state_doc_loader(env, builtins=BUILTIN_STATE_DOCS)
@@ -7383,10 +7383,10 @@ class Keeper:
             self._task_client.close()
             self._task_client = None
 
-        # Close continuation runtime
-        if hasattr(self, "_continuation") and self._continuation is not None:
+        # Close flow runtime
+        if hasattr(self, "_flow_runtime") and self._flow_runtime is not None:
             try:
-                self._continuation.close()
+                self._flow_runtime.close()
             except Exception:
                 pass
 

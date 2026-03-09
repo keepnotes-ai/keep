@@ -1,6 +1,6 @@
-"""Continuation work executor registry and local default executor.
+"""Flow work executor registry and local default executor.
 
-This module isolates runner/provider execution from continuation state control.
+This module isolates runner/provider execution from flow state control.
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Protocol
 
 from .actions import get_action
-from .continuation_env import ContinuationRuntimeEnv
+from .flow_env import FlowRuntimeEnv
 from .processors import process_summarize
 
 
@@ -41,12 +41,12 @@ RunnerHandler = Callable[["LocalWorkExecutor", dict[str, Any], dict[str, Any]], 
 
 
 class WorkExecutor(Protocol):
-    """Execution contract consumed by continuation engine."""
+    """Execution contract consumed by flow engine."""
 
     def execute(self, payload: dict[str, Any]) -> RunnerExecution: ...
 
 
-class ContinuationExecutorRegistry:
+class FlowExecutorRegistry:
     """Registry mapping runner types and provider kinds to handlers."""
 
     def __init__(self) -> None:
@@ -70,11 +70,11 @@ class ContinuationExecutorRegistry:
         return self._runner_handlers[runner_type]
 
 
-DEFAULT_CONTINUATION_EXECUTOR_REGISTRY = ContinuationExecutorRegistry()
+DEFAULT_FLOW_EXECUTOR_REGISTRY = FlowExecutorRegistry()
 
 
 class LocalWorkExecutor:
-    """Executes continuation work items using local providers."""
+    """Executes flow work items using local providers."""
 
     RESOLVABLE_PAYLOAD_ROOT_KEYS = {
         "content",
@@ -89,12 +89,12 @@ class LocalWorkExecutor:
 
     def __init__(
         self,
-        env: ContinuationRuntimeEnv,
+        env: FlowRuntimeEnv,
         *,
-        registry: ContinuationExecutorRegistry | None = None,
+        registry: FlowExecutorRegistry | None = None,
     ) -> None:
         self._env = env
-        self._registry = registry or DEFAULT_CONTINUATION_EXECUTOR_REGISTRY
+        self._registry = registry or DEFAULT_FLOW_EXECUTOR_REGISTRY
 
     @staticmethod
     def resolve_value(value: Any, payload: dict[str, Any]) -> Any:
@@ -166,7 +166,7 @@ class LocalWorkExecutor:
 
 
 class _ActionRunnerContext:
-    """Read-only action context backed by continuation runtime adapters."""
+    """Read-only action context backed by flow runtime adapters."""
 
     def __init__(self, executor: LocalWorkExecutor, payload: dict[str, Any]) -> None:
         """Bind runtime environment and current work payload."""
@@ -527,22 +527,22 @@ def _run_local_task(
     )
 
 
-DEFAULT_CONTINUATION_EXECUTOR_REGISTRY.register_provider_kind("summarization", _resolve_summarization_provider)
-DEFAULT_CONTINUATION_EXECUTOR_REGISTRY.register_provider_kind("document", _resolve_document_provider)
-DEFAULT_CONTINUATION_EXECUTOR_REGISTRY.register_provider_kind("tagging", _resolve_tagging_provider)
-DEFAULT_CONTINUATION_EXECUTOR_REGISTRY.register_provider_kind("analyzer", _resolve_analyzer_provider)
-DEFAULT_CONTINUATION_EXECUTOR_REGISTRY.register_provider_kind("content_extractor", _resolve_content_extractor_provider)
+DEFAULT_FLOW_EXECUTOR_REGISTRY.register_provider_kind("summarization", _resolve_summarization_provider)
+DEFAULT_FLOW_EXECUTOR_REGISTRY.register_provider_kind("document", _resolve_document_provider)
+DEFAULT_FLOW_EXECUTOR_REGISTRY.register_provider_kind("tagging", _resolve_tagging_provider)
+DEFAULT_FLOW_EXECUTOR_REGISTRY.register_provider_kind("analyzer", _resolve_analyzer_provider)
+DEFAULT_FLOW_EXECUTOR_REGISTRY.register_provider_kind("content_extractor", _resolve_content_extractor_provider)
 
-DEFAULT_CONTINUATION_EXECUTOR_REGISTRY.register_runner("provider.summarize", _run_provider_summarize)
-DEFAULT_CONTINUATION_EXECUTOR_REGISTRY.register_runner("provider.tag", _run_provider_tag)
-DEFAULT_CONTINUATION_EXECUTOR_REGISTRY.register_runner("provider.generate_json", _run_provider_generate_json)
-DEFAULT_CONTINUATION_EXECUTOR_REGISTRY.register_runner("echo", _run_echo)
-DEFAULT_CONTINUATION_EXECUTOR_REGISTRY.register_runner("local.task", _run_local_task)
-
-
-def register_continuation_runner(runner_type: str, handler: RunnerHandler) -> None:
-    DEFAULT_CONTINUATION_EXECUTOR_REGISTRY.register_runner(runner_type, handler)
+DEFAULT_FLOW_EXECUTOR_REGISTRY.register_runner("provider.summarize", _run_provider_summarize)
+DEFAULT_FLOW_EXECUTOR_REGISTRY.register_runner("provider.tag", _run_provider_tag)
+DEFAULT_FLOW_EXECUTOR_REGISTRY.register_runner("provider.generate_json", _run_provider_generate_json)
+DEFAULT_FLOW_EXECUTOR_REGISTRY.register_runner("echo", _run_echo)
+DEFAULT_FLOW_EXECUTOR_REGISTRY.register_runner("local.task", _run_local_task)
 
 
-def register_continuation_provider_kind(kind: str, resolver: ProviderResolver) -> None:
-    DEFAULT_CONTINUATION_EXECUTOR_REGISTRY.register_provider_kind(kind, resolver)
+def register_flow_runner(runner_type: str, handler: RunnerHandler) -> None:
+    DEFAULT_FLOW_EXECUTOR_REGISTRY.register_runner(runner_type, handler)
+
+
+def register_flow_provider_kind(kind: str, resolver: ProviderResolver) -> None:
+    DEFAULT_FLOW_EXECUTOR_REGISTRY.register_provider_kind(kind, resolver)

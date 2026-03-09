@@ -387,9 +387,9 @@ async def keep_prompt(
 
 @mcp.tool(
     description=(
-        "Run one continuation tick. Continuations are stateful multi-step memory interactions "
+        "Run one flow tick. Flows are stateful multi-step memory interactions "
         "with automatic refinement and decision support. "
-        "Pass a payload dict with the continuation request — see docs/CONTINUATIONS.md for the full schema. "
+        "Pass a payload dict with the flow request — see docs/CONTINUATIONS.md for the full schema. "
         "Common fields: cursor (omit to start new), top-level flow fields, overrides, work_results."
     ),
     annotations=_IDEMPOTENT,
@@ -397,7 +397,7 @@ async def keep_prompt(
 async def keep_continue(
     payload: Annotated[dict[str, Any], Field(
         description=(
-            "Continuation request object. "
+            "Flow request object. "
             "To start a new flow: {\"goal\": \"...\", \"profile\": \"query.auto\"} "
             "or {\"goal\": \"...\", \"template\": \"...\"}. "
             "To continue: {\"cursor\": \"...\"}. "
@@ -405,7 +405,7 @@ async def keep_continue(
         ),
     )],
 ) -> str:
-    """Run one continuation tick."""
+    """Run one flow tick."""
     async with _lock:
         keeper = _get_keeper()
         try:
@@ -417,7 +417,7 @@ async def keep_continue(
 
 @mcp.tool(
     description=(
-        "Execute a pending work item from a continuation flow. "
+        "Execute a pending work item from a flow. "
         "Returns a work_result envelope with outputs and quality metrics."
     ),
     annotations=_IDEMPOTENT,
@@ -426,7 +426,7 @@ async def keep_continue_work(
     cursor: Annotated[str, Field(description="Cursor containing the flow context.")],
     work_id: Annotated[str, Field(description="Work item to execute.")],
 ) -> str:
-    """Execute a pending continuation work item."""
+    """Execute a pending flow work item."""
     async with _lock:
         keeper = _get_keeper()
         try:

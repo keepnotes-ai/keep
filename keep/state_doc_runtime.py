@@ -4,7 +4,7 @@ Evaluates state docs with inline action execution, handling transitions
 between states and enforcing tick budgets.  This is the runtime for the
 read/query path where flows run synchronously and return immediately.
 
-The write path uses background task dispatch (continuation_engine.py);
+The write path uses background task dispatch (flow_engine.py);
 this runtime is for flows that must complete before returning to the
 caller: query resolution, context assembly, deep find.
 
@@ -235,7 +235,7 @@ def make_state_doc_loader(
     *,
     builtins: dict[str, str] | None = None,
 ) -> StateDocLoader:
-    """Create a state doc loader backed by a ContinuationRuntimeEnv.
+    """Create a state doc loader backed by a FlowRuntimeEnv.
 
     Loads ``.state/{name}`` notes from the store, parses their summary
     field as YAML state doc body.  Falls back to ``builtins`` (a dict
@@ -270,7 +270,7 @@ def make_state_doc_loader(
 
 
 def make_action_runner(env: Any) -> ActionRunner:
-    """Create an action runner backed by a ContinuationRuntimeEnv.
+    """Create an action runner backed by a FlowRuntimeEnv.
 
     Wraps the action registry with a read-only context that delegates
     store operations to the environment.  Suitable for the read/query
@@ -289,7 +289,7 @@ def make_action_runner(env: Any) -> ActionRunner:
 
 
 class _EnvActionContext:
-    """Read-only ActionContext backed by a ContinuationRuntimeEnv."""
+    """Read-only ActionContext backed by a FlowRuntimeEnv."""
 
     def __init__(self, env: Any) -> None:
         self._env = env

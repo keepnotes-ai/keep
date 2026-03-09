@@ -1,9 +1,9 @@
 import pytest
 
 from keep.api import Keeper
-from keep.continuation_engine import ContinuationEngine
-from keep.continuation_env import LocalContinuationEnvironment
-from keep.continuation_executor import WorkExecutor
+from keep.flow_engine import FlowEngine
+from keep.flow_env import LocalFlowEnvironment
+from keep.flow_executor import WorkExecutor
 from keep.work_store import SQLiteFlowStore
 
 
@@ -35,9 +35,9 @@ def _summarize_request(note_id: str, content: str, *, request_id: str, idempoten
 def test_engine_round_trip_with_adapters(mock_providers, tmp_path):
     kp = Keeper(store_path=tmp_path)
     flow_store = SQLiteFlowStore(tmp_path / "engine-continuation.db")
-    engine = ContinuationEngine(
+    engine = FlowEngine(
         flow_store=flow_store,
-        env=LocalContinuationEnvironment(kp),
+        env=LocalFlowEnvironment(kp),
     )
     try:
         content = "engine alpha " * 120
@@ -69,9 +69,9 @@ def test_engine_round_trip_with_adapters(mock_providers, tmp_path):
 def test_engine_idempotency_replay_with_adapters(mock_providers, tmp_path):
     kp = Keeper(store_path=tmp_path)
     flow_store = SQLiteFlowStore(tmp_path / "engine-continuation.db")
-    engine = ContinuationEngine(
+    engine = FlowEngine(
         flow_store=flow_store,
-        env=LocalContinuationEnvironment(kp),
+        env=LocalFlowEnvironment(kp),
     )
     try:
         content = "engine beta " * 80
@@ -103,9 +103,9 @@ def test_engine_idempotency_replay_with_adapters(mock_providers, tmp_path):
 def test_engine_process_requested_work_batch_applies_result(mock_providers, tmp_path):
     kp = Keeper(store_path=tmp_path)
     flow_store = SQLiteFlowStore(tmp_path / "engine-continuation.db")
-    engine = ContinuationEngine(
+    engine = FlowEngine(
         flow_store=flow_store,
-        env=LocalContinuationEnvironment(kp),
+        env=LocalFlowEnvironment(kp),
     )
     try:
         content = "engine batch " * 120
@@ -140,9 +140,9 @@ class _FailingWorkExecutor(WorkExecutor):
 def test_engine_process_requested_work_batch_dead_letters_after_max_attempts(mock_providers, tmp_path):
     kp = Keeper(store_path=tmp_path)
     flow_store = SQLiteFlowStore(tmp_path / "engine-continuation.db")
-    engine = ContinuationEngine(
+    engine = FlowEngine(
         flow_store=flow_store,
-        env=LocalContinuationEnvironment(kp),
+        env=LocalFlowEnvironment(kp),
         work_executor=_FailingWorkExecutor(),
     )
     try:
@@ -173,9 +173,9 @@ def test_engine_process_requested_work_batch_dead_letters_after_max_attempts(moc
 def test_engine_local_task_runner_invokes_task_workflow(mock_providers, tmp_path):
     kp = Keeper(store_path=tmp_path)
     flow_store = SQLiteFlowStore(tmp_path / "engine-continuation.db")
-    engine = ContinuationEngine(
+    engine = FlowEngine(
         flow_store=flow_store,
-        env=LocalContinuationEnvironment(kp),
+        env=LocalFlowEnvironment(kp),
     )
     calls: list[dict] = []
     original = kp._run_local_task_workflow
@@ -271,9 +271,9 @@ def _engine_with_state_doc(mock_providers, tmp_path):
     """Create a Keeper + engine with a .state/after-write doc installed."""
     kp = Keeper(store_path=tmp_path)
     flow_store = SQLiteFlowStore(tmp_path / "engine-continuation.db")
-    engine = ContinuationEngine(
+    engine = FlowEngine(
         flow_store=flow_store,
-        env=LocalContinuationEnvironment(kp),
+        env=LocalFlowEnvironment(kp),
     )
     # Install the state doc as a keep note
     kp.put(content=AFTER_WRITE_STATE_DOC, id=".state/after-write", summary=AFTER_WRITE_STATE_DOC)
@@ -498,9 +498,9 @@ def test_fallback_to_template_when_no_state_doc(mock_providers, tmp_path):
     """Without a .state/after-write doc, template followups still work."""
     kp = Keeper(store_path=tmp_path)
     flow_store = SQLiteFlowStore(tmp_path / "engine-continuation.db")
-    engine = ContinuationEngine(
+    engine = FlowEngine(
         flow_store=flow_store,
-        env=LocalContinuationEnvironment(kp),
+        env=LocalFlowEnvironment(kp),
     )
     enqueued: list[dict] = []
     original = kp._enqueue_task_background

@@ -3166,7 +3166,7 @@ def pending_cmd(
         _daemon_logger = logging.getLogger("keep.cli.daemon")
         pid_path = kp._processor_pid_path
         processor_lock = ModelLock(kp._store_path / ".processor.lock")
-        continuation_worker_id = f"pending-daemon:{os.getpid()}"
+        flow_worker_id = f"pending-daemon:{os.getpid()}"
         shutdown_requested = False
 
         if not processor_lock.acquire(blocking=False):
@@ -3186,36 +3186,36 @@ def pending_cmd(
         try:
             pid_path.write_text(str(os.getpid()))
             while not shutdown_requested:
-                continuation_result = kp.process_continuation_work(
+                flow_result = kp.process_continuation_work(
                     limit=50,
-                    worker_id=continuation_worker_id,
+                    worker_id=flow_worker_id,
                     lease_seconds=180,
                 )
                 result = kp.process_pending(limit=50)
                 delegated = result.get("delegated", 0)
                 _daemon_logger.info(
-                    "Daemon batch: processed=%d failed=%d delegated=%d continuation_processed=%d continuation_failed=%d",
+                    "Daemon batch: processed=%d failed=%d delegated=%d flow_processed=%d flow_failed=%d",
                     result["processed"], result["failed"], delegated,
-                    int(continuation_result.get("processed", 0)),
-                    int(continuation_result.get("failed", 0)) + int(continuation_result.get("dead_lettered", 0)),
+                    int(flow_result.get("processed", 0)),
+                    int(flow_result.get("failed", 0)) + int(flow_result.get("dead_lettered", 0)),
                 )
-                continuation_activity = (
-                    int(continuation_result.get("claimed", 0)) > 0
-                    or int(continuation_result.get("processed", 0)) > 0
-                    or int(continuation_result.get("failed", 0)) > 0
-                    or int(continuation_result.get("dead_lettered", 0)) > 0
+                flow_activity = (
+                    int(flow_result.get("claimed", 0)) > 0
+                    or int(flow_result.get("processed", 0)) > 0
+                    or int(flow_result.get("failed", 0)) > 0
+                    or int(flow_result.get("dead_lettered", 0)) > 0
                 )
-                if result["processed"] == 0 and result["failed"] == 0 and delegated == 0 and not continuation_activity:
+                if result["processed"] == 0 and result["failed"] == 0 and delegated == 0 and not flow_activity:
                     # Check for outstanding delegated tasks before exiting
                     has_delegated = hasattr(kp._pending_queue, "count_delegated") and kp._pending_queue.count_delegated() > 0
-                    has_continuation = hasattr(kp, "continuation_pending_count") and kp.continuation_pending_count() > 0
+                    has_flow_work = hasattr(kp, "continuation_pending_count") and kp.continuation_pending_count() > 0
                     if has_delegated:
                         # Delegated tasks outstanding — poll less aggressively
                         _daemon_logger.info("Waiting for %d delegated tasks", kp._pending_queue.count_delegated())
                         time.sleep(5)
                         continue
-                    if has_continuation:
-                        _daemon_logger.info("Waiting for %d continuation work items", kp.continuation_pending_count())
+                    if has_flow_work:
+                        _daemon_logger.info("Waiting for %d flow work items", kp.continuation_pending_count())
                         time.sleep(1)
                         continue
 
@@ -3223,30 +3223,30 @@ def pending_cmd(
                     # (e.g. OCR enqueued while we were processing a summarize).
                     # Wait briefly and check once more before exiting.
                     time.sleep(1)
-                    continuation_result = kp.process_continuation_work(
+                    flow_result = kp.process_continuation_work(
                         limit=50,
-                        worker_id=continuation_worker_id,
+                        worker_id=flow_worker_id,
                         lease_seconds=180,
                     )
                     result = kp.process_pending(limit=50)
-                    continuation_activity = (
-                        int(continuation_result.get("claimed", 0)) > 0
-                        or int(continuation_result.get("processed", 0)) > 0
-                        or int(continuation_result.get("failed", 0)) > 0
-                        or int(continuation_result.get("dead_lettered", 0)) > 0
+                    flow_activity = (
+                        int(flow_result.get("claimed", 0)) > 0
+                        or int(flow_result.get("processed", 0)) > 0
+                        or int(flow_result.get("failed", 0)) > 0
+                        or int(flow_result.get("dead_lettered", 0)) > 0
                     )
                     if (
                         result["processed"] == 0
                         and result["failed"] == 0
                         and result.get("delegated", 0) == 0
-                        and not continuation_activity
+                        and not flow_activity
                     ):
                         break
                     _daemon_logger.info(
-                        "Daemon batch (drain): processed=%d failed=%d continuation_processed=%d continuation_failed=%d",
+                        "Daemon batch (drain): processed=%d failed=%d flow_processed=%d flow_failed=%d",
                         result["processed"], result["failed"],
-                        int(continuation_result.get("processed", 0)),
-                        int(continuation_result.get("failed", 0)) + int(continuation_result.get("dead_lettered", 0)),
+                        int(flow_result.get("processed", 0)),
+                        int(flow_result.get("failed", 0)) + int(flow_result.get("dead_lettered", 0)),
                     )
         finally:
             _daemon_logger.info("Daemon shutting down")
@@ -3284,14 +3284,14 @@ def pending_cmd(
 
     # Interactive mode: show status, ensure daemon running, tail log
     pending_count = kp.pending_count()
-    continuation_pending_count = kp.continuation_pending_count() if hasattr(kp, "continuation_pending_count") else 0
+    flow_pending_count = kp.continuation_pending_count() if hasattr(kp, "continuation_pending_count") else 0
 
     # Show failed and processing items
     queue_stats = kp._pending_queue.stats()
     failed_count = queue_stats.get("failed", 0)
     processing_count = queue_stats.get("processing", 0)
 
-    if pending_count == 0 and processing_count == 0 and continuation_pending_count == 0:
+    if pending_count == 0 and processing_count == 0 and flow_pending_count == 0:
         if failed_count:
             typer.echo(f"Nothing pending. {failed_count} failed (use --retry to requeue).", err=True)
             # Show first few failed items
@@ -3327,12 +3327,12 @@ def _queue_status_line(kp, queue_stats: dict) -> str:
     processing = queue_stats.get("processing", 0)
     delegated = queue_stats.get("delegated", 0)
     failed = queue_stats.get("failed", 0)
-    continuation_pending = 0
+    flow_pending = 0
     if hasattr(kp, "continuation_pending_count"):
         try:
-            continuation_pending = int(kp.continuation_pending_count())
+            flow_pending = int(kp.continuation_pending_count())
         except Exception:
-            continuation_pending = 0
+            flow_pending = 0
 
     by_type = kp.pending_stats_by_type()
     type_parts = ", ".join(f"{c} {t}" for t, c in sorted(by_type.items()))
@@ -3342,8 +3342,8 @@ def _queue_status_line(kp, queue_stats: dict) -> str:
         parts.append(f"{processing} processing")
     if delegated:
         parts.append(f"{delegated} delegated")
-    if continuation_pending:
-        parts.append(f"{continuation_pending} continuation")
+    if flow_pending:
+        parts.append(f"{flow_pending} flow")
 
     line = ", ".join(parts)
     if type_parts:
@@ -3376,11 +3376,11 @@ def _tail_ops_log(log_path: Path, kp) -> None:
                     idle_checks += 1
                     if idle_checks >= 5 and not kp._is_processor_running():
                         stats = kp._pending_queue.stats()
-                        continuation_pending = kp.continuation_pending_count() if hasattr(kp, "continuation_pending_count") else 0
+                        flow_pending = kp.continuation_pending_count() if hasattr(kp, "continuation_pending_count") else 0
                         if (
                             stats.get("pending", 0) == 0
                             and stats.get("processing", 0) == 0
-                            and continuation_pending == 0
+                            and flow_pending == 0
                         ):
                             typer.echo("Done.", err=True)
                         else:
@@ -3402,11 +3402,11 @@ def continue_cmd(
     )],
     store: StoreOption = None,
 ):
-    """Run one local continuation tick (API-first preview)."""
+    """Run one local flow tick (API-first preview)."""
     kp = _get_keeper(store)
     if not hasattr(kp, "continue_flow"):
         typer.echo(
-            "Error: continuation API is only available in local mode for now.",
+            "Error: flow API is only available in local mode for now.",
             err=True,
         )
         kp.close()
@@ -3433,11 +3433,11 @@ def continue_work_cmd(
     work_id: Annotated[str, typer.Argument(help="Work item ID")],
     store: StoreOption = None,
 ):
-    """Execute a pending local continuation work item and return work_result JSON."""
+    """Execute a pending local flow work item and return work_result JSON."""
     kp = _get_keeper(store)
     if not hasattr(kp, "continue_run_work"):
         typer.echo(
-            "Error: continuation work runner is only available in local mode for now.",
+            "Error: flow work runner is only available in local mode for now.",
             err=True,
         )
         kp.close()
