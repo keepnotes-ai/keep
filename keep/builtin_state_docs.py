@@ -17,16 +17,16 @@ BUILTIN_STATE_DOCS: dict[str, str] = {
     "after-write": """\
 match: all
 rules:
-  - when: "params.processing.summarize && item.content_length > params.max_summary_length && !item.has_summary"
+  - when: "item.content_length > params.max_summary_length && !item.has_summary"
     id: summary
     do: summarize
-  - when: "params.processing.ocr && '_ocr_pages' in item.tags && item.has_uri"
+  - when: "'_ocr_pages' in item.tags && item.has_uri"
     id: extracted
     do: ocr
-  - when: "params.processing.analyze"
+  - when: "!item.is_system_note"
     id: analyzed
     do: analyze
-  - when: "params.processing.tag && !item.is_system_note"
+  - when: "!item.is_system_note"
     id: tagged
     do: tag
 post:

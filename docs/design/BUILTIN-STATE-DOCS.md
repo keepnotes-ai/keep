@@ -79,11 +79,6 @@ parts using the analysis provider.
 `.tag/*` spec docs from the store and applies each matching
 taxonomy. See STATE-ACTIONS.md §tag for details.
 
-> **Note (transitional):** The current implementation gates each
-> rule on `params.processing.*` flags for backward compatibility
-> with the template followup system. These flags will be removed
-> once the template system is fully replaced by state docs.
-
 ---
 
 ## 3) Read path: get-context

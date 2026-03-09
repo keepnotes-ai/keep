@@ -990,7 +990,8 @@ def test_put_long_content_schedules_continuation_work(monkeypatch, mock_provider
         item = kp.put(content=content, id="note:default-queue")
         assert item.summary.endswith("...")
         assert kp.pending_count() == baseline_pending
-        assert kp.continuation_pending_count() == baseline_continuation + 1
+        # summarize + analyze + tag all fire for non-system items
+        assert kp.continuation_pending_count() == baseline_continuation + 3
     finally:
         kp.close()
 
@@ -1006,7 +1007,8 @@ def test_put_long_content_continuation_work_processing_updates_summary(monkeypat
         item = kp.put(content=content, id="note:continuation-queue")
         assert item.summary.endswith("...")
         assert kp.pending_count() == baseline_pending
-        assert kp.continuation_pending_count() == baseline_continuation + 1
+        # summarize + analyze + tag all fire for non-system items
+        assert kp.continuation_pending_count() == baseline_continuation + 3
 
         result = kp.process_continuation_work(limit=10, worker_id="test-worker")
         assert result["claimed"] >= 1

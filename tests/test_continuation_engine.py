@@ -300,7 +300,7 @@ def test_state_doc_after_write_queues_tasks(_engine_with_state_doc):
             "params": {
                 "content": long_content,
                 "id": "note:sd:test1",
-                "processing": {"summarize": True, "tag": True},
+                "max_summary_length": 100,
             },
         })
         assert result.get("status") in ("done", "stopped", "waiting_work")
@@ -329,7 +329,7 @@ def test_state_doc_after_write_skips_short_content(_engine_with_state_doc):
             "params": {
                 "content": "Short note",
                 "id": "note:sd:test2",
-                "processing": {"summarize": True, "tag": True},
+                "max_summary_length": 100,
             },
         })
         task_types = [e["task_type"] for e in enqueued]
@@ -517,7 +517,7 @@ def test_fallback_to_template_when_no_state_doc(mock_providers, tmp_path):
             "params": {
                 "content": long_content,
                 "id": "note:sd:fallback",
-                "processing": {"summarize": True, "tag": True},
+                "max_summary_length": 100,
             },
         })
         # Template followups should still fire

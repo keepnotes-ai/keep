@@ -676,13 +676,8 @@ class ContinuationEngine:
         params_ctx = dict(params)
         params_ctx["item_id"] = target_id
 
-        # Ensure processing dict and thresholds exist for state-doc predicates.
-        processing = params_ctx.get("processing")
-        if not isinstance(processing, dict):
-            processing = {}
-            params_ctx["processing"] = processing
         if "max_summary_length" not in params_ctx:
-            params_ctx["max_summary_length"] = processing.get("max_summary_length", 0)
+            params_ctx["max_summary_length"] = 0
 
         write_ctx: dict[str, Any] = {
             "content_type": str(write_context.get("content_type") or ""),

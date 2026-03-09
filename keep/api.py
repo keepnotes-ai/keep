@@ -2807,13 +2807,6 @@ class Keeper:
         created_at: Optional[str] = None,
         force: bool = False,
     ) -> Item:
-        processing = {
-            "summarize": bool(summary is None),
-            "ocr": bool(uri),
-            "analyze": False,
-            "tag": False,
-            "max_summary_length": int(self._config.max_summary_length),
-        }
         payload = {
             "goal": "write",
             "params": {
@@ -2824,7 +2817,7 @@ class Keeper:
                 "tags": tags,
                 "created_at": created_at,
                 "force": force,
-                "processing": processing,
+                "max_summary_length": int(self._config.max_summary_length),
             },
             "work_results": [],
         }

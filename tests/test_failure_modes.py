@@ -425,6 +425,7 @@ class TestConcurrentWriters:
     def test_concurrent_puts_both_succeed(self, mock_providers, tmp_path):
         """Two threads writing to same ID should both complete without error."""
         kp = Keeper(store_path=tmp_path)
+        kp._spawn_processor = lambda: False  # prevent background interference
         embed = mock_providers["embedding"]
 
         # Warmup system docs
@@ -461,6 +462,7 @@ class TestConcurrentWriters:
     def test_concurrent_put_and_delete(self, mock_providers, tmp_path):
         """Concurrent put + delete shouldn't crash."""
         kp = Keeper(store_path=tmp_path)
+        kp._spawn_processor = lambda: False  # prevent background interference
 
         # Warmup
         kp.put("warmup", id="_w")

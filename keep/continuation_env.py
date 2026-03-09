@@ -208,27 +208,25 @@ class LocalContinuationEnvironment:
         doc_coll = self._keeper._resolve_doc_collection()
 
         groups: dict[str, list[Any]] = {}
+        tagfollow_items: list[Any] = []  # items needing Tier 2 batch
+
+        # Tier 1: Direct edge follow (forward + inverse)
         for item in source_items:
             source_id = str(item.id)
             candidates: list[Any] = []
-
-            # Tier 1: Direct edge follow (forward + inverse)
             try:
                 fwd = self._keeper._document_store.get_forward_edges(doc_coll, source_id)
                 inv = self._keeper._document_store.get_inverse_edges(doc_coll, source_id)
                 related_ids: list[str] = []
                 seen_ids: set[str] = set()
-                # Forward edges: source → target
                 for _pred, target_id, _created in fwd:
                     if target_id not in seen_ids and target_id not in source_set:
                         seen_ids.add(target_id)
                         related_ids.append(target_id)
-                # Inverse edges: other docs → this source
                 for _inv, edge_source_id, _created in inv:
                     if edge_source_id not in seen_ids and edge_source_id not in source_set:
                         seen_ids.add(edge_source_id)
                         related_ids.append(edge_source_id)
-                # Resolve IDs to items
                 for rid in related_ids[:limit * 3]:
                     related_item = self._keeper.get(rid)
                     if related_item is not None:
@@ -236,37 +234,46 @@ class LocalContinuationEnvironment:
             except Exception:
                 candidates = []
 
-            # Tier 2: Tag-facet grouping (no embedding needed)
-            if not candidates:
-                chroma_coll = self._keeper._resolve_chroma_collection()
-                try:
-                    tag_groups = self._keeper._deep_tag_follow(
-                        [item],
-                        chroma_coll,
-                        doc_coll,
-                        embedding=None,
-                        top_k=1,
-                        max_per_group=limit,
-                    )
-                    group = tag_groups.get(source_id) if isinstance(tag_groups, dict) else None
-                    if isinstance(group, list):
-                        candidates = group
-                except Exception:
-                    candidates = []
+            if candidates:
+                deduped: list[Any] = []
+                seen: set[str] = set()
+                for cand in candidates:
+                    cand_id = str(getattr(cand, "id", "")).strip()
+                    if not cand_id or cand_id in source_set or cand_id in seen:
+                        continue
+                    seen.add(cand_id)
+                    deduped.append(cand)
+                    if len(deduped) >= limit:
+                        break
+                groups[source_id] = deduped
+            else:
+                tagfollow_items.append(item)
 
-            # No similarity fallback — spec says empty group if no edges/tags
+        # Tier 2: Batch tag-facet grouping for items without edges.
+        # Processing as a batch enables discriminative tag filtering
+        # (dropping tags shared by all items) and IDF weighting.
+        if tagfollow_items:
+            chroma_coll = self._keeper._resolve_chroma_collection()
+            try:
+                tag_groups = self._keeper._deep_tag_follow(
+                    tagfollow_items,
+                    chroma_coll,
+                    doc_coll,
+                    embedding=None,
+                    max_per_group=limit,
+                )
+                if isinstance(tag_groups, dict):
+                    for source_id, group in tag_groups.items():
+                        if isinstance(group, list) and group:
+                            groups[source_id] = group
+            except Exception:
+                pass
 
-            deduped: list[Any] = []
-            seen: set[str] = set()
-            for cand in candidates:
-                cand_id = str(getattr(cand, "id", "")).strip()
-                if not cand_id or cand_id in source_set or cand_id in seen:
-                    continue
-                seen.add(cand_id)
-                deduped.append(cand)
-                if len(deduped) >= limit:
-                    break
-            groups[source_id] = deduped
+        # Ensure all sources have an entry
+        for item in source_items:
+            source_id = str(item.id)
+            if source_id not in groups:
+                groups[source_id] = []
 
         return groups
 
