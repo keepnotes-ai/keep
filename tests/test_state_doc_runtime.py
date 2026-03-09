@@ -525,3 +525,66 @@ class TestMakeActionRunner:
         runner = make_action_runner(FakeEnv())
         with pytest.raises(ValueError, match="unknown action"):
             runner("nonexistent_action_xyz", {})
+
+
+# ---------------------------------------------------------------------------
+# CEL predicates in flows (find-deep exercises search.count == 0)
+# ---------------------------------------------------------------------------
+
+class TestCELPredicates:
+    def test_find_deep_skips_traverse_on_empty_search(self):
+        """find-deep returns early when search.count == 0 (CEL predicate)."""
+        from keep.builtin_state_docs import BUILTIN_STATE_DOCS
+        from keep.state_doc_runtime import _get_compiled_builtin
+
+        # Verify the find-deep builtin compiles (has CEL predicates)
+        doc = _get_compiled_builtin("find-deep", BUILTIN_STATE_DOCS["find-deep"])
+        assert doc is not None
+
+        # Run with empty search results — CEL predicate should short-circuit
+        loader = _make_loader({"find-deep": BUILTIN_STATE_DOCS["find-deep"]})
+        calls = []
+
+        def _runner(action_name, params):
+            calls.append(action_name)
+            if action_name == "find":
+                return {"results": [], "count": 0}
+            return {"groups": {}, "count": 0}
+
+        result = run_flow(
+            "find-deep",
+            {"query": "test", "limit": 10, "deep_limit": 5},
+            load_state_doc=loader, run_action=_runner,
+        )
+        assert result.status == "done"
+        # Only find should have been called (traverse skipped via CEL)
+        assert calls == ["find"]
+
+    def test_find_deep_traverses_when_results_found(self):
+        """find-deep traverses results when search.count > 0."""
+        from keep.builtin_state_docs import BUILTIN_STATE_DOCS
+
+        loader = _make_loader({"find-deep": BUILTIN_STATE_DOCS["find-deep"]})
+        calls = []
+
+        def _runner(action_name, params):
+            calls.append(action_name)
+            if action_name == "find":
+                return {
+                    "results": [
+                        {"id": "a", "summary": "x", "tags": {}, "score": 0.9},
+                    ],
+                    "count": 1,
+                }
+            return {"groups": {"a": [{"id": "b", "summary": "y", "tags": {}}]}, "count": 1}
+
+        result = run_flow(
+            "find-deep",
+            {"query": "test", "limit": 10, "deep_limit": 5},
+            load_state_doc=loader, run_action=_runner,
+        )
+        assert result.status == "done"
+        # Both find and traverse should have been called
+        assert "find" in calls
+        assert "traverse" in calls
+        assert "related" in result.bindings

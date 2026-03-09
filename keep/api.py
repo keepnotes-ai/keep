@@ -4073,6 +4073,172 @@ class Keeper:
             }
         return FindResults(final, deep_groups=deep_groups)
 
+    # -------------------------------------------------------------------------
+    # State-doc flow binding mappers for get_context
+    # -------------------------------------------------------------------------
+
+    def _resolve_edge_refs(self, item: "Item", item_id: str) -> dict[str, list["EdgeRef"]]:
+        """Resolve structural edge references (explicit + inverse) for display.
+
+        Uses direct database queries rather than the generic traverse action,
+        because edges require inverse-edge table lookups and explicit edge-tag
+        resolution — operations the traverse action doesn't support.
+        """
+        doc_coll = self._resolve_doc_collection()
+        edge_ref_index: dict[str, dict[str, EdgeRef]] = {}
+
+        def _upsert(key: str, ref: EdgeRef, *, prefer_new: bool = False) -> None:
+            refs_for_key = edge_ref_index.setdefault(key, {})
+            existing = refs_for_key.get(ref.source_id)
+            if existing is None:
+                refs_for_key[ref.source_id] = ref
+                return
+            winner_date = (ref.date if prefer_new else existing.date) or \
+                          (existing.date if prefer_new else ref.date)
+            winner_summary = (ref.summary if prefer_new else existing.summary) or \
+                             (existing.summary if prefer_new else ref.summary)
+            refs_for_key[ref.source_id] = EdgeRef(
+                source_id=ref.source_id, date=winner_date, summary=winner_summary,
+            )
+
+        # Explicit edge refs from current item's edge-tag values
+        explicit_targets_by_key: dict[str, list[str]] = {}
+        user_keys = [
+            k for k in item.tags
+            if not k.startswith(SYSTEM_TAG_PREFIX) and tag_values(item.tags, k)
+        ]
+        if user_keys:
+            tagdoc_ids = [f".tag/{k}" for k in user_keys]
+            tagdocs = self._document_store.get_many(doc_coll, tagdoc_ids)
+            for key in user_keys:
+                td = tagdocs.get(f".tag/{key}")
+                if td is None or not td.tags.get("_inverse"):
+                    continue
+                seen_targets: set[str] = set()
+                resolved_targets: list[str] = []
+                for raw_target in tag_values(item.tags, key):
+                    try:
+                        target_id = normalize_id(raw_target)
+                    except ValueError:
+                        continue
+                    if target_id.startswith(".") or target_id in seen_targets:
+                        continue
+                    seen_targets.add(target_id)
+                    resolved_targets.append(target_id)
+                if resolved_targets:
+                    explicit_targets_by_key[key] = resolved_targets
+
+        if explicit_targets_by_key:
+            target_ids = {
+                tid for tids in explicit_targets_by_key.values() for tid in tids
+            }
+            target_docs = self._document_store.get_many(doc_coll, list(target_ids))
+            for key, target_ids_for_key in explicit_targets_by_key.items():
+                for target_id in target_ids_for_key:
+                    doc = target_docs.get(target_id)
+                    created = ""
+                    summary = ""
+                    if doc is not None:
+                        created = local_date(
+                            doc.tags.get("_created") or doc.tags.get("_updated") or ""
+                        )
+                        summary = doc.summary or ""
+                    _upsert(key, EdgeRef(
+                        source_id=target_id, date=created, summary=summary,
+                    ))
+
+        raw_edges = self._document_store.get_inverse_edges(doc_coll, item_id)
+        if raw_edges:
+            source_ids = list({src for _, src, _ in raw_edges})
+            source_docs = self._document_store.get_many(doc_coll, source_ids)
+            for inverse, source_id, created in raw_edges:
+                doc = source_docs.get(source_id)
+                _upsert(inverse, EdgeRef(
+                    source_id=source_id,
+                    date=local_date(created),
+                    summary=doc.summary if doc else "",
+                ), prefer_new=True)
+
+        return {
+            key: list(refs_by_source.values())
+            for key, refs_by_source in edge_ref_index.items()
+        }
+
+    @staticmethod
+    def _map_flow_similar(binding: dict) -> list:
+        """Map find action output to SimilarRef list."""
+        refs = []
+        for r in binding.get("results", []):
+            if not isinstance(r, dict):
+                continue
+            tags = r.get("tags") or {}
+            refs.append(SimilarRef(
+                id=tags.get("_base_id", r.get("id", "")),
+                offset=0,
+                score=r.get("score"),
+                date=local_date(tags.get("_updated") or tags.get("_created", "")),
+                summary=r.get("summary", ""),
+            ))
+        return refs
+
+    @staticmethod
+    def _map_flow_meta(binding: dict) -> dict:
+        """Map resolve_meta action output to MetaRef dict."""
+        refs: dict[str, list] = {}
+        for name, items in (binding.get("sections") or {}).items():
+            if not isinstance(items, list):
+                continue
+            refs[name] = [
+                MetaRef(id=r.get("id", ""), summary=r.get("summary", ""))
+                for r in items if isinstance(r, dict)
+            ]
+        return refs
+
+    @staticmethod
+    def _map_flow_parts(binding: dict) -> list:
+        """Map find action (prefix mode) output to PartRef list."""
+        refs = []
+        for r in binding.get("results", []):
+            if not isinstance(r, dict):
+                continue
+            rid = r.get("id", "")
+            # Extract part_num from ID like "base@p3"
+            part_num = 0
+            if "@p" in rid:
+                suffix = rid.rsplit("@p", 1)[-1]
+                try:
+                    part_num = int(suffix)
+                except ValueError:
+                    pass
+            refs.append(PartRef(
+                part_num=part_num,
+                summary=r.get("summary", ""),
+                tags=r.get("tags") or {},
+            ))
+        return refs
+
+    @staticmethod
+    def _map_flow_edges(binding: dict) -> dict:
+        """Map traverse action output to EdgeRef dict."""
+        edge_refs: dict[str, list] = {}
+        groups = binding.get("groups") or {}
+        for source_id, items in groups.items():
+            if not isinstance(items, list) or not items:
+                continue
+            refs = []
+            for r in items:
+                if not isinstance(r, dict):
+                    continue
+                tags = r.get("tags") or {}
+                refs.append(EdgeRef(
+                    source_id=r.get("id", ""),
+                    date=local_date(tags.get("_updated") or tags.get("_created", "")),
+                    summary=r.get("summary", ""),
+                ))
+            if refs:
+                edge_refs[source_id] = refs
+        return edge_refs
+
     def get_context(
         self,
         id: str,
@@ -4153,147 +4319,35 @@ class Keeper:
                             summary=newer.summary,
                         ))
 
-        # Similar items (only for current version)
+        # Data gathering via state-doc flow (similar, parts, meta).
+        # Edge resolution stays inline — it requires direct database
+        # queries (inverse edges, explicit edge-tag lookup) that the
+        # generic traverse action doesn't support.
         similar_refs: list[SimilarRef] = []
-        if include_similar and offset == 0:
-            raw = self.get_similar_for_display(id, limit=similar_limit)
-            for s in raw:
-                s_offset = self.get_version_offset(s)
-                similar_refs.append(SimilarRef(
-                    id=s.tags.get("_base_id", s.id),
-                    offset=s_offset,
-                    score=s.score,
-                    date=local_date(
-                        s.tags.get("_updated") or s.tags.get("_created", "")
-                    ),
-                    summary=s.summary,
-                ))
-
-        # Meta-doc sections (only for current version)
         meta_refs: dict[str, list[MetaRef]] = {}
-        if include_meta and offset == 0:
-            raw_meta = self.resolve_meta(id, limit_per_doc=meta_limit)
-            for name, meta_items in raw_meta.items():
-                meta_refs[name] = [
-                    MetaRef(id=mi.id, summary=mi.summary)
-                    for mi in meta_items
-                ]
-
-        # Parts manifest (only for current version)
         part_refs: list[PartRef] = []
-        if include_parts and offset == 0:
-            for p in self.list_parts(id):
-                part_refs.append(PartRef(
-                    part_num=p.part_num,
-                    summary=p.summary,
-                    tags=dict(p.tags),
-                ))
-
-        # Edge references (only for current version)
-        # - Inverse refs: current item is edge target (existing behavior)
-        # - Explicit refs: current item has edge-tag values (query-time union)
-        # Dedup key: (edge key, source_id). If both explicit+inverse produce
-        # the same source, inverse data takes precedence.
         edge_refs: dict[str, list[EdgeRef]] = {}
+
         if offset == 0:
-            doc_coll = self._resolve_doc_collection()
-            edge_ref_index: dict[str, dict[str, EdgeRef]] = {}
+            flow_result = self._run_read_flow(
+                "get-context",
+                {
+                    "item_id": id,
+                    "similar_limit": similar_limit if include_similar else 0,
+                    "meta_limit": meta_limit if include_meta else 0,
+                },
+            )
+            if flow_result.status == "done":
+                bindings = flow_result.bindings
+                if include_similar:
+                    similar_refs = self._map_flow_similar(bindings.get("similar", {}))
+                if include_meta:
+                    meta_refs = self._map_flow_meta(bindings.get("meta", {}))
+                if include_parts:
+                    part_refs = self._map_flow_parts(bindings.get("parts", {}))
 
-            def _upsert_edge_ref(
-                key: str,
-                ref: EdgeRef,
-                *,
-                prefer_new: bool = False,
-            ) -> None:
-                refs_for_key = edge_ref_index.setdefault(key, {})
-                existing = refs_for_key.get(ref.source_id)
-                if existing is None:
-                    refs_for_key[ref.source_id] = ref
-                    return
-
-                if prefer_new:
-                    refs_for_key[ref.source_id] = EdgeRef(
-                        source_id=ref.source_id,
-                        date=ref.date or existing.date,
-                        summary=ref.summary or existing.summary,
-                    )
-                else:
-                    refs_for_key[ref.source_id] = EdgeRef(
-                        source_id=ref.source_id,
-                        date=existing.date or ref.date,
-                        summary=existing.summary or ref.summary,
-                    )
-
-            # Explicit edge refs from current item's edge-tag values.
-            # These are rendered alongside inverse refs under the same tag key.
-            explicit_targets_by_key: dict[str, list[str]] = {}
-            user_keys = [
-                k for k in item.tags
-                if not k.startswith(SYSTEM_TAG_PREFIX) and tag_values(item.tags, k)
-            ]
-            if user_keys:
-                tagdoc_ids = [f".tag/{k}" for k in user_keys]
-                tagdocs = self._document_store.get_many(doc_coll, tagdoc_ids)
-                for key in user_keys:
-                    td = tagdocs.get(f".tag/{key}")
-                    if td is None or not td.tags.get("_inverse"):
-                        continue
-                    seen_targets: set[str] = set()
-                    resolved_targets: list[str] = []
-                    for raw_target in tag_values(item.tags, key):
-                        try:
-                            target_id = normalize_id(raw_target)
-                        except ValueError:
-                            continue
-                        if target_id.startswith(".") or target_id in seen_targets:
-                            continue
-                        seen_targets.add(target_id)
-                        resolved_targets.append(target_id)
-                    if resolved_targets:
-                        explicit_targets_by_key[key] = resolved_targets
-
-            if explicit_targets_by_key:
-                target_ids = {
-                    tid for tids in explicit_targets_by_key.values() for tid in tids
-                }
-                target_docs = self._document_store.get_many(doc_coll, list(target_ids))
-                for key, target_ids_for_key in explicit_targets_by_key.items():
-                    for target_id in target_ids_for_key:
-                        doc = target_docs.get(target_id)
-                        created = ""
-                        summary = ""
-                        if doc is not None:
-                            created = local_date(
-                                doc.tags.get("_created") or doc.tags.get("_updated") or ""
-                            )
-                            summary = doc.summary or ""
-                        _upsert_edge_ref(
-                            key,
-                            EdgeRef(
-                                source_id=target_id,
-                                date=created,
-                                summary=summary,
-                            ),
-                        )
-
-            raw_edges = self._document_store.get_inverse_edges(doc_coll, id)
-            if raw_edges:
-                # Batch-fetch source docs to avoid N+1
-                source_ids = list({src for _, src, _ in raw_edges})
-                source_docs = self._document_store.get_many(doc_coll, source_ids)
-                for inverse, source_id, created in raw_edges:
-                    doc = source_docs.get(source_id)
-                    ref = EdgeRef(
-                        source_id=source_id,
-                        date=local_date(created),
-                        summary=doc.summary if doc else "",
-                    )
-                    _upsert_edge_ref(inverse, ref, prefer_new=True)
-
-            edge_refs = {
-                key: list(refs_by_source.values())
-                for key, refs_by_source in edge_ref_index.items()
-            }
+            # Edge resolution (inline — structural edge queries)
+            edge_refs = self._resolve_edge_refs(item, id)
 
         return ItemContext(
             item=item,
@@ -7143,6 +7197,55 @@ class Keeper:
         loader = make_state_doc_loader(env, builtins=BUILTIN_STATE_DOCS)
         runner = make_action_runner(env)
         return run_flow(state, params, budget=budget, load_state_doc=loader, run_action=runner)
+
+    def _deep_follow_via_flow(
+        self,
+        primary_items: list["Item"],
+        *,
+        query: str,
+        deep_limit: int = 5,
+    ) -> dict[str, list["Item"]]:
+        """Run the find-deep state-doc flow for deep follow.
+
+        Used as the tag-follow fallback when the store has no edges.
+        The find-deep flow runs a search then traverses the results,
+        exercising the CEL predicate ``search.count == 0``.
+        """
+        if not query:
+            return {}
+
+        result = self._run_read_flow(
+            "find-deep",
+            {
+                "query": query,
+                "limit": len(primary_items) or 10,
+                "deep_limit": deep_limit,
+            },
+        )
+        if result.status != "done":
+            return {}
+
+        related_binding = result.bindings.get("related", {})
+        groups_raw = related_binding.get("groups") or {}
+
+        # Map action output dicts back to Item objects
+        deep_groups: dict[str, list[Item]] = {}
+        for source_id, items_raw in groups_raw.items():
+            if not isinstance(items_raw, list):
+                continue
+            group = []
+            for r in items_raw:
+                if not isinstance(r, dict):
+                    continue
+                group.append(Item(
+                    id=r.get("id", ""),
+                    summary=r.get("summary", ""),
+                    tags=r.get("tags") or {},
+                    score=r.get("score"),
+                ))
+            if group:
+                deep_groups[source_id] = group
+        return deep_groups
 
     @property
     def _processor_pid_path(self) -> Path:

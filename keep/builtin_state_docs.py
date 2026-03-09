@@ -49,10 +49,6 @@ rules:
     with:
       prefix: "{params.item_id}@p"
       limit: 100
-  - id: edges
-    do: traverse
-    with:
-      items: ["{params.item_id}"]
   - id: meta
     do: resolve_meta
     with:
