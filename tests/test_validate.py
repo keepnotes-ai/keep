@@ -286,3 +286,259 @@ class TestPromptValidation:
         content = "topic=*\n\n## Prompt\nPrompt with prerequisite."
         r = validate_system_doc(".prompt/analyze/default", content)
         assert r.ok
+
+
+# ---------------------------------------------------------------------------
+# .state/* validation
+# ---------------------------------------------------------------------------
+
+VALID_STATE_DOC = """\
+match: all
+rules:
+  - when: "item.content_length > 100 && !item.has_summary"
+    id: summary
+    do: summarize
+  - when: "!item.is_system_note"
+    id: tagged
+    do: tag
+post:
+  - return: done
+"""
+
+VALID_SEQUENCE_DOC = """\
+match: sequence
+rules:
+  - id: search
+    do: find
+    with: { query: "{params.query}", limit: 5 }
+  - when: "search.margin > params.margin_high"
+    return: done
+  - then: query-explore
+"""
+
+
+class TestStateDocValidation:
+    def test_valid_match_all(self):
+        r = validate_system_doc(".state/after-write", VALID_STATE_DOC)
+        assert r.doc_type == "state"
+        assert r.ok
+
+    def test_valid_match_sequence(self):
+        r = validate_system_doc(".state/query-resolve", VALID_SEQUENCE_DOC)
+        assert r.ok
+
+    def test_empty_content_errors(self):
+        r = validate_system_doc(".state/test", "")
+        assert not r.ok
+
+    def test_invalid_yaml_errors(self):
+        r = validate_system_doc(".state/test", "{ bad yaml :::")
+        assert not r.ok
+        assert any("YAML" in d.message for d in r.errors)
+
+    def test_not_a_mapping_errors(self):
+        r = validate_system_doc(".state/test", "- just a list")
+        assert not r.ok
+        assert any("mapping" in d.message for d in r.errors)
+
+    def test_missing_rules_errors(self):
+        r = validate_system_doc(".state/test", "match: sequence")
+        assert not r.ok
+        assert any("rules must be a list" in d.message for d in r.errors)
+
+    def test_invalid_match_errors(self):
+        content = "match: invalid\nrules:\n  - return: done"
+        r = validate_system_doc(".state/test", content)
+        assert any("match must be" in d.message for d in r.errors)
+
+    def test_empty_rules_warns(self):
+        content = "rules: []"
+        r = validate_system_doc(".state/test", content)
+        assert r.ok  # warning, not error
+        assert any("empty" in d.message for d in r.warnings)
+
+    def test_non_dict_rule_errors(self):
+        content = "rules:\n  - just a string"
+        r = validate_system_doc(".state/test", content)
+        assert not r.ok
+        assert any("must be a mapping" in d.message for d in r.errors)
+
+    def test_duplicate_rule_id_errors(self):
+        content = """\
+rules:
+  - id: search
+    do: find
+    with: { query: "test" }
+  - id: search
+    do: find
+    with: { query: "test2" }
+"""
+        r = validate_system_doc(".state/test", content)
+        assert any("duplicate" in d.message for d in r.errors)
+
+    def test_unknown_action_warns(self):
+        content = """\
+rules:
+  - do: nonexistent_action
+"""
+        r = validate_system_doc(".state/test", content)
+        assert any("unknown action" in d.message for d in r.warnings)
+
+    def test_known_action_no_warning(self):
+        content = """\
+rules:
+  - do: find
+    with: { query: "test" }
+"""
+        r = validate_system_doc(".state/test", content)
+        assert not any("unknown action" in d.message for d in r.diagnostics)
+
+    def test_invalid_return_status_errors(self):
+        content = """\
+rules:
+  - return: invalid_status
+"""
+        r = validate_system_doc(".state/test", content)
+        assert any("return status" in d.message for d in r.errors)
+
+    def test_valid_return_statuses(self):
+        for status in ("done", "error", "stopped"):
+            content = f"rules:\n  - return: {status}"
+            r = validate_system_doc(".state/test", content)
+            assert not any("return status" in d.message for d in r.errors), f"failed for {status}"
+
+    def test_return_dict_form(self):
+        content = """\
+rules:
+  - return:
+      status: stopped
+      with:
+        reason: "budget"
+"""
+        r = validate_system_doc(".state/test", content)
+        assert r.ok
+
+    def test_then_string_form(self):
+        content = """\
+rules:
+  - then: query-explore
+"""
+        r = validate_system_doc(".state/test", content)
+        assert r.ok
+
+    def test_then_dict_form(self):
+        content = """\
+rules:
+  - then:
+      state: query-branch
+      with:
+        facets: "{search.top_facets}"
+"""
+        r = validate_system_doc(".state/test", content)
+        assert r.ok
+
+    def test_then_missing_state_errors(self):
+        content = """\
+rules:
+  - then:
+      with:
+        facets: "test"
+"""
+        r = validate_system_doc(".state/test", content)
+        assert any("then.state" in d.message for d in r.errors)
+
+    def test_post_with_sequence_warns(self):
+        content = """\
+match: sequence
+rules:
+  - return: done
+post:
+  - return: done
+"""
+        r = validate_system_doc(".state/test", content)
+        assert any("post block" in d.message for d in r.warnings)
+
+    def test_post_with_all_ok(self):
+        content = """\
+match: all
+rules:
+  - do: summarize
+post:
+  - return: done
+"""
+        r = validate_system_doc(".state/test", content)
+        assert not any("post block" in d.message for d in r.warnings)
+
+    def test_return_and_then_warns(self):
+        content = """\
+rules:
+  - return: done
+    then: other-state
+"""
+        r = validate_system_doc(".state/test", content)
+        assert any("both return and then" in d.message for d in r.warnings)
+
+    def test_rule_with_no_fields_warns(self):
+        content = """\
+rules:
+  - id: empty_rule
+"""
+        r = validate_system_doc(".state/test", content)
+        assert any("no do, then, return, or when" in d.message for d in r.warnings)
+
+    def test_empty_when_errors(self):
+        content = """\
+rules:
+  - when: ""
+    return: done
+"""
+        r = validate_system_doc(".state/test", content)
+        assert any("when must be" in d.message for d in r.errors)
+
+    def test_empty_do_errors(self):
+        content = """\
+rules:
+  - do: ""
+"""
+        r = validate_system_doc(".state/test", content)
+        assert any("do must be" in d.message for d in r.errors)
+
+    def test_with_not_dict_errors(self):
+        content = """\
+rules:
+  - do: find
+    with: "not a dict"
+"""
+        r = validate_system_doc(".state/test", content)
+        assert any("with must be a mapping" in d.message for d in r.errors)
+
+    def test_cel_compilation_error(self):
+        content = """\
+rules:
+  - when: "this is not valid CEL @@!!"
+    return: done
+"""
+        r = validate_system_doc(".state/test", content)
+        assert not r.ok
+        assert any("compile" in d.message.lower() or "compilation" in d.message.lower()
+                    for d in r.errors)
+
+    def test_template_refs_checked(self):
+        content = """\
+rules:
+  - do: find
+    with:
+      query: "{params.query}"
+      limit: "{params.limit}"
+"""
+        r = validate_system_doc(".state/test", content)
+        # Valid template refs should not produce warnings about templates
+        assert not any("template" in d.message.lower() for d in r.warnings)
+
+    def test_missing_name_errors(self):
+        r = validate_system_doc(".state/", "rules:\n  - return: done")
+        assert not r.ok
+
+    def test_dispatcher_routes_state(self):
+        r = validate_system_doc(".state/test", "rules:\n  - return: done")
+        assert r.doc_type == "state"

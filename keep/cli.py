@@ -2952,7 +2952,7 @@ def validate(
     docs_by_id: dict[str, tuple[str, dict]] = {}  # id -> (summary, tags)
     if all_docs:
         doc_coll = kp._resolve_doc_collection()
-        for prefix in (".tag/", ".meta/", ".prompt/"):
+        for prefix in (".tag/", ".meta/", ".prompt/", ".state/"):
             for rec in kp._document_store.query_by_id_prefix(doc_coll, prefix):
                 doc_id = str(getattr(rec, "id", ""))
                 if doc_id:
