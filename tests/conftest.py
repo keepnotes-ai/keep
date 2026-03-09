@@ -893,7 +893,8 @@ def mock_providers():
          patch("keep.api.CachingEmbeddingProvider", side_effect=lambda p, **kw: p), \
          patch("keep.store.ChromaStore", MockChromaStore), \
          patch("keep.document_store.DocumentStore", MockDocumentStore), \
-         patch("keep.pending_summaries.PendingSummaryQueue", MockPendingSummaryQueue):
+         patch("keep.pending_summaries.PendingSummaryQueue", MockPendingSummaryQueue), \
+         patch("keep.api.Keeper._spawn_processor", return_value=False):
         yield {
             "embedding": mock_embed,
             "summarization": mock_summ,

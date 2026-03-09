@@ -982,7 +982,6 @@ def test_put_routes_through_continuation_runtime(mock_providers, tmp_path):
 def test_put_long_content_schedules_continuation_work(monkeypatch, mock_providers, tmp_path):
     kp = Keeper(store_path=tmp_path)
     try:
-        monkeypatch.setattr(kp, "_spawn_processor", lambda: False)
         monkeypatch.setattr(kp, "_needs_sysdoc_migration", False)
         baseline_pending = kp.pending_count()
         baseline_continuation = kp.continuation_pending_count()
@@ -999,7 +998,6 @@ def test_put_long_content_schedules_continuation_work(monkeypatch, mock_provider
 def test_put_long_content_continuation_work_processing_updates_summary(monkeypatch, mock_providers, tmp_path):
     kp = Keeper(store_path=tmp_path)
     try:
-        monkeypatch.setattr(kp, "_spawn_processor", lambda: False)
         monkeypatch.setattr(kp, "_needs_sysdoc_migration", False)
         baseline_pending = kp.pending_count()
         baseline_continuation = kp.continuation_pending_count()
@@ -1027,7 +1025,6 @@ def test_put_long_content_continuation_work_processing_updates_summary(monkeypat
 def test_enqueue_analyze_schedules_continuation_work(monkeypatch, mock_providers, tmp_path):
     kp = Keeper(store_path=tmp_path)
     try:
-        monkeypatch.setattr(kp, "_spawn_processor", lambda: False)
         monkeypatch.setattr(kp, "_needs_sysdoc_migration", False)
         kp.put(content="Analyze me " * 60, id="note:analyze-queued")
         baseline = kp.continuation_pending_count()
@@ -1043,7 +1040,6 @@ def test_enqueue_analyze_continuation_work_executes_local_task(monkeypatch, mock
     calls: list[dict] = []
     original = kp._run_local_task_workflow
     try:
-        monkeypatch.setattr(kp, "_spawn_processor", lambda: False)
         monkeypatch.setattr(kp, "_needs_sysdoc_migration", False)
         kp.put(content="Analyze me " * 60, id="note:analyze-run")
 
@@ -1082,7 +1078,6 @@ def test_enqueue_ocr_background_continuation_executes_local_task(monkeypatch, mo
     calls: list[dict] = []
     original = kp._run_local_task_workflow
     try:
-        monkeypatch.setattr(kp, "_spawn_processor", lambda: False)
         monkeypatch.setattr(kp, "_needs_sysdoc_migration", False)
 
         def _fake_run_local_task_workflow(

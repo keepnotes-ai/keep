@@ -6,9 +6,13 @@ logic so the runtime can be shared across local and hosted implementations.
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any, Optional, Protocol
 
+from .actions import coerce_item_id
 from .processors import ProcessorResult
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from .api import Keeper
@@ -232,13 +236,14 @@ class LocalContinuationEnvironment:
                     if related_item is not None:
                         candidates.append(related_item)
             except Exception:
+                logger.debug("Edge follow failed for %s", source_id, exc_info=True)
                 candidates = []
 
             if candidates:
                 deduped: list[Any] = []
                 seen: set[str] = set()
                 for cand in candidates:
-                    cand_id = str(getattr(cand, "id", "")).strip()
+                    cand_id = coerce_item_id(cand)
                     if not cand_id or cand_id in source_set or cand_id in seen:
                         continue
                     seen.add(cand_id)
@@ -267,7 +272,7 @@ class LocalContinuationEnvironment:
                         if isinstance(group, list) and group:
                             groups[source_id] = group
             except Exception:
-                pass
+                logger.debug("Tag-follow failed for traverse", exc_info=True)
 
         # Ensure all sources have an entry
         for item in source_items:
