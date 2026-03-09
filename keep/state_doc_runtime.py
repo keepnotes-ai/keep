@@ -211,6 +211,25 @@ def _parse_transition(
 # Factory helpers for wiring into the keep system
 # ---------------------------------------------------------------------------
 
+# Module-level cache for compiled builtin state docs (immutable, parse once).
+_builtin_cache: dict[str, StateDoc] = {}
+
+
+def _get_compiled_builtin(name: str, body: str) -> Optional[StateDoc]:
+    """Return a cached compiled StateDoc for a builtin, or compile and cache it."""
+    cached = _builtin_cache.get(name)
+    if cached is not None:
+        return cached
+    from .state_doc import parse_state_doc
+    try:
+        doc = parse_state_doc(name, body)
+        _builtin_cache[name] = doc
+        return doc
+    except (ValueError, RuntimeError) as exc:
+        logger.warning("Failed to compile builtin state doc %r: %s", name, exc)
+        return None
+
+
 def make_state_doc_loader(
     env: Any,
     *,
@@ -220,7 +239,8 @@ def make_state_doc_loader(
 
     Loads ``.state/{name}`` notes from the store, parses their summary
     field as YAML state doc body.  Falls back to ``builtins`` (a dict
-    of ``{name: yaml_body}``) when the store has no override.
+    of ``{name: yaml_body}``) when the store has no override.  Compiled
+    builtins are cached at module level since they never change.
     """
     from .state_doc import parse_state_doc
 
@@ -238,14 +258,11 @@ def make_state_doc_loader(
                 except (ValueError, RuntimeError) as exc:
                     logger.warning("Failed to compile state doc %r: %s", note_id, exc)
 
-        # Fall back to builtins
+        # Fall back to builtins (compiled and cached)
         if builtins is not None:
             builtin_body = builtins.get(bare_name)
             if builtin_body is not None:
-                try:
-                    return parse_state_doc(bare_name, builtin_body)
-                except (ValueError, RuntimeError) as exc:
-                    logger.warning("Failed to compile builtin state doc %r: %s", bare_name, exc)
+                return _get_compiled_builtin(bare_name, builtin_body)
 
         return None
 

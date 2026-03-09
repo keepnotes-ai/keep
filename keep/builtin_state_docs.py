@@ -163,8 +163,3 @@ rules:
   - return: done
 """,
 }
-
-
-def get_builtin(name: str) -> str | None:
-    """Return the YAML body for a built-in state doc, or None."""
-    return BUILTIN_STATE_DOCS.get(name)

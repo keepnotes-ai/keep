@@ -55,6 +55,10 @@ class ContinuationEngine:
     ) -> None:
         self._env = env
         self._work_executor = work_executor or LocalWorkExecutor(env)
+        # Shared state-doc loader with builtin fallback (and compiled cache)
+        from .builtin_state_docs import BUILTIN_STATE_DOCS
+        from .state_doc_runtime import make_state_doc_loader
+        self._state_doc_loader = make_state_doc_loader(env, builtins=BUILTIN_STATE_DOCS)
         self._flow_store = flow_store
         self._lock = threading.RLock()
         self._decision_policy = ContinuationDecisionPolicy(
@@ -676,36 +680,8 @@ class ContinuationEngine:
     # -----------------------------------------------------------------------
 
     def _load_state_doc(self, name: str) -> Optional[StateDoc]:
-        """Load a compiled state doc from the store, with builtin fallback.
-
-        State docs are keep notes at `.state/{name}` whose summary field
-        contains the YAML body.  Falls back to hardcoded builtins when the
-        store has no override.
-        """
-        from .builtin_state_docs import get_builtin
-
-        bare_name = name.removeprefix(".state/")
-        note_id = f".state/{bare_name}"
-
-        # Try store first (user overrides)
-        doc_note = self._env.get(note_id)
-        if doc_note is not None:
-            body = str(getattr(doc_note, "summary", "") or "").strip()
-            if body:
-                try:
-                    return parse_state_doc(bare_name, body)
-                except (ValueError, RuntimeError) as exc:
-                    logger.warning("Failed to compile state doc %r: %s", note_id, exc)
-
-        # Fall back to builtins
-        builtin_body = get_builtin(bare_name)
-        if builtin_body is not None:
-            try:
-                return parse_state_doc(bare_name, builtin_body)
-            except (ValueError, RuntimeError) as exc:
-                logger.warning("Failed to compile builtin state doc %r: %s", bare_name, exc)
-
-        return None
+        """Load a compiled state doc via the shared loader."""
+        return self._state_doc_loader(name)
 
     def _build_write_eval_context(
         self,
