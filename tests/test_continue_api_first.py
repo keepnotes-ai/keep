@@ -935,14 +935,15 @@ def test_flow_runtime_is_lazy_initialized(mock_providers, tmp_path):
         kp.close()
 
 
-def test_put_routes_through_flow_runtime(mock_providers, tmp_path):
+def test_put_stores_directly(mock_providers, tmp_path):
+    """put() stores via _put_direct, bypassing FlowEngine."""
     kp = Keeper(store_path=tmp_path)
-    flow_db_path = tmp_path / "continuation.db"
     try:
-        assert not flow_db_path.exists()
-        item = kp.put(content="put via flow", id="note:put-via-cont")
-        assert item.id == "note:put-via-cont"
-        assert flow_db_path.exists()
+        item = kp.put(content="put direct", id="note:put-direct")
+        assert item.id == "note:put-direct"
+        got = kp.get("note:put-direct")
+        assert got is not None
+        assert got.summary == "put direct"
     finally:
         kp.close()
 

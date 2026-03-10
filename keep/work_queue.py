@@ -1,0 +1,382 @@
+"""Minimal work queue backed by the existing continue_work SQLite table.
+
+Provides enqueue/claim/complete/fail semantics without the FlowEngine
+frame/decision/mutation machinery.  Reuses the same table schema and
+DB file so there is no migration.
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+import uuid
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Optional
+
+
+# Fixed flow_id for directly-enqueued work (no FlowEngine flow).
+_DIRECT_FLOW_ID = "_direct"
+
+
+@dataclass
+class WorkItem:
+    """A claimed work item ready for execution."""
+
+    work_id: str
+    kind: str
+    input: dict[str, Any]
+    attempt: int
+    supersede_key: Optional[str] = None
+    created_at: Optional[str] = None
+
+
+class WorkQueue:
+    """SQLite-backed work queue using the existing continue_work table.
+
+    This is a focused subset of SQLiteFlowStore's work methods,
+    without flow/event/mutation/idempotency tables.
+    """
+
+    def __init__(self, db_path: Path) -> None:
+        self._db_path = db_path
+        self._conn: Optional[sqlite3.Connection] = None
+        self._init_db()
+
+    @staticmethod
+    def _now() -> str:
+        return datetime.now(timezone.utc).isoformat()
+
+    def _init_db(self) -> None:
+        self._db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._conn = sqlite3.connect(
+            str(self._db_path), check_same_thread=False, isolation_level=None,
+        )
+        self._conn.row_factory = sqlite3.Row
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA busy_timeout=5000")
+
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS continue_work (
+                work_id TEXT PRIMARY KEY,
+                flow_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                status TEXT NOT NULL,
+                input_json TEXT NOT NULL,
+                output_contract_json TEXT NOT NULL,
+                result_json TEXT,
+                attempt INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
+        self._migrate()
+        self._conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_continue_work_flow_status
+            ON continue_work(flow_id, status)
+        """)
+        self._conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_continue_work_claimable
+            ON continue_work(status, retry_after, lease_until, created_at)
+        """)
+
+    def _migrate(self) -> None:
+        """Add columns introduced after the initial schema."""
+        columns = {
+            str(row["name"])
+            for row in self._conn.execute("PRAGMA table_info(continue_work)").fetchall()
+        }
+
+        def _add(col: str, coldef: str) -> None:
+            try:
+                self._conn.execute(f"ALTER TABLE continue_work ADD COLUMN {col} {coldef}")
+            except sqlite3.OperationalError as exc:
+                if "duplicate column name" not in str(exc).lower():
+                    raise
+
+        if "claimed_by" not in columns:
+            _add("claimed_by", "TEXT")
+        if "claimed_at" not in columns:
+            _add("claimed_at", "TEXT")
+        if "lease_until" not in columns:
+            _add("lease_until", "TEXT")
+        if "retry_after" not in columns:
+            _add("retry_after", "TEXT")
+        if "last_error" not in columns:
+            _add("last_error", "TEXT")
+        if "max_attempts" not in columns:
+            _add("max_attempts", "INTEGER NOT NULL DEFAULT 5")
+        if "dead_lettered_at" not in columns:
+            _add("dead_lettered_at", "TEXT")
+        if "supersede_key" not in columns:
+            _add("supersede_key", "TEXT")
+            try:
+                self._conn.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_continue_work_supersede
+                    ON continue_work(supersede_key, status, created_at)
+                """)
+            except sqlite3.OperationalError:
+                pass
+
+    # ------------------------------------------------------------------
+    # Enqueue
+    # ------------------------------------------------------------------
+
+    def enqueue(
+        self,
+        kind: str,
+        input_data: dict[str, Any],
+        *,
+        supersede_key: Optional[str] = None,
+    ) -> str:
+        """Insert a new work item with status 'requested'.
+
+        Returns the work_id.
+        """
+        work_id = f"w_{uuid.uuid4().hex[:10]}"
+        now = self._now()
+        input_json = json.dumps(input_data, ensure_ascii=False, default=str)
+        self._conn.execute(
+            """
+            INSERT INTO continue_work(
+                work_id, flow_id, kind, status, input_json, output_contract_json,
+                result_json, attempt, created_at, updated_at, supersede_key
+            ) VALUES (?, ?, ?, 'requested', ?, '{}', NULL, 1, ?, ?, ?)
+            """,
+            (work_id, _DIRECT_FLOW_ID, kind, input_json, now, now, supersede_key),
+        )
+        if supersede_key:
+            self._supersede_prior(supersede_key, work_id)
+        return work_id
+
+    def _supersede_prior(self, supersede_key: str, keep_work_id: str) -> int:
+        """Mark older unclaimed work with the same key as superseded."""
+        now = self._now()
+        cursor = self._conn.execute(
+            """
+            UPDATE continue_work
+            SET status = 'superseded', updated_at = ?
+            WHERE supersede_key = ?
+              AND work_id != ?
+              AND status = 'requested'
+              AND claimed_by IS NULL
+            """,
+            (now, supersede_key, keep_work_id),
+        )
+        return cursor.rowcount
+
+    # ------------------------------------------------------------------
+    # Claim
+    # ------------------------------------------------------------------
+
+    def claim(
+        self,
+        worker_id: str,
+        *,
+        limit: int = 10,
+        lease_seconds: int = 120,
+    ) -> list[WorkItem]:
+        """Claim up to *limit* requested items for *worker_id*."""
+        worker = str(worker_id or "").strip()
+        if not worker:
+            raise ValueError("worker_id is required")
+
+        lease_seconds = max(int(lease_seconds), 1)
+        now = self._now()
+        lease_until = datetime.fromtimestamp(
+            datetime.now(timezone.utc).timestamp() + lease_seconds,
+            tz=timezone.utc,
+        ).isoformat()
+
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            rows = self._conn.execute(
+                """
+                SELECT work_id
+                FROM continue_work
+                WHERE status = 'requested'
+                  AND dead_lettered_at IS NULL
+                  AND (retry_after IS NULL OR retry_after <= ?)
+                  AND (claimed_by IS NULL OR lease_until IS NULL OR lease_until <= ?)
+                ORDER BY created_at ASC
+                LIMIT ?
+                """,
+                (now, now, max(int(limit), 1)),
+            ).fetchall()
+            work_ids = [str(r["work_id"]) for r in rows]
+            if not work_ids:
+                self._conn.commit()
+                return []
+
+            self._conn.executemany(
+                """
+                UPDATE continue_work
+                SET claimed_by = ?, claimed_at = ?, lease_until = ?, updated_at = ?
+                WHERE work_id = ?
+                """,
+                [(worker, now, lease_until, now, wid) for wid in work_ids],
+            )
+
+            placeholders = ", ".join("?" for _ in work_ids)
+            claimed = self._conn.execute(
+                f"""
+                SELECT work_id, kind, input_json, attempt, supersede_key, created_at
+                FROM continue_work
+                WHERE work_id IN ({placeholders})
+                ORDER BY created_at ASC
+                """,
+                tuple(work_ids),
+            ).fetchall()
+            self._conn.commit()
+            return [self._to_item(r) for r in claimed]
+        except Exception:
+            self._conn.rollback()
+            raise
+
+    @staticmethod
+    def _to_item(row: sqlite3.Row) -> WorkItem:
+        try:
+            input_data = json.loads(row["input_json"])
+        except (json.JSONDecodeError, TypeError):
+            input_data = {}
+        return WorkItem(
+            work_id=str(row["work_id"]),
+            kind=str(row["kind"]),
+            input=input_data if isinstance(input_data, dict) else {},
+            attempt=int(row["attempt"]),
+            supersede_key=(
+                str(row["supersede_key"]) if row["supersede_key"] is not None else None
+            ),
+            created_at=(
+                str(row["created_at"]) if row["created_at"] is not None else None
+            ),
+        )
+
+    # ------------------------------------------------------------------
+    # Complete / Fail
+    # ------------------------------------------------------------------
+
+    def complete(self, work_id: str, result: dict[str, Any] | None = None) -> None:
+        """Mark work as completed."""
+        result_json = json.dumps(result or {}, ensure_ascii=False, default=str)
+        self._conn.execute(
+            """
+            UPDATE continue_work
+            SET status = 'completed', result_json = ?, updated_at = ?,
+                claimed_by = NULL, claimed_at = NULL, lease_until = NULL, retry_after = NULL
+            WHERE work_id = ?
+            """,
+            (result_json, self._now(), work_id),
+        )
+
+    def fail(
+        self,
+        work_id: str,
+        worker_id: str,
+        error: Optional[str] = None,
+        *,
+        backoff_base: int = 30,
+        backoff_max: int = 3600,
+    ) -> None:
+        """Release work for retry, or dead-letter if max attempts exceeded."""
+        row = self._conn.execute(
+            """
+            SELECT attempt, max_attempts
+            FROM continue_work
+            WHERE work_id = ? AND status = 'requested'
+              AND dead_lettered_at IS NULL AND claimed_by = ?
+            """,
+            (work_id, worker_id),
+        ).fetchone()
+        if row is None:
+            return
+
+        attempt = int(row["attempt"]) if row["attempt"] is not None else 1
+        max_attempts = int(row["max_attempts"]) if row["max_attempts"] is not None else 5
+        now = self._now()
+
+        if attempt >= max_attempts:
+            self._dead_letter(work_id, worker_id, error)
+            return
+
+        base = max(int(backoff_base), 1)
+        cap = max(int(backoff_max), base)
+        delay = min(base * (2 ** max(attempt - 1, 0)), cap)
+        retry_after = datetime.fromtimestamp(
+            datetime.now(timezone.utc).timestamp() + delay,
+            tz=timezone.utc,
+        ).isoformat()
+        self._conn.execute(
+            """
+            UPDATE continue_work
+            SET retry_after = ?, last_error = ?, attempt = attempt + 1,
+                claimed_by = NULL, claimed_at = NULL, lease_until = NULL,
+                updated_at = ?
+            WHERE work_id = ? AND claimed_by = ?
+            """,
+            (retry_after, error, now, work_id, worker_id),
+        )
+
+    def _dead_letter(
+        self, work_id: str, worker_id: str, error: Optional[str] = None,
+    ) -> None:
+        now = self._now()
+        self._conn.execute(
+            """
+            UPDATE continue_work
+            SET status = 'dead_letter', dead_lettered_at = ?, last_error = ?,
+                claimed_by = NULL, claimed_at = NULL, lease_until = NULL,
+                retry_after = NULL, updated_at = ?
+            WHERE work_id = ? AND status = 'requested'
+              AND dead_lettered_at IS NULL AND claimed_by = ?
+            """,
+            (now, error, now, work_id, worker_id),
+        )
+
+    # ------------------------------------------------------------------
+    # Query
+    # ------------------------------------------------------------------
+
+    def count(self, *, claimable_only: bool = False) -> int:
+        """Count requested work items."""
+        if claimable_only:
+            now = self._now()
+            row = self._conn.execute(
+                """
+                SELECT COUNT(1) AS c FROM continue_work
+                WHERE status = 'requested'
+                  AND (retry_after IS NULL OR retry_after <= ?)
+                  AND (lease_until IS NULL OR lease_until <= ?)
+                """,
+                (now, now),
+            ).fetchone()
+        else:
+            row = self._conn.execute(
+                "SELECT COUNT(1) AS c FROM continue_work WHERE status = 'requested'"
+            ).fetchone()
+        return int(row["c"]) if row is not None else 0
+
+    def has_superseding(
+        self, work_id: str, supersede_key: str, created_at: str,
+    ) -> bool:
+        """Check if a newer requested item exists for the same supersede_key."""
+        row = self._conn.execute(
+            """
+            SELECT 1 FROM continue_work
+            WHERE supersede_key = ? AND work_id != ?
+              AND status = 'requested' AND created_at > ?
+            LIMIT 1
+            """,
+            (supersede_key, work_id, created_at),
+        ).fetchone()
+        return row is not None
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    def close(self) -> None:
+        if self._conn is not None:
+            self._conn.close()
+            self._conn = None

@@ -765,9 +765,9 @@ class Keeper:
         # Local flow runtime (API-first path), initialized lazily on first use.
         self._flow_runtime = None
         self._flow_runtime_lock = threading.Lock()
-        self._deferred_flow_tasks: list[dict[str, Any]] = []
-        self._deferred_flow_lock = threading.Lock()
-        self._flushing_deferred_flow = False
+        # Direct work queue (replaces FlowEngine for background tasks).
+        self._work_queue = None
+        self._work_queue_lock = threading.Lock()
         self._write_context_by_id: dict[str, dict[str, Any]] = {}
         self._write_context_lock = threading.Lock()
 
@@ -2092,75 +2092,6 @@ class Keeper:
         digest = hashlib.sha256(f"{metadata_material}|{tag_material}".encode("utf-8")).hexdigest()[:12]
         return f"bg:{task_type}:{id}:{_content_hash(content)}:{digest}"
 
-    def _schedule_task_via_flow(
-        self,
-        *,
-        task_type: str,
-        id: str,
-        doc_coll: str,
-        content: str,
-        metadata: Optional[dict[str, Any]] = None,
-        tags: Optional[dict[str, Any]] = None,
-    ) -> None:
-        task = str(task_type or "").strip()
-        if not task:
-            raise ValueError("task_type is required")
-        idem = self._task_idempotency_key(
-            task_type=task,
-            id=id,
-            content=content,
-            metadata=metadata,
-            tags=tags,
-        )
-
-        if task == "summarize":
-            step = {
-                "kind": "summarize",
-                "runner": {"type": "provider.summarize"},
-                "input_mode": "note_content",
-                "output_contract": {"must_return": ["summary"]},
-                "apply": {
-                    "ops": [
-                        {"op": "set_summary", "summary": "$output.summary"},
-                    ]
-                },
-            }
-            params = {"id": id, "content": content}
-        else:
-            step = {
-                "kind": task,
-                "runner": {"type": "local.task", "task_type": task},
-                "input_mode": "none",
-                "input": {
-                    "task_type": task,
-                    "item_id": id,
-                    "collection": doc_coll,
-                    "content": content,
-                    "metadata": dict(metadata or {}),
-                },
-                "output_contract": {"must_return": ["status"]},
-            }
-            params = {"id": id}
-
-        payload = {
-            "request_id": f"bg-{task}-{uuid.uuid4().hex[:8]}",
-            "idempotency_key": idem,
-            "goal": f"task.{task}",
-            "params": params,
-            "steps": [step],
-            "work_results": [],
-        }
-        runtime = self._get_flow_runtime()
-        if runtime._flow_store.in_transaction():
-            raise RuntimeError("flow runtime transaction is active")
-        out = runtime.continue_flow(payload)
-        if str(out.get("status") or "") == "failed":
-            errors = out.get("errors") or []
-            first = errors[0] if isinstance(errors, list) and errors and isinstance(errors[0], dict) else {}
-            raise RuntimeError(
-                f"flow {task} schedule failed: {first.get('code') or 'unknown'}: {first.get('message') or 'no message'}"
-            )
-
     def _fallback_enqueue_pending_task(self, pending: dict[str, Any]) -> None:
         task = str(pending.get("task_type") or "summarize")
         item_id = str(pending.get("id") or "")
@@ -2178,34 +2109,6 @@ class Keeper:
                 metadata=dict(metadata or {}),
             )
 
-    def _flush_deferred_flow_tasks(self) -> None:
-        if self._flushing_deferred_flow:
-            return
-        self._flushing_deferred_flow = True
-        try:
-            while True:
-                with self._deferred_flow_lock:
-                    if not self._deferred_flow_tasks:
-                        break
-                    pending = self._deferred_flow_tasks.pop(0)
-                try:
-                    self._schedule_task_via_flow(
-                        task_type=str(pending.get("task_type") or ""),
-                        id=str(pending.get("id") or ""),
-                        doc_coll=str(pending.get("doc_coll") or self._resolve_doc_collection()),
-                        content=str(pending.get("content") or ""),
-                        metadata=pending.get("metadata") if isinstance(pending.get("metadata"), dict) else None,
-                        tags=pending.get("tags") if isinstance(pending.get("tags"), dict) else None,
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "Deferred flow task scheduling failed for %s/%s; falling back to pending queue: %s",
-                        pending.get("task_type"), pending.get("id"), exc,
-                    )
-                    self._fallback_enqueue_pending_task(pending)
-        finally:
-            self._flushing_deferred_flow = False
-
     def _enqueue_task_background(
         self,
         *,
@@ -2216,37 +2119,37 @@ class Keeper:
         metadata: Optional[dict[str, Any]] = None,
         tags: Optional[dict[str, Any]] = None,
     ) -> None:
-        pending = {
-            "task_type": task_type,
-            "id": id,
-            "doc_coll": doc_coll,
-            "content": content,
-            "metadata": dict(metadata or {}),
-            "tags": dict(tags or {}),
+        meta = dict(metadata or {})
+        fallback = {
+            "task_type": task_type, "id": id,
+            "doc_coll": doc_coll, "content": content,
+            "metadata": meta,
         }
         if not self._is_local:
-            self._fallback_enqueue_pending_task(pending)
+            self._fallback_enqueue_pending_task(fallback)
             return
-        runtime = self._get_flow_runtime()
-        if runtime._flow_store.in_transaction():
-            with self._deferred_flow_lock:
-                self._deferred_flow_tasks.append(pending)
-            return
+        supersede_key = self._task_idempotency_key(
+            task_type=task_type, id=id, content=content,
+            metadata=metadata, tags=tags,
+        )
         try:
-            self._schedule_task_via_flow(
-                task_type=task_type,
-                id=id,
-                doc_coll=doc_coll,
-                content=content,
-                metadata=metadata,
-                tags=tags,
+            self._get_work_queue().enqueue(
+                task_type,
+                {
+                    "task_type": task_type,
+                    "item_id": id,
+                    "collection": doc_coll,
+                    "content": content,
+                    "metadata": meta,
+                },
+                supersede_key=supersede_key,
             )
         except Exception as exc:
             logger.warning(
-                "Continuation %s scheduling failed for %s; falling back to pending queue: %s",
+                "Work queue enqueue failed for %s/%s; falling back to pending queue: %s",
                 task_type, id, exc,
             )
-            self._fallback_enqueue_pending_task(pending)
+            self._fallback_enqueue_pending_task(fallback)
 
     def _enqueue_summarize_background(
         self,
@@ -2305,6 +2208,24 @@ class Keeper:
             content="",
             metadata=metadata,
         )
+
+    def _enqueue_after_write_tasks(self, item_id: str, content: str) -> None:
+        """Enqueue analyze + tag tasks for non-system items after a write.
+
+        Matches the behavior previously handled by the after-write state doc
+        in FlowEngine.
+        """
+        if item_id.startswith("."):
+            return
+        doc_coll = self._resolve_doc_collection()
+        self._enqueue_analyze_background(id=item_id, doc_coll=doc_coll)
+        if content:
+            self._enqueue_task_background(
+                task_type="tag",
+                id=item_id,
+                doc_coll=doc_coll,
+                content=content,
+            )
 
     def _store_write_context(self, item_id: str, context: dict[str, Any]) -> None:
         note_id = normalize_id(item_id)
@@ -2772,6 +2693,8 @@ class Keeper:
                         "content_type": doc.content_type or "",
                     },
                 )
+            if queue_background_tasks:
+                self._enqueue_after_write_tasks(result.id, doc.content)
             return result
         else:
             # Inline mode: store content directly
@@ -2799,94 +2722,9 @@ class Keeper:
                         "content_type": "",
                     },
                 )
+            if queue_background_tasks:
+                self._enqueue_after_write_tasks(result.id, str(content or ""))
             return result
-
-    def _put_via_flow(
-        self,
-        content: Optional[str] = None,
-        *,
-        uri: Optional[str] = None,
-        id: Optional[str] = None,
-        summary: Optional[str] = None,
-        tags: Optional[TagMap] = None,
-        created_at: Optional[str] = None,
-        force: bool = False,
-    ) -> Item:
-        payload = {
-            "goal": "write",
-            "params": {
-                "content": content,
-                "uri": uri,
-                "id": id,
-                "summary": summary,
-                "tags": tags,
-                "created_at": created_at,
-                "force": force,
-                "max_summary_length": int(self._config.max_summary_length),
-            },
-            "work_results": [],
-        }
-        out = self.continue_flow(payload)
-
-        if str(out.get("status") or "") == "failed":
-            errors = out.get("errors") or []
-            if isinstance(errors, list) and errors:
-                first = errors[0] if isinstance(errors[0], dict) else {}
-                code = str(first.get("code") or "write_failed")
-                message = str(first.get("message") or "Flow write failed")
-                raise ValueError(f"{code}: {message}")
-            raise ValueError("Flow write failed")
-
-        work = out.get("work") or []
-        if isinstance(work, list) and work:
-            self._spawn_processor()
-
-        applied_ops = out.get("applied_ops") or []
-        put_op = None
-        if isinstance(applied_ops, list):
-            for op in reversed(applied_ops):
-                if not isinstance(op, dict):
-                    continue
-                if str(op.get("op") or "") in {"put_item", "upsert_item"}:
-                    put_op = op
-                    break
-
-        target_id: Optional[str] = None
-        op_status: Optional[str] = None
-        if isinstance(put_op, dict):
-            target_raw = put_op.get("target")
-            if target_raw is not None:
-                target_id = str(target_raw)
-            status_raw = put_op.get("status")
-            if status_raw is not None:
-                op_status = str(status_raw)
-
-        if not target_id:
-            if id is not None:
-                target_id = normalize_id(id)
-            elif uri is not None:
-                target_id = normalize_id(uri)
-            elif content is not None:
-                target_id = _text_content_id(content)
-
-        if not target_id:
-            raise ValueError("Flow write did not return an item id")
-
-        item = self.get(target_id)
-        if item is None:
-            # Concurrent delete removed the item between write and read-back.
-            from .types import Item
-            return Item(id=target_id, summary="", tags={}, changed=False)
-
-        if isinstance(applied_ops, list):
-            if any(str(op.get("op") or "") == "enqueue_task" for op in applied_ops if isinstance(op, dict)):
-                self._spawn_processor()
-
-        if op_status == "noop":
-            return replace(item, changed=False)
-        if op_status in {"applied", "queued"}:
-            return replace(item, changed=(op_status == "applied"))
-        return item
 
     def put(
         self,
@@ -2899,10 +2737,8 @@ class Keeper:
         created_at: Optional[str] = None,
         force: bool = False,
     ) -> Item:
-        """
-        Store content in memory through flow write execution.
-        """
-        return self._put_via_flow(
+        """Store content in memory."""
+        return self._put_direct(
             content=content,
             uri=uri,
             id=id,
@@ -4170,12 +4006,6 @@ class Keeper:
                 logger.warning("System doc migration deferred: %s", e)
 
         id = normalize_id(id)
-        target_id = self._resolve_get_target_via_flow(
-            id=id,
-            version=version,
-        )
-        if target_id:
-            id = target_id
         resolved = self.resolve_version_offset(id, version)
         if resolved is None:
             return None
@@ -4266,183 +4096,6 @@ class Keeper:
             next=next_refs,
         )
 
-    @staticmethod
-    def _normalize_flow_get_projection(
-        *,
-        id: str,
-        projection: Optional[dict[str, Any]] = None,
-    ) -> dict[str, Any]:
-        raw = projection if isinstance(projection, dict) else {}
-
-        seed_mode = str(raw.get("seed_mode") or "id").strip().lower()
-        if seed_mode not in {"id", "query", "similar_to"}:
-            seed_mode = "id"
-
-        seed_value_raw = raw.get("seed_value")
-        seed_value = str(seed_value_raw).strip() if seed_value_raw is not None else ""
-        if not seed_value:
-            seed_value = str(id)
-
-        try:
-            rank = int(raw.get("rank", 0))
-        except Exception:
-            rank = 0
-        rank = max(rank, 0)
-
-        try:
-            max_nodes = int(raw.get("max_nodes", 10))
-        except Exception:
-            max_nodes = 10
-        max_nodes = min(max(max_nodes, 1), 100)
-
-        metadata_level = str(raw.get("metadata") or "basic").strip().lower()
-        if metadata_level not in {"none", "basic", "rich"}:
-            metadata_level = "basic"
-
-        where_tags_in = raw.get("where_tags")
-        where_tags: dict[str, Any] = {}
-        if isinstance(where_tags_in, dict):
-            for key, value in where_tags_in.items():
-                key_str = str(key).strip()
-                if not key_str:
-                    continue
-                if isinstance(value, list):
-                    values = [str(v).strip() for v in value if str(v).strip()]
-                    if not values:
-                        continue
-                    where_tags[key_str] = values if len(values) > 1 else values[0]
-                    continue
-                value_str = str(value).strip()
-                if value_str:
-                    where_tags[key_str] = value_str
-
-        return {
-            "seed_mode": seed_mode,
-            "seed_value": seed_value,
-            "rank": rank,
-            "max_nodes": max_nodes,
-            "metadata": metadata_level,
-            "deep": bool(raw.get("deep")),
-            "where_tags": where_tags,
-            "prefer_base_id": bool(raw.get("prefer_base_id", True)),
-        }
-
-    @staticmethod
-    def _frame_request_from_get_projection(projection: dict[str, Any]) -> dict[str, Any]:
-        seed_mode = str(projection.get("seed_mode") or "id")
-        seed_value = str(projection.get("seed_value") or "")
-        max_nodes = int(projection.get("max_nodes") or 10)
-        metadata_level = str(projection.get("metadata") or "basic")
-        where_tags = projection.get("where_tags") if isinstance(projection.get("where_tags"), dict) else {}
-
-        pipeline: list[dict[str, Any]] = []
-        if where_tags:
-            facts: list[str] = []
-            for key in sorted(where_tags.keys()):
-                value = where_tags[key]
-                if isinstance(value, list):
-                    for one in value:
-                        one_str = str(one).strip()
-                        if one_str:
-                            facts.append(f"{key}={one_str}")
-                    continue
-                value_str = str(value).strip()
-                if value_str:
-                    facts.append(f"{key}={value_str}")
-            if facts:
-                pipeline.append({"op": "where", "args": {"facts": facts}})
-        pipeline.append({"op": "slice", "args": {"limit": max_nodes}})
-
-        return {
-            "seed": {"mode": seed_mode, "value": seed_value},
-            "pipeline": pipeline,
-            "budget": {"max_nodes": max_nodes},
-            "options": {
-                "metadata": metadata_level,
-                "deep": bool(projection.get("deep")),
-            },
-        }
-
-    @staticmethod
-    def _project_get_target_id(
-        flow_output: dict[str, Any],
-        *,
-        projection: dict[str, Any],
-    ) -> Optional[str]:
-        frame = flow_output.get("frame") if isinstance(flow_output, dict) else {}
-        if not isinstance(frame, dict):
-            return None
-        evidence = frame.get("evidence")
-        if not isinstance(evidence, list) or not evidence:
-            return None
-
-        rank = int(projection.get("rank") or 0)
-        idx = min(max(rank, 0), len(evidence) - 1)
-        entry = evidence[idx] if isinstance(evidence[idx], dict) else {}
-        if not isinstance(entry, dict):
-            return None
-
-        target_id = str(entry.get("id") or "").strip()
-        if bool(projection.get("prefer_base_id", True)):
-            metadata = entry.get("metadata")
-            if isinstance(metadata, dict):
-                base_id = str(metadata.get("base_id") or "").strip()
-                if base_id:
-                    target_id = base_id
-
-        if not target_id:
-            return None
-        try:
-            return normalize_id(target_id)
-        except Exception:
-            return target_id
-
-    def _resolve_get_target_via_flow(
-        self,
-        id: str,
-        *,
-        version: int | None = None,
-        projection: Optional[dict[str, Any]] = None,
-    ) -> Optional[str]:
-        """
-        Resolve target ID for get-context through flow evidence.
-
-        Internal-only helper: keeps public get/get_context surface unchanged while
-        allowing flow-backed targeting.
-        """
-        id = normalize_id(id)
-        normalized_projection = self._normalize_flow_get_projection(
-            id=id,
-            projection=projection,
-        )
-        frame_request = self._frame_request_from_get_projection(normalized_projection)
-        payload = {
-            "goal": "get",
-            "params": {
-                "id": id,
-                "version": version,
-                "projection": normalized_projection,
-            },
-            "frame_request": frame_request,
-            "work_results": [],
-        }
-
-        fallback_to_direct = str(normalized_projection.get("seed_mode") or "id") == "id"
-        try:
-            out = self.continue_flow(payload)
-        except Exception as exc:
-            logger.debug("Flow get failed for %s: %s", id, exc)
-            if fallback_to_direct:
-                return id
-            return None
-
-        if str(out.get("status") or "") == "failed":
-            if fallback_to_direct:
-                return id
-            return None
-
-        target_id = self._project_get_target_id(out, projection=normalized_projection)
-        return target_id or (id if fallback_to_direct else None)
 
     def resolve_version_offset(self, id: str, selector: int | None) -> Optional[int]:
         """Resolve a public version selector to a concrete offset.
@@ -6987,11 +6640,10 @@ class Keeper:
         return self._pending_queue.count()
 
     def pending_work_count(self, *, claimable_only: bool = False) -> int:
-        """Get count of requested flow work items."""
+        """Get count of requested work items."""
         if not self._is_local:
             return 0
-        runtime = self._get_flow_runtime()
-        return runtime.count_requested_work(claimable_only=claimable_only)
+        return self._get_work_queue().count(claimable_only=claimable_only)
 
     def process_pending_work(
         self,
@@ -7000,14 +6652,15 @@ class Keeper:
         worker_id: Optional[str] = None,
         lease_seconds: int = 120,
     ) -> dict:
-        """Process a batch of requested flow work items."""
+        """Process a batch of requested work items."""
         if not self._is_local:
             return {"claimed": 0, "processed": 0, "failed": 0, "dead_lettered": 0, "errors": []}
-        runtime = self._get_flow_runtime()
-        worker = worker_id or f"local-daemon:{os.getpid()}"
-        return runtime.process_requested_work_batch(
-            worker_id=worker,
+        from .work_processor import process_work_batch
+        return process_work_batch(
+            self,
+            self._get_work_queue(),
             limit=limit,
+            worker_id=worker_id,
             lease_seconds=lease_seconds,
         )
 
@@ -7032,6 +6685,23 @@ class Keeper:
         return self._pending_queue.get_status(id)
 
     # -------------------------------------------------------------------------
+    # Work queue (direct task dispatch, replaces FlowEngine for bg tasks)
+    # -------------------------------------------------------------------------
+
+    def _get_work_queue(self):
+        """Lazy-init the direct work queue (shares continuation.db)."""
+        queue = self._work_queue
+        if queue is not None:
+            return queue
+        from .work_queue import WorkQueue
+        with self._work_queue_lock:
+            queue = self._work_queue
+            if queue is None:
+                queue = WorkQueue(self._store_path / "continuation.db")
+                self._work_queue = queue
+        return queue
+
+    # -------------------------------------------------------------------------
     # Flow API (local-only preview)
     # -------------------------------------------------------------------------
 
@@ -7051,9 +6721,7 @@ class Keeper:
 
     def continue_flow(self, payload: dict) -> dict:
         """Run one flow tick for local API-first flows."""
-        result = self._get_flow_runtime().continue_flow(payload)
-        self._flush_deferred_flow_tasks()
-        return result
+        return self._get_flow_runtime().continue_flow(payload)
 
     def continue_run_work(self, cursor: str, work_id: str) -> dict:
         """Execute a pending local work item and return a work_result envelope."""
@@ -7459,6 +7127,13 @@ class Keeper:
         if hasattr(self, '_task_client') and self._task_client is not None:
             self._task_client.close()
             self._task_client = None
+
+        # Close work queue
+        if hasattr(self, "_work_queue") and self._work_queue is not None:
+            try:
+                self._work_queue.close()
+            except Exception:
+                pass
 
         # Close flow runtime
         if hasattr(self, "_flow_runtime") and self._flow_runtime is not None:
