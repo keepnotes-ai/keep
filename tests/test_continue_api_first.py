@@ -552,38 +552,6 @@ def test_continue_custom_steps_applies_tags(mock_providers, tmp_path):
         kp.close()
 
 
-def test_continue_work_request_includes_quality_gates_and_escalation(mock_providers, tmp_path):
-    kp = Keeper(store_path=tmp_path)
-    try:
-        content = "quality gate sample"
-        kp.put(content=content, id="note:quality", summary=content)
-        out = kp.continue_flow(
-            {
-                "request_id": "req-quality-1",
-                "goal": "pipeline",
-                "params": {"id": "note:quality", "content": content},
-                "steps": [
-                    {
-                        "kind": "quality_step",
-                        "runner": {"type": "echo", "outputs": {"ok": True}},
-                        "input_mode": "note_content",
-                        "output_contract": {"must_return": ["ok"]},
-                        "quality_gates": {"min_confidence": 0.7, "citation_required": True},
-                        "escalate_if": ["low_confidence", "missing_citation"],
-                    }
-                ],
-                "work_results": [],
-            }
-        )
-        assert out["status"] == "waiting_work"
-        assert out["work"]
-        work = out["work"][0]
-        assert work["quality_gates"] == {"min_confidence": 0.7, "citation_required": True}
-        assert work["escalate_if"] == ["low_confidence", "missing_citation"]
-    finally:
-        kp.close()
-
-
 def test_continue_set_tags_preserves_list_values(mock_providers, tmp_path):
     kp = Keeper(store_path=tmp_path)
     try:
@@ -984,13 +952,13 @@ def test_put_long_content_schedules_flow_work(monkeypatch, mock_providers, tmp_p
     try:
         monkeypatch.setattr(kp, "_needs_sysdoc_migration", False)
         baseline_pending = kp.pending_count()
-        baseline_flow = kp.continuation_pending_count()
+        baseline_flow = kp.pending_work_count()
         content = "default queue " * 200
         item = kp.put(content=content, id="note:default-queue")
         assert item.summary.endswith("...")
         assert kp.pending_count() == baseline_pending
         # summarize + analyze + tag all fire for non-system items
-        assert kp.continuation_pending_count() == baseline_flow + 3
+        assert kp.pending_work_count() == baseline_flow + 3
     finally:
         kp.close()
 
@@ -1000,15 +968,15 @@ def test_put_long_content_flow_work_processing_updates_summary(monkeypatch, mock
     try:
         monkeypatch.setattr(kp, "_needs_sysdoc_migration", False)
         baseline_pending = kp.pending_count()
-        baseline_flow = kp.continuation_pending_count()
+        baseline_flow = kp.pending_work_count()
         content = "flow queue " * 200
         item = kp.put(content=content, id="note:flow-queue")
         assert item.summary.endswith("...")
         assert kp.pending_count() == baseline_pending
         # summarize + analyze + tag all fire for non-system items
-        assert kp.continuation_pending_count() == baseline_flow + 3
+        assert kp.pending_work_count() == baseline_flow + 3
 
-        result = kp.process_continuation_work(limit=10, worker_id="test-worker")
+        result = kp.process_pending_work(limit=10, worker_id="test-worker")
         assert result["claimed"] >= 1
         assert result["processed"] >= 1
         assert result["failed"] == 0
@@ -1017,7 +985,7 @@ def test_put_long_content_flow_work_processing_updates_summary(monkeypatch, mock
         updated = kp.get("note:flow-queue")
         assert updated is not None
         assert updated.summary == content[:200]
-        assert kp.continuation_pending_count() == 0
+        assert kp.pending_work_count() == 0
     finally:
         kp.close()
 
@@ -1027,10 +995,12 @@ def test_enqueue_analyze_schedules_flow_work(monkeypatch, mock_providers, tmp_pa
     try:
         monkeypatch.setattr(kp, "_needs_sysdoc_migration", False)
         kp.put(content="Analyze me " * 60, id="note:analyze-queued")
-        baseline = kp.continuation_pending_count()
+        baseline = kp.pending_work_count()
         queued = kp.enqueue_analyze("note:analyze-queued")
         assert queued is True
-        assert kp.continuation_pending_count() == baseline + 1
+        # The new analyze supersedes the one already enqueued by put(),
+        # so count stays the same rather than increasing.
+        assert kp.pending_work_count() == baseline
     finally:
         kp.close()
 
@@ -1065,7 +1035,7 @@ def test_enqueue_analyze_flow_work_executes_local_task(monkeypatch, mock_provide
         kp._run_local_task_workflow = _fake_run_local_task_workflow  # type: ignore[assignment]
         queued = kp.enqueue_analyze("note:analyze-run", tags=["topic"], force=True)
         assert queued is True
-        result = kp.process_continuation_work(limit=10, worker_id="test-worker")
+        result = kp.process_pending_work(limit=10, worker_id="test-worker")
         assert result["processed"] >= 1
         assert any(call["task_type"] == "analyze" for call in calls)
     finally:
@@ -1108,7 +1078,7 @@ def test_enqueue_ocr_background_flow_executes_local_task(monkeypatch, mock_provi
             ocr_pages=[1, 3],
             content_type="application/pdf",
         )
-        result = kp.process_continuation_work(limit=10, worker_id="test-worker")
+        result = kp.process_pending_work(limit=10, worker_id="test-worker")
         assert result["processed"] >= 1
         assert any(call["task_type"] == "ocr" for call in calls)
     finally:

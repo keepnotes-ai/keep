@@ -2928,21 +2928,52 @@ def validate(
         "--all", "-a",
         help="Validate all system docs"
     )] = False,
+    diagram: Annotated[bool, typer.Option(
+        "--diagram",
+        help="Print Mermaid state-transition diagram for .state/* docs"
+    )] = False,
     store: StoreOption = None,
 ):
     r"""Validate system documents with parser-based semantics.
 
-    Checks .tag/*, .meta/*, and .prompt/* documents for structural
-    correctness. Reports errors (will cause runtime failures) and
-    warnings (may cause unexpected behavior).
+    Checks .tag/*, .meta/*, .prompt/*, and .state/* documents for
+    structural correctness. Reports errors (will cause runtime failures)
+    and warnings (may cause unexpected behavior).
 
     \b
     Examples:
         keep validate .tag/act               # Validate one doc
         keep validate .tag/act .meta/related  # Validate several
         keep validate --all                   # Validate all system docs
+        keep validate --diagram              # Mermaid state diagram
     """
     from .validate import validate_system_doc
+
+    if diagram:
+        from .validate import state_doc_diagram
+        from .system_docs import SYSTEM_DOC_DIR, _filename_to_id, _load_frontmatter
+        state_docs: dict[str, str] = {}
+        # Load from store if available, else from disk
+        try:
+            kp = _get_keeper(store)
+            doc_coll = kp._resolve_doc_collection()
+            for rec in kp._document_store.query_by_id_prefix(doc_coll, ".state/"):
+                name = str(getattr(rec, "id", "")).removeprefix(".state/")
+                body = str(getattr(rec, "summary", "") or "").strip()
+                if name and body:
+                    state_docs[name] = body
+        except Exception:
+            pass
+        # Fall back to / supplement with bundled files
+        if not state_docs:
+            for path in sorted(SYSTEM_DOC_DIR.glob("state-*.md")):
+                doc_id = _filename_to_id(path.name)
+                name = doc_id.removeprefix(".state/")
+                content, _ = _load_frontmatter(path)
+                if content.strip():
+                    state_docs[name] = content
+        typer.echo(state_doc_diagram(state_docs))
+        return
 
     kp = _get_keeper(store)
 
@@ -3186,7 +3217,7 @@ def pending_cmd(
         try:
             pid_path.write_text(str(os.getpid()))
             while not shutdown_requested:
-                flow_result = kp.process_continuation_work(
+                flow_result = kp.process_pending_work(
                     limit=50,
                     worker_id=flow_worker_id,
                     lease_seconds=180,
@@ -3207,15 +3238,14 @@ def pending_cmd(
                 )
                 if result["processed"] == 0 and result["failed"] == 0 and delegated == 0 and not flow_activity:
                     # Check for outstanding delegated tasks before exiting
-                    has_delegated = hasattr(kp._pending_queue, "count_delegated") and kp._pending_queue.count_delegated() > 0
-                    has_flow_work = hasattr(kp, "continuation_pending_count") and kp.continuation_pending_count() > 0
-                    if has_delegated:
-                        # Delegated tasks outstanding — poll less aggressively
-                        _daemon_logger.info("Waiting for %d delegated tasks", kp._pending_queue.count_delegated())
+                    delegated_remaining = kp._pending_queue.count_delegated() if hasattr(kp._pending_queue, "count_delegated") else 0
+                    flow_remaining = kp.pending_work_count() if hasattr(kp, "pending_work_count") else 0
+                    if delegated_remaining > 0:
+                        _daemon_logger.info("Waiting for %d delegated tasks", delegated_remaining)
                         time.sleep(5)
                         continue
-                    if has_flow_work:
-                        _daemon_logger.info("Waiting for %d flow work items", kp.continuation_pending_count())
+                    if flow_remaining > 0:
+                        _daemon_logger.info("Waiting for %d flow work items", flow_remaining)
                         time.sleep(1)
                         continue
 
@@ -3223,7 +3253,7 @@ def pending_cmd(
                     # (e.g. OCR enqueued while we were processing a summarize).
                     # Wait briefly and check once more before exiting.
                     time.sleep(1)
-                    flow_result = kp.process_continuation_work(
+                    flow_result = kp.process_pending_work(
                         limit=50,
                         worker_id=flow_worker_id,
                         lease_seconds=180,
@@ -3284,7 +3314,7 @@ def pending_cmd(
 
     # Interactive mode: show status, ensure daemon running, tail log
     pending_count = kp.pending_count()
-    flow_pending_count = kp.continuation_pending_count() if hasattr(kp, "continuation_pending_count") else 0
+    flow_pending_count = kp.pending_work_count() if hasattr(kp, "pending_work_count") else 0
 
     # Show failed and processing items
     queue_stats = kp._pending_queue.stats()
@@ -3328,9 +3358,9 @@ def _queue_status_line(kp, queue_stats: dict) -> str:
     delegated = queue_stats.get("delegated", 0)
     failed = queue_stats.get("failed", 0)
     flow_pending = 0
-    if hasattr(kp, "continuation_pending_count"):
+    if hasattr(kp, "pending_work_count"):
         try:
-            flow_pending = int(kp.continuation_pending_count())
+            flow_pending = int(kp.pending_work_count())
         except Exception:
             flow_pending = 0
 
@@ -3376,7 +3406,7 @@ def _tail_ops_log(log_path: Path, kp) -> None:
                     idle_checks += 1
                     if idle_checks >= 5 and not kp._is_processor_running():
                         stats = kp._pending_queue.stats()
-                        flow_pending = kp.continuation_pending_count() if hasattr(kp, "continuation_pending_count") else 0
+                        flow_pending = kp.pending_work_count() if hasattr(kp, "pending_work_count") else 0
                         if (
                             stats.get("pending", 0) == 0
                             and stats.get("processing", 0) == 0

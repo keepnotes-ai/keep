@@ -85,9 +85,12 @@ def run_flow(
             output = enrich_find_output(output)
         return output
 
+    logger.info("flow: start %s", initial_state)
+
     while ticks < budget:
         doc = load_state_doc(current_state)
         if doc is None:
+            logger.info("flow: %s -> error (state doc not found)", current_state)
             return FlowResult(
                 status="error",
                 data={"reason": f"state doc not found: {current_state}"},
@@ -118,6 +121,7 @@ def run_flow(
 
         # Terminal
         if result.terminal is not None:
+            logger.info("flow: %s -> %s (%d ticks)", current_state, result.terminal, ticks)
             return FlowResult(
                 status=result.terminal,
                 bindings=all_bindings,
@@ -130,12 +134,14 @@ def run_flow(
         if result.transition is not None:
             next_state, transition_params = _parse_transition(result.transition)
             if next_state is None:
+                logger.info("flow: %s -> error (invalid transition)", current_state)
                 return FlowResult(
                     status="error",
                     data={"reason": f"invalid transition: {result.transition}"},
                     ticks=ticks,
                     history=history,
                 )
+            logger.info("flow: %s -> %s", current_state, next_state)
             # Transition params merge into (override) current params
             current_params = dict(current_params)
             current_params.update(transition_params)
@@ -143,6 +149,7 @@ def run_flow(
             continue
 
         # No terminal, no transition — shouldn't happen (evaluator defaults to done)
+        logger.info("flow: %s -> done (implicit, %d ticks)", current_state, ticks)
         return FlowResult(
             status="done",
             bindings=all_bindings,
@@ -151,6 +158,7 @@ def run_flow(
         )
 
     # Budget exhausted
+    logger.info("flow: %s -> stopped (budget, %d ticks)", current_state, ticks)
     return FlowResult(
         status="stopped",
         data={"reason": "budget"},
@@ -232,23 +240,26 @@ def _get_compiled_builtin(name: str, body: str) -> Optional[StateDoc]:
 
 def make_state_doc_loader(
     env: Any,
-    *,
-    builtins: dict[str, str] | None = None,
 ) -> StateDocLoader:
     """Create a state doc loader backed by a FlowRuntimeEnv.
 
     Loads ``.state/{name}`` notes from the store, parses their summary
-    field as YAML state doc body.  Falls back to ``builtins`` (a dict
-    of ``{name: yaml_body}``) when the store has no override.  Compiled
-    builtins are cached at module level since they never change.
+    field as YAML state doc body.  State docs are seeded into the store
+    by system doc migration from bundled ``.md`` files.
+
+    Falls back to compiled builtins (from ``builtin_state_docs.py``)
+    when the store has no entry — this covers test environments that
+    skip full migration, and the brief window before first migration
+    on a fresh store.
     """
     from .state_doc import parse_state_doc
+    from .builtin_state_docs import BUILTIN_STATE_DOCS
 
     def _load(name: str) -> Optional[StateDoc]:
         bare_name = name.removeprefix(".state/")
         note_id = f".state/{bare_name}"
 
-        # Try store first (user overrides)
+        # Primary path: load from the store
         doc_note = env.get(note_id)
         if doc_note is not None:
             body = str(getattr(doc_note, "summary", "") or "").strip()
@@ -258,11 +269,11 @@ def make_state_doc_loader(
                 except (ValueError, RuntimeError) as exc:
                     logger.warning("Failed to compile state doc %r: %s", note_id, exc)
 
-        # Fall back to builtins (compiled and cached)
-        if builtins is not None:
-            builtin_body = builtins.get(bare_name)
-            if builtin_body is not None:
-                return _get_compiled_builtin(bare_name, builtin_body)
+        # Fallback: compiled builtins (pre-migration or test environments)
+        builtin_body = BUILTIN_STATE_DOCS.get(bare_name)
+        if builtin_body is not None:
+            logger.debug("State doc %r not in store, using builtin fallback", bare_name)
+            return _get_compiled_builtin(bare_name, builtin_body)
 
         return None
 

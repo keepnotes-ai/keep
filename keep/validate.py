@@ -573,6 +573,140 @@ def _check_action_name(result: ValidationResult, name: str, loc: str) -> None:
         )
 
 
+# ---------------------------------------------------------------------------
+# State-doc diagram generation
+# ---------------------------------------------------------------------------
+
+# Entry points: which state docs are reachable from which caller paths.
+_STATE_ENTRY_POINTS: dict[str, str] = {
+    "after-write": "put()",
+    "get-context": "get()",
+    "find-deep": "find(deep)",
+    "query-resolve": "query",
+}
+
+
+def state_doc_diagram(
+    state_docs: dict[str, str],
+) -> str:
+    """Generate a Mermaid stateDiagram-v2 from state doc YAML bodies.
+
+    Args:
+        state_docs: Mapping of state name to YAML body string.
+
+    Returns:
+        Mermaid diagram source wrapped in a markdown fenced code block.
+    """
+    lines = ["```mermaid", "stateDiagram-v2"]
+
+    # Sanitize names for Mermaid (hyphens → underscores)
+    def _node(name: str) -> str:
+        return name.replace("-", "_")
+
+    # Sanitize labels (colons break the Mermaid parser)
+    def _label(text: str) -> str:
+        return text.replace(":", "∶")  # fullwidth colon
+
+    # Collect transitions: (src, dst, edge_label)
+    # Terminal edges: (src, "[*]:status", guard)  — status after colon
+    edges: list[tuple[str, str, str]] = []
+
+    for name, body in sorted(state_docs.items()):
+        try:
+            parsed = yaml.safe_load(body)
+        except Exception:
+            continue
+        if not isinstance(parsed, dict):
+            continue
+
+        # Entry points
+        if name in _STATE_ENTRY_POINTS:
+            edges.append(("[*]", name, _STATE_ENTRY_POINTS[name]))
+
+        # Walk rules and post blocks
+        for section in ("rules", "post"):
+            raw_rules = parsed.get(section)
+            if not isinstance(raw_rules, list):
+                continue
+            for rule in raw_rules:
+                if not isinstance(rule, dict):
+                    continue
+                guard = str(rule.get("when") or "").strip()
+                _extract_edges(name, rule, guard, edges)
+
+    # Per-state terminal nodes: each (src, status) pair gets its own node
+    # so "done" from different states doesn't collapse.
+    terminal_nodes: dict[tuple[str, str], str] = {}  # (src, status) -> node_id
+    for src, dst, _ in edges:
+        if dst.startswith("[*]:"):
+            status = dst[4:]
+            key = (src, status)
+            if key not in terminal_nodes:
+                safe = _node(status.replace(" ", "_").replace(":", ""))
+                terminal_nodes[key] = f"{_node(src)}_{safe}"
+
+    for (src, status) in sorted(terminal_nodes):
+        node_id = terminal_nodes[(src, status)]
+        lines.append(f"    {node_id} : {_label(status)}")
+
+    if terminal_nodes:
+        lines.append("")
+
+    # Emit edges
+    seen: set[tuple[str, str, str]] = set()
+    for src, dst, label in edges:
+        key = (src, dst, label)
+        if key in seen:
+            continue
+        seen.add(key)
+        src_node = _node(src)
+        if dst.startswith("[*]:"):
+            status = dst[4:]
+            dst_node = terminal_nodes[(src, status)]
+        else:
+            dst_node = _node(dst)
+        if label:
+            lines.append(f"    {src_node} --> {dst_node} : {_label(label)}")
+        else:
+            lines.append(f"    {src_node} --> {dst_node}")
+
+    lines.append("```")
+    return "\n".join(lines) + "\n"
+
+
+def _extract_edges(
+    state_name: str,
+    rule: dict[str, Any],
+    guard: str,
+    edges: list[tuple[str, str, str]],
+) -> None:
+    """Extract transition/terminal edges from a single rule."""
+    # return → terminal (encode status in destination as "[*]:status")
+    if "return" in rule:
+        ret = rule["return"]
+        if isinstance(ret, str):
+            status = ret.strip() or "done"
+        elif isinstance(ret, dict):
+            s = str(ret.get("status") or ret.get("return") or "done")
+            reason = ret.get("with", {}).get("reason", "")
+            status = f"{s}: {reason}" if reason else s
+        else:
+            status = "done"
+        edges.append((state_name, f"[*]:{status}", guard))
+
+    # then → transition
+    if "then" in rule:
+        then = rule["then"]
+        if isinstance(then, str):
+            target = then.strip()
+        elif isinstance(then, dict):
+            target = str(then.get("state") or "").strip()
+        else:
+            target = ""
+        if target:
+            edges.append((state_name, target, guard))
+
+
 def _try_compile_state_doc(result: ValidationResult, doc_id: str, content: str) -> None:
     """Attempt full parse+compile to catch CEL compilation errors."""
     try:

@@ -44,6 +44,8 @@ class WorkRow:
     last_error: Optional[str] = None
     max_attempts: int = 5
     dead_lettered_at: Optional[str] = None
+    supersede_key: Optional[str] = None
+    created_at: Optional[str] = None
 
 
 @dataclass
@@ -83,7 +85,10 @@ class FlowStore(Protocol):
     def has_completed_work_key(self, flow_id: str, key: str) -> bool: ...
     def insert_work(
         self, *, flow_id: str, kind: str, input_json: str, output_contract_json: str,
+        supersede_key: Optional[str] = None,
     ) -> str: ...
+    def supersede_prior_work(self, supersede_key: str, keep_work_id: str) -> int: ...
+    def has_superseding_work(self, work_id: str, supersede_key: str, created_at: str) -> bool: ...
     def update_work_result(self, *, work_id: str, status: str, result_json: str) -> None: ...
     def claim_requested_work(
         self,
@@ -244,6 +249,15 @@ class SQLiteFlowStore:
             _add_column("max_attempts", "INTEGER NOT NULL DEFAULT 5")
         if "dead_lettered_at" not in columns:
             _add_column("dead_lettered_at", "TEXT")
+        if "supersede_key" not in columns:
+            _add_column("supersede_key", "TEXT")
+            try:
+                self._conn.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_continue_work_supersede
+                    ON continue_work(supersede_key, status, created_at)
+                """)
+            except sqlite3.OperationalError:
+                pass
 
     @staticmethod
     def _work_row(row: sqlite3.Row) -> WorkRow:
@@ -264,6 +278,16 @@ class SQLiteFlowStore:
             dead_lettered_at=(
                 str(row["dead_lettered_at"])
                 if row["dead_lettered_at"] is not None
+                else None
+            ),
+            supersede_key=(
+                str(row["supersede_key"])
+                if row["supersede_key"] is not None
+                else None
+            ),
+            created_at=(
+                str(row["created_at"])
+                if row["created_at"] is not None
                 else None
             ),
         )
@@ -341,7 +365,7 @@ class SQLiteFlowStore:
             """
             SELECT
                 work_id, flow_id, kind, status, input_json, output_contract_json, attempt,
-                claimed_by, claimed_at, lease_until, retry_after, last_error, max_attempts, dead_lettered_at
+                claimed_by, claimed_at, lease_until, retry_after, last_error, max_attempts, dead_lettered_at, supersede_key, created_at
             FROM continue_work
             WHERE flow_id = ? AND status = 'requested'
             ORDER BY created_at ASC
@@ -378,7 +402,7 @@ class SQLiteFlowStore:
             """
             SELECT
                 work_id, flow_id, kind, status, input_json, output_contract_json, attempt,
-                claimed_by, claimed_at, lease_until, retry_after, last_error, max_attempts, dead_lettered_at
+                claimed_by, claimed_at, lease_until, retry_after, last_error, max_attempts, dead_lettered_at, supersede_key, created_at
             FROM continue_work
             WHERE flow_id = ? AND work_id = ?
             """,
@@ -412,6 +436,7 @@ class SQLiteFlowStore:
 
     def insert_work(
         self, *, flow_id: str, kind: str, input_json: str, output_contract_json: str,
+        supersede_key: Optional[str] = None,
     ) -> str:
         work_id = f"w_{uuid.uuid4().hex[:10]}"
         now = self._now()
@@ -419,12 +444,47 @@ class SQLiteFlowStore:
             """
             INSERT INTO continue_work(
                 work_id, flow_id, kind, status, input_json, output_contract_json,
-                result_json, attempt, created_at, updated_at
-            ) VALUES (?, ?, ?, 'requested', ?, ?, NULL, 1, ?, ?)
+                result_json, attempt, created_at, updated_at, supersede_key
+            ) VALUES (?, ?, ?, 'requested', ?, ?, NULL, 1, ?, ?, ?)
             """,
-            (work_id, flow_id, kind, input_json, output_contract_json, now, now),
+            (work_id, flow_id, kind, input_json, output_contract_json, now, now,
+             supersede_key),
         )
         return work_id
+
+    def supersede_prior_work(self, supersede_key: str, keep_work_id: str) -> int:
+        """Mark older unclaimed work with the same supersede_key as superseded.
+
+        Returns the number of work items superseded.
+        """
+        now = self._now()
+        cursor = self._conn.execute(
+            """
+            UPDATE continue_work
+            SET status = 'superseded', updated_at = ?
+            WHERE supersede_key = ?
+              AND work_id != ?
+              AND status = 'requested'
+              AND claimed_by IS NULL
+            """,
+            (now, supersede_key, keep_work_id),
+        )
+        return cursor.rowcount
+
+    def has_superseding_work(self, work_id: str, supersede_key: str, created_at: str) -> bool:
+        """Check if a newer requested work item exists for the same supersede_key."""
+        row = self._conn.execute(
+            """
+            SELECT 1 FROM continue_work
+            WHERE supersede_key = ?
+              AND work_id != ?
+              AND status = 'requested'
+              AND created_at > ?
+            LIMIT 1
+            """,
+            (supersede_key, work_id, created_at),
+        ).fetchone()
+        return row is not None
 
     def update_work_result(self, *, work_id: str, status: str, result_json: str) -> None:
         self._conn.execute(
@@ -501,7 +561,7 @@ class SQLiteFlowStore:
                 f"""
                 SELECT
                     work_id, flow_id, kind, status, input_json, output_contract_json, attempt,
-                    claimed_by, claimed_at, lease_until, retry_after, last_error, max_attempts, dead_lettered_at
+                    claimed_by, claimed_at, lease_until, retry_after, last_error, max_attempts, dead_lettered_at, supersede_key, created_at
                 FROM continue_work
                 WHERE work_id IN ({placeholders})
                 ORDER BY created_at ASC

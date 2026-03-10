@@ -55,6 +55,7 @@ _PREFIX_DEPTH = {
     "tag": 2,
     "meta": 1,
     "prompt": 2,
+    "state": 1,
 }
 
 

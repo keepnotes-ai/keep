@@ -2874,7 +2874,9 @@ class Keeper:
 
         item = self.get(target_id)
         if item is None:
-            raise ValueError(f"Flow write item not found: {target_id}")
+            # Concurrent delete removed the item between write and read-back.
+            from .types import Item
+            return Item(id=target_id, summary="", tags={}, changed=False)
 
         if isinstance(applied_ops, list):
             if any(str(op.get("op") or "") == "enqueue_task" for op in applied_ops if isinstance(op, dict)):
@@ -4159,6 +4161,14 @@ class Keeper:
             include_parts: Whether to include parts manifest
             include_versions: Whether to include version navigation
         """
+        # Ensure state docs are in the store for the read flow.
+        if self._needs_sysdoc_migration:
+            try:
+                self._migrate_system_documents()
+                self._needs_sysdoc_migration = False
+            except Exception as e:
+                logger.warning("System doc migration deferred: %s", e)
+
         id = normalize_id(id)
         target_id = self._resolve_get_target_via_flow(
             id=id,
@@ -6976,14 +6986,14 @@ class Keeper:
         """Get count of pending summaries awaiting processing."""
         return self._pending_queue.count()
 
-    def continuation_pending_count(self, *, claimable_only: bool = False) -> int:
+    def pending_work_count(self, *, claimable_only: bool = False) -> int:
         """Get count of requested flow work items."""
         if not self._is_local:
             return 0
         runtime = self._get_flow_runtime()
         return runtime.count_requested_work(claimable_only=claimable_only)
 
-    def process_continuation_work(
+    def process_pending_work(
         self,
         *,
         limit: int = 10,
@@ -7060,8 +7070,9 @@ class Keeper:
         """Run a synchronous state-doc flow for the read/query path.
 
         Creates a read-only environment, wires up a state doc loader
-        (with builtin fallbacks) and action runner, then evaluates the
-        flow to completion.
+        and action runner, then evaluates the flow to completion.
+        State docs are loaded from ``.state/*`` notes in the store
+        (seeded by system doc migration).
 
         Args:
             state: Name of the starting state doc (e.g. "get-context").
@@ -7073,7 +7084,6 @@ class Keeper:
         Returns:
             FlowResult with terminal status and accumulated bindings.
         """
-        from .builtin_state_docs import BUILTIN_STATE_DOCS
         from .state_doc_runtime import (
             FlowResult,
             make_action_runner,
@@ -7084,7 +7094,7 @@ class Keeper:
         env = LocalFlowEnvironment(self)
         if query_embedding is not None:
             env._query_embedding = query_embedding
-        loader = make_state_doc_loader(env, builtins=BUILTIN_STATE_DOCS)
+        loader = make_state_doc_loader(env)
         runner = make_action_runner(env)
         return run_flow(state, params, budget=budget, load_state_doc=loader, run_action=runner)
 

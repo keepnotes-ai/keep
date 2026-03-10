@@ -494,8 +494,8 @@ post:
         kp._enqueue_task_background = original  # type: ignore[assignment]
 
 
-def test_fallback_to_template_when_no_state_doc(mock_providers, tmp_path):
-    """Without a .state/after-write doc, template followups still work."""
+def test_fallback_to_builtin_state_doc(mock_providers, tmp_path):
+    """Without a .state/after-write doc, builtin state-doc provides defaults."""
     kp = Keeper(store_path=tmp_path)
     flow_store = SQLiteFlowStore(tmp_path / "engine-continuation.db")
     engine = FlowEngine(
@@ -520,7 +520,7 @@ def test_fallback_to_template_when_no_state_doc(mock_providers, tmp_path):
                 "max_summary_length": 100,
             },
         })
-        # Template followups should still fire
+        # Builtin state-doc after-write rules should fire
         task_types = [e["task_type"] for e in enqueued]
         assert "summarize" in task_types
         assert "tag" in task_types

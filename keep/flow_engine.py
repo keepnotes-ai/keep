@@ -55,10 +55,9 @@ class FlowEngine:
     ) -> None:
         self._env = env
         self._work_executor = work_executor or LocalWorkExecutor(env)
-        # Shared state-doc loader with builtin fallback (and compiled cache)
-        from .builtin_state_docs import BUILTIN_STATE_DOCS
+        # Shared state-doc loader (reads .state/* notes from the store)
         from .state_doc_runtime import make_state_doc_loader
-        self._state_doc_loader = make_state_doc_loader(env, builtins=BUILTIN_STATE_DOCS)
+        self._state_doc_loader = make_state_doc_loader(env)
         self._flow_store = flow_store
         self._lock = threading.RLock()
         self._decision_policy = FlowDecisionPolicy(
@@ -832,25 +831,37 @@ class FlowEngine:
         executor_class: str,
         input_payload: dict[str, Any],
         output_contract: dict[str, Any],
-        quality_gates: dict[str, Any],
-        escalate_if: list[str],
         executor_id: str,
     ) -> dict[str, Any]:
+        # Build supersede key from (kind, item_id) so rapid updates
+        # to the same item supersede older unclaimed work of the same type.
+        item_id = input_payload.get("item_id")
+        supersede_key = f"{kind}:{item_id}" if item_id else None
+
         work_id = self._flow_store.insert_work(
             flow_id=flow_id,
             kind=kind,
             input_json=json.dumps(input_payload, ensure_ascii=False),
             output_contract_json=json.dumps(output_contract, ensure_ascii=False),
+            supersede_key=supersede_key,
         )
+        # Mark older unclaimed work for same (kind, item_id) as superseded.
+        if supersede_key:
+            superseded = self._flow_store.supersede_prior_work(supersede_key, work_id)
+            if superseded:
+                logger.info("work: enqueued %s %s (superseded %d prior)", kind, item_id, superseded)
+            else:
+                logger.info("work: enqueued %s %s", kind, item_id)
+        else:
+            logger.info("work: enqueued %s", kind)
+
         return {
             "work_id": work_id,
             "kind": kind,
             "executor_class": executor_class or "unspecified",
             "suggested_executor_id": executor_id,
-            "input": {"id": input_payload.get("item_id")},
+            "input": {"id": item_id},
             "output_contract": output_contract,
-            "quality_gates": quality_gates,
-            "escalate_if": escalate_if,
         }
 
     def _enqueue_work_step(
@@ -878,26 +889,12 @@ class FlowEngine:
             executor = {}
         executor_class = str(step.get("executor_class") or executor.get("class") or "unspecified")
         executor_id = str(step.get("executor_id") or executor.get("id") or "")
-        quality_gates = step.get("quality_gates") or {}
-        if not isinstance(quality_gates, dict):
-            return None, {"code": "invalid_input", "message": "work step quality_gates must be an object"}
-        if not quality_gates:
-            quality_gates = {
-                "min_confidence": 0.0,
-                "citation_required": False,
-            }
-        escalate_if = step.get("escalate_if") or []
-        if not isinstance(escalate_if, list):
-            return None, {"code": "invalid_input", "message": "work step escalate_if must be a list"}
-        normalized_escalate_if = [str(reason) for reason in escalate_if if str(reason).strip()]
 
         input_payload: dict[str, Any] = {
             "runner": runner,
             "apply": step.get("apply") or {},
             "_executor_class": executor_class,
             "_executor_id": executor_id,
-            "_quality_gates": quality_gates,
-            "_escalate_if": normalized_escalate_if,
         }
 
         if input_mode == "note_content":
@@ -937,8 +934,6 @@ class FlowEngine:
             executor_class=executor_class,
             input_payload=input_payload,
             output_contract=output_contract,
-            quality_gates=quality_gates,
-            escalate_if=normalized_escalate_if,
             executor_id=executor_id,
         )
         return request_work, None
@@ -982,8 +977,6 @@ class FlowEngine:
             "suggested_executor_id": str(work_input.get("_executor_id") or ""),
             "input": {"id": work_input.get("item_id")},
             "output_contract": json.loads(row.output_contract_json),
-            "quality_gates": work_input.get("_quality_gates") or {},
-            "escalate_if": work_input.get("_escalate_if") or [],
         }
 
     def _apply_work_result(
@@ -1478,86 +1471,10 @@ class FlowEngine:
     def _empty_discriminators() -> dict[str, Any]:
         return FlowDecisionPolicy.empty_discriminators()
 
-    @staticmethod
-    def _as_float(value: Any, default: float) -> float:
-        return FlowDecisionPolicy.as_float(value, default)
-
-    @staticmethod
-    def _clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
-        return FlowDecisionPolicy.clamp(value, low, high)
-
-    def _decision_policy_from_program(self, program: dict[str, Any]) -> dict[str, Any]:
-        return self._decision_policy.decision_policy_from_program(program)
-
-    @staticmethod
-    def _empty_lineage_signal() -> dict[str, Any]:
-        return FlowDecisionPolicy.empty_lineage_signal()
-
-    def _lineage_signal(
-        self, evidence: list[dict[str, Any]], *, field: str, topk: int,
-    ) -> dict[str, Any]:
-        return self._decision_policy.lineage_signal(evidence, field=field, topk=topk)
-
-    def _lineage_signals(self, evidence: list[dict[str, Any]], *, topk: int) -> dict[str, Any]:
-        return self._decision_policy.lineage_signals(evidence, topk=topk)
-
     def _decision_override_from_payload(
         self, payload: dict[str, Any],
     ) -> tuple[Optional[dict[str, Any]], Optional[dict[str, str]]]:
         return FlowDecisionPolicy.decision_override_from_payload(payload)
-
-    def _candidate_subject_keys(
-        self, frame_request: dict[str, Any], evidence: list[dict[str, Any]],
-    ) -> list[str]:
-        return self._decision_policy.candidate_subject_keys(frame_request, evidence)
-
-    def _tag_key_kind(self, key: str, *, cache: Optional[dict[str, str]] = None) -> str:
-        return self._decision_policy.tag_key_kind(key, cache=cache)
-
-    @staticmethod
-    def _best_fact_from_counts(
-        counts: dict[tuple[str, str], int], *, total: int,
-    ) -> Optional[str]:
-        return FlowDecisionPolicy.best_fact_from_counts(counts, total=total)
-
-    def _tag_profile(self, evidence: list[dict[str, Any]], *, topk: int) -> dict[str, Any]:
-        return self._decision_policy.tag_profile(evidence, topk=topk)
-
-    def _query_stats(
-        self,
-        *,
-        frame_request: dict[str, Any],
-        evidence: list[dict[str, Any]],
-        previous_evidence_ids: list[str],
-        topk: int,
-    ) -> dict[str, float]:
-        return self._decision_policy.query_stats(
-            frame_request=frame_request,
-            evidence=evidence,
-            previous_evidence_ids=previous_evidence_ids,
-            topk=topk,
-        )
-
-    def _choose_strategy(
-        self,
-        *,
-        query_stats: dict[str, float],
-        lineage: dict[str, Any],
-        policy: dict[str, Any],
-        staleness: dict[str, Any],
-        decision_override: Optional[dict[str, Any]],
-    ) -> tuple[str, list[str]]:
-        return self._decision_policy.choose_strategy(
-            query_stats=query_stats,
-            lineage=lineage,
-            policy=policy,
-            staleness=staleness,
-            decision_override=decision_override,
-        )
-
-    @staticmethod
-    def _pivot_ids(evidence: list[dict[str, Any]], *, strategy: str, max_pivots: int) -> list[str]:
-        return FlowDecisionPolicy.pivot_ids(evidence, strategy=strategy, max_pivots=max_pivots)
 
     def _decision_capsule(
         self,
@@ -1576,9 +1493,6 @@ class FlowEngine:
             decision_override=decision_override,
         )
 
-    def _dominant_tag_fact(self, evidence: list[dict[str, Any]]) -> Optional[str]:
-        return self._decision_policy.dominant_tag_fact(evidence)
-
     def _query_auto_next_frame_request(
         self,
         *,
@@ -1591,11 +1505,6 @@ class FlowEngine:
             evidence=evidence,
             decision_snapshot=decision_snapshot,
         )
-
-    def _top_tag_facts(
-        self, evidence: list[dict[str, Any]], *, max_facts: int = 2,
-    ) -> list[str]:
-        return self._decision_policy.top_tag_facts(evidence, max_facts=max_facts)
 
     @staticmethod
     def _query_auto_branch_utility(
@@ -2399,6 +2308,9 @@ class FlowEngine:
                 lease_seconds=max(1, int(lease_seconds)),
             )
 
+        if claimed:
+            logger.info("work: claimed %d items (%s)", len(claimed), worker)
+
         result: dict[str, Any] = {
             "claimed": len(claimed),
             "processed": 0,
@@ -2407,6 +2319,20 @@ class FlowEngine:
             "errors": [],
         }
         for work in claimed:
+            # Bail early if a newer task for the same (kind, item_id) was
+            # enqueued after this one was claimed — avoids wasted work on
+            # rapidly-updated items like the "now" vstring.
+            if work.supersede_key and work.created_at:
+                with self._lock:
+                    if self._flow_store.has_superseding_work(work.work_id, work.supersede_key, work.created_at):
+                        self._flow_store.update_work_result(
+                            work_id=work.work_id,
+                            status="superseded",
+                            result_json='{"status":"superseded"}',
+                        )
+                        logger.info("Superseded claimed work %s (%s)", work.work_id, work.supersede_key)
+                        continue
+
             payload = json.loads(work.input_json)
             attempt = int(work.attempt)
             try:
@@ -2422,6 +2348,7 @@ class FlowEngine:
                     refreshed = self._get_work(work.flow_id, work.work_id)
                 if refreshed is not None and refreshed.status in {"completed", "failed"}:
                     result["processed"] += 1
+                    logger.info("work: completed %s %s", work.kind, work.work_id)
                     continue
                 errors = output.get("errors") or []
                 first = errors[0] if isinstance(errors, list) and errors and isinstance(errors[0], dict) else {}

@@ -35,14 +35,14 @@ class TestWritePathFlow:
         after-write state doc and enqueues background tasks."""
         kp.put("Short note", id="s1")
         # Short content skips summarize but still fires analyze+tag
-        count = kp.continuation_pending_count()
+        count = kp.pending_work_count()
         assert count >= 2, f"Expected >=2 pending tasks (analyze+tag), got {count}"
 
     def test_put_long_content_enqueues_more_tasks(self, kp):
         """Long content enqueues summarize (direct) + analyze + tag (state doc)."""
-        baseline = kp.continuation_pending_count()
+        baseline = kp.pending_work_count()
         kp.put("x" * 500, id="long1")
-        count = kp.continuation_pending_count() - baseline
+        count = kp.pending_work_count() - baseline
         # analyze + tag from state doc, plus summarize from direct path
         assert count >= 2, f"Expected >=2 new tasks, got {count}"
 
@@ -50,7 +50,7 @@ class TestWritePathFlow:
         """System notes (dot-prefix) skip state-doc evaluation entirely."""
         kp.put("System data", id=".sys/test")
         # System notes should not enqueue analyze or tag
-        count = kp.continuation_pending_count()
+        count = kp.pending_work_count()
         assert count == 0, f"System note should not create tasks, got {count}"
 
 

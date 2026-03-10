@@ -538,11 +538,3 @@ DEFAULT_FLOW_EXECUTOR_REGISTRY.register_runner("provider.tag", _run_provider_tag
 DEFAULT_FLOW_EXECUTOR_REGISTRY.register_runner("provider.generate_json", _run_provider_generate_json)
 DEFAULT_FLOW_EXECUTOR_REGISTRY.register_runner("echo", _run_echo)
 DEFAULT_FLOW_EXECUTOR_REGISTRY.register_runner("local.task", _run_local_task)
-
-
-def register_flow_runner(runner_type: str, handler: RunnerHandler) -> None:
-    DEFAULT_FLOW_EXECUTOR_REGISTRY.register_runner(runner_type, handler)
-
-
-def register_flow_provider_kind(kind: str, resolver: ProviderResolver) -> None:
-    DEFAULT_FLOW_EXECUTOR_REGISTRY.register_provider_kind(kind, resolver)

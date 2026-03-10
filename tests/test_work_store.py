@@ -232,3 +232,99 @@ def test_sqlite_flow_store_migrates_continue_work_claim_columns(tmp_path):
             assert required in columns
     finally:
         store.close()
+
+
+def test_supersede_marks_older_unclaimed_work(tmp_path):
+    store = SQLiteFlowStore(tmp_path / "continuation.db")
+    try:
+        store.begin_immediate()
+        flow = store.create_flow(json.dumps({"step": 0}))
+        store.commit()
+
+        key = "analyze:doc1"
+        # Insert two work items with the same supersede key
+        w1 = store.insert_work(
+            flow_id=flow.flow_id, kind="analyze",
+            input_json='{"item_id":"doc1"}', output_contract_json="{}",
+            supersede_key=key,
+        )
+        w2 = store.insert_work(
+            flow_id=flow.flow_id, kind="analyze",
+            input_json='{"item_id":"doc1"}', output_contract_json="{}",
+            supersede_key=key,
+        )
+
+        # Supersede prior work — should mark w1
+        count = store.supersede_prior_work(key, w2)
+        assert count == 1
+
+        row1 = store.get_work(flow.flow_id, w1)
+        row2 = store.get_work(flow.flow_id, w2)
+        assert row1.status == "superseded"
+        assert row2.status == "requested"
+
+        # Only w2 should count as pending
+        assert store.count_requested_work() == 1
+    finally:
+        store.close()
+
+
+def test_has_superseding_work_detects_newer(tmp_path):
+    store = SQLiteFlowStore(tmp_path / "continuation.db")
+    try:
+        store.begin_immediate()
+        flow = store.create_flow(json.dumps({"step": 0}))
+        store.commit()
+
+        key = "tag:doc1"
+        w1 = store.insert_work(
+            flow_id=flow.flow_id, kind="tag",
+            input_json='{"item_id":"doc1"}', output_contract_json="{}",
+            supersede_key=key,
+        )
+        w2 = store.insert_work(
+            flow_id=flow.flow_id, kind="tag",
+            input_json='{"item_id":"doc1"}', output_contract_json="{}",
+            supersede_key=key,
+        )
+
+        row1 = store.get_work(flow.flow_id, w1)
+        row2 = store.get_work(flow.flow_id, w2)
+        # w1 has a newer sibling (w2)
+        assert store.has_superseding_work(w1, key, row1.created_at) is True
+        # w2 has no newer sibling
+        assert store.has_superseding_work(w2, key, row2.created_at) is False
+    finally:
+        store.close()
+
+
+def test_supersede_does_not_affect_claimed_work(tmp_path):
+    store = SQLiteFlowStore(tmp_path / "continuation.db")
+    try:
+        store.begin_immediate()
+        flow = store.create_flow(json.dumps({"step": 0}))
+        store.commit()
+
+        key = "analyze:doc1"
+        w1 = store.insert_work(
+            flow_id=flow.flow_id, kind="analyze",
+            input_json='{"item_id":"doc1"}', output_contract_json="{}",
+            supersede_key=key,
+        )
+        # Claim w1
+        store.claim_requested_work(worker_id="test", limit=1, lease_seconds=60)
+
+        # Insert w2 and try to supersede
+        w2 = store.insert_work(
+            flow_id=flow.flow_id, kind="analyze",
+            input_json='{"item_id":"doc1"}', output_contract_json="{}",
+            supersede_key=key,
+        )
+        count = store.supersede_prior_work(key, w2)
+        # w1 is claimed, should not be superseded
+        assert count == 0
+
+        row1 = store.get_work(flow.flow_id, w1)
+        assert row1.status == "requested"  # still requested (claimed)
+    finally:
+        store.close()
