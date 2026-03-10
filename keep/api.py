@@ -11,12 +11,13 @@ import json
 import logging
 import re
 import time
+import uuid
+from dataclasses import replace
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Optional
 
 logger = logging.getLogger(__name__)
-_ESCALATION_PLACEHOLDER_RE = re.compile(r"\{\{\s*([a-zA-Z0-9_.-]+)\s*\}\}")
 
 
 def _parse_date_param(value: str) -> str:
@@ -223,8 +224,8 @@ from .types import (
     parse_utc_timestamp, validate_tag_key, validate_id, normalize_id, is_part_id,
     MAX_TAG_VALUE_LENGTH,
 )
-from .continuation import LocalContinuationRuntime
-from .continuation_env import LocalContinuationEnvironment
+from .flow import LocalFlowRuntime
+from .flow_env import LocalFlowEnvironment
 
 
 class FindResults(list):
@@ -245,7 +246,6 @@ TRUNCATE_LENGTH = 500
 
 # Maximum attempts before giving up on a pending summary
 MAX_SUMMARY_ATTEMPTS = 5
-
 
 # Collection name validation: lowercase ASCII and underscores only
 
@@ -644,6 +644,7 @@ class Keeper:
         self._closing = threading.Event()  # signals reconcile to abort
         self._provider_init_lock = threading.Lock()
         self._last_spawn_time: float = 0.0
+        self._tagdoc_cache: dict[str, Optional[dict[str, str]]] = {}
 
         # Check store consistency and reconcile in background if needed
         # (safe for all backends — uses abstract store interface)
@@ -736,7 +737,7 @@ class Keeper:
             except Exception as e:
                 logger.warning("Failed to initialize TaskClient: %s", e)
 
-        # --- Planner stats (precomputed priors for continuation) ---
+        # --- Planner stats (precomputed priors for flow discriminators) ---
         self._planner_stats = None
         if self._is_local:
             from .planner_stats import PlannerStatsStore
@@ -761,9 +762,14 @@ class Keeper:
             self._config.system_docs_hash != _bundled_docs_hash()
         )
 
-        # Local continuation runtime (API-first path), initialized lazily on first use.
-        self._continuation = None
-        self._continuation_lock = threading.Lock()
+        # Local flow runtime (API-first path), initialized lazily on first use.
+        self._flow_runtime = None
+        self._flow_runtime_lock = threading.Lock()
+        self._deferred_flow_tasks: list[dict[str, Any]] = []
+        self._deferred_flow_lock = threading.Lock()
+        self._flushing_deferred_flow = False
+        self._write_context_by_id: dict[str, dict[str, Any]] = {}
+        self._write_context_lock = threading.Lock()
 
     def _apply_file_size_limit(self, provider: DocumentProvider) -> None:
         """Apply max_file_size config to file-based providers."""
@@ -959,6 +965,7 @@ class Keeper:
         """Migrate system documents to stable IDs and current version."""
         from .system_docs import migrate_system_documents
         result = migrate_system_documents(self)
+        self._tagdoc_cache.clear()  # tagdocs may have changed
         self._scan_tagdoc_backfills()
         return result
 
@@ -1266,109 +1273,6 @@ class Keeper:
                     break
 
         return best_prompt
-
-    @staticmethod
-    def _resolve_template_path_value(context: dict[str, Any], path: str) -> Any:
-        current: Any = context
-        for part in str(path).split("."):
-            if not isinstance(current, dict):
-                return ""
-            if part not in current:
-                return ""
-            current = current.get(part)
-        return current
-
-    def _render_escalation_template_value(self, value: Any, context: dict[str, Any]) -> Any:
-        if isinstance(value, str):
-            def _sub(match: re.Match[str]) -> str:
-                key = match.group(1)
-                resolved = self._resolve_template_path_value(context, key)
-                if resolved is None:
-                    return ""
-                if isinstance(resolved, (dict, list)):
-                    return json.dumps(resolved, ensure_ascii=False)
-                return str(resolved)
-
-            return _ESCALATION_PLACEHOLDER_RE.sub(_sub, value)
-        if isinstance(value, list):
-            return [self._render_escalation_template_value(v, context) for v in value]
-        if isinstance(value, dict):
-            return {
-                str(k): self._render_escalation_template_value(v, context)
-                for k, v in value.items()
-            }
-        return value
-
-    def _resolve_escalation_template(self, template_ref: str) -> dict[str, Any]:
-        template_id = (
-            template_ref
-            if template_ref.startswith(".template/")
-            else f".template/escalation/{template_ref}"
-        )
-        doc = self.get(template_id)
-        if doc is None:
-            raise ValueError(f"Escalation template not found: {template_id}")
-        raw = str(doc.summary or "").strip()
-        if not raw:
-            raise ValueError(f"Escalation template is empty: {template_id}")
-        try:
-            parsed = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"Escalation template is not valid JSON: {template_id}") from exc
-        if not isinstance(parsed, dict):
-            raise ValueError(f"Escalation template must be a JSON object: {template_id}")
-        return parsed
-
-    def emit_escalation_note(
-        self,
-        template_ref: str,
-        *,
-        context: dict[str, Any],
-    ) -> Optional[str]:
-        """Render a store-backed escalation template and upsert the resulting note."""
-        try:
-            template = self._resolve_escalation_template(template_ref)
-            rendered = self._render_escalation_template_value(template, context)
-            if not isinstance(rendered, dict):
-                raise ValueError("Rendered escalation template must be an object")
-            note_id = str(rendered.get("id") or "").strip()
-            content = str(rendered.get("content") or "").strip()
-            if not note_id:
-                raise ValueError("Escalation template missing rendered id")
-            if not content:
-                raise ValueError("Escalation template missing rendered content")
-
-            tags_raw = rendered.get("tags")
-            tags: dict[str, Any] = {}
-            if isinstance(tags_raw, dict):
-                for raw_key, raw_value in tags_raw.items():
-                    key = str(raw_key).strip()
-                    if not key:
-                        continue
-                    if isinstance(raw_value, str):
-                        val = raw_value.strip()
-                        if not val:
-                            continue
-                        tags[key] = val
-                    elif isinstance(raw_value, list):
-                        vals = [str(v).strip() for v in raw_value if str(v).strip()]
-                        if vals:
-                            tags[key] = vals
-                    elif raw_value is not None:
-                        tags[key] = str(raw_value)
-
-            summary_raw = rendered.get("summary")
-            summary = str(summary_raw).strip() if summary_raw is not None else None
-            self.put(
-                content=content,
-                id=note_id,
-                tags=tags or None,
-                summary=summary if summary else None,
-            )
-            return note_id
-        except Exception as exc:
-            logger.warning("Could not emit escalation note using %s: %s", template_ref, exc)
-            return None
 
     def _gather_context(
         self,
@@ -1954,14 +1858,16 @@ class Keeper:
         if not all_keys:
             return  # no user tags → no edges possible
 
-        # Collect tagdoc lookups (cache within this call)
-        tagdoc_cache: dict[str, Optional[dict[str, str]]] = {}
-
         def _get_tagdoc_tags(key: str) -> Optional[dict[str, str]]:
-            if key not in tagdoc_cache:
+            if key not in self._tagdoc_cache:
                 parent = self._document_store.get(doc_coll, f".tag/{key}")
-                tagdoc_cache[key] = parent.tags if parent else None
-            return tagdoc_cache[key]
+                self._tagdoc_cache[key] = parent.tags if parent else None
+            return self._tagdoc_cache[key]
+
+        # Collect batch operations across all edge-tag keys
+        edges_to_delete: list[tuple[str, str, str]] = []  # (source_id, predicate, target_id)
+        edges_to_add: list[tuple[str, str, str, str, str]] = []  # (source_id, predicate, target_id, inverse, created)
+        backfill_checks: list[tuple[str, str]] = []  # (predicate, inverse)
 
         for key in all_keys:
             td_tags = _get_tagdoc_tags(key)
@@ -1977,19 +1883,16 @@ class Keeper:
             removed_values = previous_values - current_values
             added_values = current_values - previous_values
 
-            # Tag values removed → delete old edges for this predicate/target.
+            # Tag values removed → queue edge deletions.
             for removed in removed_values:
                 target_id = removed
                 try:
                     target_id = normalize_id(removed)
                 except ValueError:
-                    # Best-effort cleanup for legacy/non-canonical rows.
                     pass
-                self._document_store.delete_edge(doc_coll, id, key, target_id)
+                edges_to_delete.append((id, key, target_id))
 
-            # Tag present → upsert edge + auto-vivify target.
-            # Skip sysdoc targets (names starting with '.'): this prevents
-            # non-system writes from indirectly creating/updating system docs.
+            # Tag present → queue edge upsert + auto-vivify target.
             for current_value in sorted(added_values):
                 if not current_value:
                     continue
@@ -2001,26 +1904,27 @@ class Keeper:
                     ) from e
                 if target_id.startswith("."):
                     continue
-                # Auto-vivify: create target as empty doc if it doesn't exist
-                # Only writes to document store — embedding is deferred to
-                # avoid loading the model on the write path.
-                if not self._document_store.exists(doc_coll, target_id):
-                    reference_created = (
-                        merged_tags.get("_created")
-                        or merged_tags.get("_updated")
-                        or utc_now()
-                    )
-                    now = utc_now()
-                    self._document_store.upsert(
-                        doc_coll, target_id,
-                        summary="",
-                        tags={
-                            "_created": reference_created,
-                            "_updated": now,
-                            "_source": "auto-vivify",
-                        },
-                        created_at=reference_created,
-                    )
+                # Auto-vivify: create target as empty doc if it doesn't exist.
+                # Uses atomic INSERT OR IGNORE to avoid TOCTOU race where a
+                # concurrent writer creates the real document between check
+                # and write (upsert would overwrite it with the empty stub).
+                reference_created = (
+                    merged_tags.get("_created")
+                    or merged_tags.get("_updated")
+                    or utc_now()
+                )
+                now = utc_now()
+                inserted = self._document_store.insert_if_absent(
+                    doc_coll, target_id,
+                    summary="",
+                    tags={
+                        "_created": reference_created,
+                        "_updated": now,
+                        "_source": "auto-vivify",
+                    },
+                    created_at=reference_created,
+                )
+                if inserted:
                     self._pending_queue.enqueue(
                         target_id, doc_coll, target_id,
                         task_type="reindex",
@@ -2034,17 +1938,21 @@ class Keeper:
                     )
 
                 created = merged_tags.get("_created") or merged_tags.get("_updated") or utc_now()
-                self._document_store.upsert_edge(
-                    collection=doc_coll,
-                    source_id=id,
-                    predicate=key,
-                    target_id=target_id,
-                    inverse=inverse,
-                    created=created,
-                )
+                edges_to_add.append((id, key, target_id, inverse, created))
+                backfill_checks.append((key, inverse))
 
-                # Trigger backfill check for this predicate
-                self._check_edge_backfill(key, inverse, doc_coll)
+        # Execute batched edge mutations
+        if edges_to_delete:
+            self._document_store.delete_edges_batch(doc_coll, edges_to_delete)
+        if edges_to_add:
+            self._document_store.upsert_edges_batch(doc_coll, edges_to_add)
+
+        # Trigger backfill checks (deduplicated by predicate)
+        seen_predicates: set[str] = set()
+        for predicate, inverse in backfill_checks:
+            if predicate not in seen_predicates:
+                seen_predicates.add(predicate)
+                self._check_edge_backfill(predicate, inverse, doc_coll)
 
     def _check_edge_backfill(
         self, predicate: str, inverse: str, doc_coll: str,
@@ -2160,6 +2068,261 @@ class Keeper:
     # Write Operations
     # -------------------------------------------------------------------------
 
+    def _task_idempotency_key(
+        self,
+        *,
+        task_type: str,
+        id: str,
+        content: str,
+        metadata: Optional[dict[str, Any]] = None,
+        tags: Optional[dict[str, Any]] = None,
+    ) -> str:
+        metadata_material = json.dumps(
+            metadata or {},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        tag_material = json.dumps(
+            casefold_tags(filter_non_system_tags(tags or {})),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        digest = hashlib.sha256(f"{metadata_material}|{tag_material}".encode("utf-8")).hexdigest()[:12]
+        return f"bg:{task_type}:{id}:{_content_hash(content)}:{digest}"
+
+    def _schedule_task_via_flow(
+        self,
+        *,
+        task_type: str,
+        id: str,
+        doc_coll: str,
+        content: str,
+        metadata: Optional[dict[str, Any]] = None,
+        tags: Optional[dict[str, Any]] = None,
+    ) -> None:
+        task = str(task_type or "").strip()
+        if not task:
+            raise ValueError("task_type is required")
+        idem = self._task_idempotency_key(
+            task_type=task,
+            id=id,
+            content=content,
+            metadata=metadata,
+            tags=tags,
+        )
+
+        if task == "summarize":
+            step = {
+                "kind": "summarize",
+                "runner": {"type": "provider.summarize"},
+                "input_mode": "note_content",
+                "output_contract": {"must_return": ["summary"]},
+                "apply": {
+                    "ops": [
+                        {"op": "set_summary", "summary": "$output.summary"},
+                    ]
+                },
+            }
+            params = {"id": id, "content": content}
+        else:
+            step = {
+                "kind": task,
+                "runner": {"type": "local.task", "task_type": task},
+                "input_mode": "none",
+                "input": {
+                    "task_type": task,
+                    "item_id": id,
+                    "collection": doc_coll,
+                    "content": content,
+                    "metadata": dict(metadata or {}),
+                },
+                "output_contract": {"must_return": ["status"]},
+            }
+            params = {"id": id}
+
+        payload = {
+            "request_id": f"bg-{task}-{uuid.uuid4().hex[:8]}",
+            "idempotency_key": idem,
+            "goal": f"task.{task}",
+            "params": params,
+            "steps": [step],
+            "work_results": [],
+        }
+        runtime = self._get_flow_runtime()
+        if runtime._flow_store.in_transaction():
+            raise RuntimeError("flow runtime transaction is active")
+        out = runtime.continue_flow(payload)
+        if str(out.get("status") or "") == "failed":
+            errors = out.get("errors") or []
+            first = errors[0] if isinstance(errors, list) and errors and isinstance(errors[0], dict) else {}
+            raise RuntimeError(
+                f"flow {task} schedule failed: {first.get('code') or 'unknown'}: {first.get('message') or 'no message'}"
+            )
+
+    def _fallback_enqueue_pending_task(self, pending: dict[str, Any]) -> None:
+        task = str(pending.get("task_type") or "summarize")
+        item_id = str(pending.get("id") or "")
+        doc_coll = str(pending.get("doc_coll") or self._resolve_doc_collection())
+        content = str(pending.get("content") or "")
+        metadata = pending.get("metadata")
+        if task == "summarize":
+            self._pending_queue.enqueue(item_id, doc_coll, content)
+        else:
+            self._pending_queue.enqueue(
+                item_id,
+                doc_coll,
+                content,
+                task_type=task,
+                metadata=dict(metadata or {}),
+            )
+
+    def _flush_deferred_flow_tasks(self) -> None:
+        if self._flushing_deferred_flow:
+            return
+        self._flushing_deferred_flow = True
+        try:
+            while True:
+                with self._deferred_flow_lock:
+                    if not self._deferred_flow_tasks:
+                        break
+                    pending = self._deferred_flow_tasks.pop(0)
+                try:
+                    self._schedule_task_via_flow(
+                        task_type=str(pending.get("task_type") or ""),
+                        id=str(pending.get("id") or ""),
+                        doc_coll=str(pending.get("doc_coll") or self._resolve_doc_collection()),
+                        content=str(pending.get("content") or ""),
+                        metadata=pending.get("metadata") if isinstance(pending.get("metadata"), dict) else None,
+                        tags=pending.get("tags") if isinstance(pending.get("tags"), dict) else None,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Deferred flow task scheduling failed for %s/%s; falling back to pending queue: %s",
+                        pending.get("task_type"), pending.get("id"), exc,
+                    )
+                    self._fallback_enqueue_pending_task(pending)
+        finally:
+            self._flushing_deferred_flow = False
+
+    def _enqueue_task_background(
+        self,
+        *,
+        task_type: str,
+        id: str,
+        doc_coll: str,
+        content: str,
+        metadata: Optional[dict[str, Any]] = None,
+        tags: Optional[dict[str, Any]] = None,
+    ) -> None:
+        pending = {
+            "task_type": task_type,
+            "id": id,
+            "doc_coll": doc_coll,
+            "content": content,
+            "metadata": dict(metadata or {}),
+            "tags": dict(tags or {}),
+        }
+        if not self._is_local:
+            self._fallback_enqueue_pending_task(pending)
+            return
+        runtime = self._get_flow_runtime()
+        if runtime._flow_store.in_transaction():
+            with self._deferred_flow_lock:
+                self._deferred_flow_tasks.append(pending)
+            return
+        try:
+            self._schedule_task_via_flow(
+                task_type=task_type,
+                id=id,
+                doc_coll=doc_coll,
+                content=content,
+                metadata=metadata,
+                tags=tags,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Continuation %s scheduling failed for %s; falling back to pending queue: %s",
+                task_type, id, exc,
+            )
+            self._fallback_enqueue_pending_task(pending)
+
+    def _enqueue_summarize_background(
+        self,
+        *,
+        id: str,
+        doc_coll: str,
+        content: str,
+        tags: Optional[dict[str, Any]] = None,
+    ) -> None:
+        self._enqueue_task_background(
+            task_type="summarize",
+            id=id,
+            doc_coll=doc_coll,
+            content=content,
+            tags=tags,
+        )
+
+    def _enqueue_ocr_background(
+        self,
+        *,
+        id: str,
+        doc_coll: str,
+        uri: str,
+        ocr_pages: list[int],
+        content_type: Optional[str],
+    ) -> None:
+        self._enqueue_task_background(
+            task_type="ocr",
+            id=id,
+            doc_coll=doc_coll,
+            content="",
+            metadata={
+                "uri": uri,
+                "ocr_pages": list(ocr_pages),
+                "content_type": content_type,
+            },
+        )
+
+    def _enqueue_analyze_background(
+        self,
+        *,
+        id: str,
+        doc_coll: str,
+        tags: Optional[list[str]] = None,
+        force: bool = False,
+    ) -> None:
+        metadata: dict[str, Any] = {}
+        if tags:
+            metadata["tags"] = list(tags)
+        if force:
+            metadata["force"] = True
+        self._enqueue_task_background(
+            task_type="analyze",
+            id=id,
+            doc_coll=doc_coll,
+            content="",
+            metadata=metadata,
+        )
+
+    def _store_write_context(self, item_id: str, context: dict[str, Any]) -> None:
+        note_id = normalize_id(item_id)
+        with self._write_context_lock:
+            self._write_context_by_id[note_id] = dict(context)
+            # Keep memory bounded for bursty writes.
+            if len(self._write_context_by_id) > 256:
+                oldest = next(iter(self._write_context_by_id))
+                self._write_context_by_id.pop(oldest, None)
+
+    def _consume_write_context(self, item_id: str) -> Optional[dict[str, Any]]:
+        note_id = normalize_id(item_id)
+        with self._write_context_lock:
+            ctx = self._write_context_by_id.pop(note_id, None)
+        if not isinstance(ctx, dict):
+            return None
+        return dict(ctx)
+
     def _upsert(
         self,
         id: str,
@@ -2170,6 +2333,7 @@ class Keeper:
         system_tags: dict[str, str],
         created_at: Optional[str] = None,
         force: bool = False,
+        queue_summarize: bool = True,
     ) -> Item:
         """Core upsert logic used by put()."""
         # Wait for background reconciliation to finish before writing.
@@ -2266,13 +2430,24 @@ class Keeper:
         elif content_unchanged and tags_changed:
             logger.debug("Tags changed, queueing re-summarization for %s", id)
             final_summary = existing_doc.summary
-            if len(content) > max_len:
-                self._pending_queue.enqueue(id, doc_coll, content)
+            if queue_summarize and len(content) > max_len:
+                self._enqueue_summarize_background(
+                    id=id,
+                    doc_coll=doc_coll,
+                    content=content,
+                    tags=merged_tags,
+                )
         elif len(content) <= max_len:
             final_summary = content
         else:
             final_summary = content[:max_len] + "..."
-            self._pending_queue.enqueue(id, doc_coll, content)
+            if queue_summarize:
+                self._enqueue_summarize_background(
+                    id=id,
+                    doc_coll=doc_coll,
+                    content=content,
+                    tags=merged_tags,
+                )
 
         # Cloud mode: defer embedding to background worker for faster response.
         # The doc store write happens immediately; the note is findable by
@@ -2335,6 +2510,9 @@ class Keeper:
         if id.startswith(".tag/"):
             old_tagdoc_tags = existing_doc.tags if existing_doc else {}
             self._process_tagdoc_inverse_change(id, merged_tags, old_tagdoc_tags, doc_coll)
+            # Invalidate cached tagdoc for this key
+            tag_key = id.removeprefix(".tag/").split("/")[0]
+            self._tagdoc_cache.pop(tag_key, None)
 
         # Save old embedding before ChromaDB upsert overwrites it (for version archival)
         old_embedding = None
@@ -2380,12 +2558,17 @@ class Keeper:
         self._process_edge_tags(id, merged_tags, existing_tags, doc_coll)
 
         # Spawn background processor if needed (local only — uses filesystem locks)
-        if summary is None and len(content) > max_len and (not content_unchanged or tags_changed or force):
+        if (
+            queue_summarize
+            and summary is None
+            and len(content) > max_len
+            and (not content_unchanged or tags_changed or force)
+        ):
             self._spawn_processor()
 
         return _record_to_item(result, changed=not content_unchanged)
 
-    def put(
+    def _put_direct(
         self,
         content: Optional[str] = None,
         *,
@@ -2395,6 +2578,8 @@ class Keeper:
         tags: Optional[TagMap] = None,
         created_at: Optional[str] = None,
         force: bool = False,
+        queue_background_tasks: bool = True,
+        capture_write_context: bool = False,
     ) -> Item:
         """Store content in the memory.
 
@@ -2416,27 +2601,6 @@ class Keeper:
             tags: Tag map to attach to the item.
             created_at: Override creation timestamp (ISO 8601).
             force: Re-process even if content is unchanged.
-        - Supports file://, http://, https:// URIs.
-        - Non-text content (images, audio, PDF) gets media description.
-
-        **Tag and summary behavior:**
-        - Tags are merged with existing tags (new override on collision).
-        - System tags (_prefixed) are managed automatically.
-        - If summary is provided, it's used directly (skips auto-summarization).
-
-        Args:
-            content: Inline text to store
-            uri: URI of document to fetch and index
-            id: Custom ID (auto-generated for inline content if None)
-            summary: User-provided summary (skips auto-summarization)
-            tags: User-provided tags to merge with existing tags
-            created_at: Override creation timestamp (ISO 8601).
-                        For importing historical data via the Python API.
-                        When updating an existing item, sets the head's
-                        created_at so version archives carry accurate dates.
-
-        Returns:
-            The stored Item with merged tags and summary
         """
         if content is not None and uri is not None:
             raise ValueError("Provide content or uri, not both")
@@ -2578,20 +2742,19 @@ class Keeper:
                 system_tags=system_tags,
                 created_at=created_at,
                 force=force,
+                queue_summarize=queue_background_tasks,
             )
 
             # Enqueue background OCR for scanned PDFs and images
             ocr_pages = (doc.metadata or {}).get("_ocr_pages")
-            if ocr_pages and self._config.content_extractor:
+            if queue_background_tasks and ocr_pages and self._config.content_extractor:
                 doc_coll = self._resolve_doc_collection()
-                self._pending_queue.enqueue(
-                    doc_id, doc_coll, "",
-                    task_type="ocr",
-                    metadata={
-                        "uri": uri,
-                        "ocr_pages": ocr_pages,
-                        "content_type": doc.content_type,
-                    },
+                self._enqueue_ocr_background(
+                    id=doc_id,
+                    doc_coll=doc_coll,
+                    uri=uri,
+                    ocr_pages=ocr_pages,
+                    content_type=doc.content_type,
                 )
                 self._spawn_processor()
                 logger.info(
@@ -2599,6 +2762,16 @@ class Keeper:
                     uri, len(ocr_pages),
                 )
 
+            if capture_write_context:
+                self._store_write_context(
+                    result.id,
+                    {
+                        "content": doc.content,
+                        "uri": uri,
+                        "ocr_pages": list(ocr_pages or []),
+                        "content_type": doc.content_type or "",
+                    },
+                )
             return result
         else:
             # Inline mode: store content directly
@@ -2608,13 +2781,136 @@ class Keeper:
             else:
                 id = normalize_id(id)
 
-            return self._upsert(
+            result = self._upsert(
                 id, content,
                 tags=tags, summary=summary,
                 system_tags={"_source": "inline"},
                 created_at=created_at,
                 force=force,
+                queue_summarize=queue_background_tasks,
             )
+            if capture_write_context:
+                self._store_write_context(
+                    result.id,
+                    {
+                        "content": str(content or ""),
+                        "uri": "",
+                        "ocr_pages": [],
+                        "content_type": "",
+                    },
+                )
+            return result
+
+    def _put_via_flow(
+        self,
+        content: Optional[str] = None,
+        *,
+        uri: Optional[str] = None,
+        id: Optional[str] = None,
+        summary: Optional[str] = None,
+        tags: Optional[TagMap] = None,
+        created_at: Optional[str] = None,
+        force: bool = False,
+    ) -> Item:
+        payload = {
+            "goal": "write",
+            "params": {
+                "content": content,
+                "uri": uri,
+                "id": id,
+                "summary": summary,
+                "tags": tags,
+                "created_at": created_at,
+                "force": force,
+                "max_summary_length": int(self._config.max_summary_length),
+            },
+            "work_results": [],
+        }
+        out = self.continue_flow(payload)
+
+        if str(out.get("status") or "") == "failed":
+            errors = out.get("errors") or []
+            if isinstance(errors, list) and errors:
+                first = errors[0] if isinstance(errors[0], dict) else {}
+                code = str(first.get("code") or "write_failed")
+                message = str(first.get("message") or "Flow write failed")
+                raise ValueError(f"{code}: {message}")
+            raise ValueError("Flow write failed")
+
+        work = out.get("work") or []
+        if isinstance(work, list) and work:
+            self._spawn_processor()
+
+        applied_ops = out.get("applied_ops") or []
+        put_op = None
+        if isinstance(applied_ops, list):
+            for op in reversed(applied_ops):
+                if not isinstance(op, dict):
+                    continue
+                if str(op.get("op") or "") in {"put_item", "upsert_item"}:
+                    put_op = op
+                    break
+
+        target_id: Optional[str] = None
+        op_status: Optional[str] = None
+        if isinstance(put_op, dict):
+            target_raw = put_op.get("target")
+            if target_raw is not None:
+                target_id = str(target_raw)
+            status_raw = put_op.get("status")
+            if status_raw is not None:
+                op_status = str(status_raw)
+
+        if not target_id:
+            if id is not None:
+                target_id = normalize_id(id)
+            elif uri is not None:
+                target_id = normalize_id(uri)
+            elif content is not None:
+                target_id = _text_content_id(content)
+
+        if not target_id:
+            raise ValueError("Flow write did not return an item id")
+
+        item = self.get(target_id)
+        if item is None:
+            # Concurrent delete removed the item between write and read-back.
+            from .types import Item
+            return Item(id=target_id, summary="", tags={}, changed=False)
+
+        if isinstance(applied_ops, list):
+            if any(str(op.get("op") or "") == "enqueue_task" for op in applied_ops if isinstance(op, dict)):
+                self._spawn_processor()
+
+        if op_status == "noop":
+            return replace(item, changed=False)
+        if op_status in {"applied", "queued"}:
+            return replace(item, changed=(op_status == "applied"))
+        return item
+
+    def put(
+        self,
+        content: Optional[str] = None,
+        *,
+        uri: Optional[str] = None,
+        id: Optional[str] = None,
+        summary: Optional[str] = None,
+        tags: Optional[TagMap] = None,
+        created_at: Optional[str] = None,
+        force: bool = False,
+    ) -> Item:
+        """
+        Store content in memory through flow write execution.
+        """
+        return self._put_via_flow(
+            content=content,
+            uri=uri,
+            id=id,
+            summary=summary,
+            tags=tags,
+            created_at=created_at,
+            force=force,
+        )
 
     # -------------------------------------------------------------------------
     # Query Operations
@@ -3455,8 +3751,17 @@ class Keeper:
                                     id=gk, summary="", tags={}, score=0.5,
                                 ))
             else:
-                deep_groups = self._deep_tag_follow(
-                    items, chroma_coll, doc_coll, embedding=embedding,
+                # For similar_to mode, use the anchor item's summary
+                # as the flow query since the find action requires one.
+                flow_query = query or ""
+                if not flow_query and similar_to:
+                    anchor = self._document_store.get(doc_coll, similar_to)
+                    if anchor:
+                        flow_query = getattr(anchor, "summary", "") or ""
+                deep_groups = self._deep_follow_via_flow(
+                    query=flow_query,
+                    limit=limit,
+                    embedding=embedding,
                 )
 
         # Apply common filters
@@ -3677,6 +3982,150 @@ class Keeper:
             }
         return FindResults(final, deep_groups=deep_groups)
 
+    # -------------------------------------------------------------------------
+    # State-doc flow binding mappers for get_context
+    # -------------------------------------------------------------------------
+
+    def _resolve_edge_refs(self, item: "Item", item_id: str) -> dict[str, list["EdgeRef"]]:
+        """Resolve structural edge references (explicit + inverse) for display.
+
+        Uses direct database queries rather than the generic traverse action,
+        because edges require inverse-edge table lookups and explicit edge-tag
+        resolution — operations the traverse action doesn't support.
+        """
+        doc_coll = self._resolve_doc_collection()
+        edge_ref_index: dict[str, dict[str, EdgeRef]] = {}
+
+        def _upsert(key: str, ref: EdgeRef, *, prefer_new: bool = False) -> None:
+            refs_for_key = edge_ref_index.setdefault(key, {})
+            existing = refs_for_key.get(ref.source_id)
+            if existing is None:
+                refs_for_key[ref.source_id] = ref
+                return
+            winner_date = (ref.date if prefer_new else existing.date) or \
+                          (existing.date if prefer_new else ref.date)
+            winner_summary = (ref.summary if prefer_new else existing.summary) or \
+                             (existing.summary if prefer_new else ref.summary)
+            refs_for_key[ref.source_id] = EdgeRef(
+                source_id=ref.source_id, date=winner_date, summary=winner_summary,
+            )
+
+        # Explicit edge refs from current item's edge-tag values
+        explicit_targets_by_key: dict[str, list[str]] = {}
+        user_keys = [
+            k for k in item.tags
+            if not k.startswith(SYSTEM_TAG_PREFIX) and tag_values(item.tags, k)
+        ]
+        if user_keys:
+            tagdoc_ids = [f".tag/{k}" for k in user_keys]
+            tagdocs = self._document_store.get_many(doc_coll, tagdoc_ids)
+            for key in user_keys:
+                td = tagdocs.get(f".tag/{key}")
+                if td is None or not td.tags.get("_inverse"):
+                    continue
+                seen_targets: set[str] = set()
+                resolved_targets: list[str] = []
+                for raw_target in tag_values(item.tags, key):
+                    try:
+                        target_id = normalize_id(raw_target)
+                    except ValueError:
+                        continue
+                    if target_id.startswith(".") or target_id in seen_targets:
+                        continue
+                    seen_targets.add(target_id)
+                    resolved_targets.append(target_id)
+                if resolved_targets:
+                    explicit_targets_by_key[key] = resolved_targets
+
+        if explicit_targets_by_key:
+            target_ids = {
+                tid for tids in explicit_targets_by_key.values() for tid in tids
+            }
+            target_docs = self._document_store.get_many(doc_coll, list(target_ids))
+            for key, target_ids_for_key in explicit_targets_by_key.items():
+                for target_id in target_ids_for_key:
+                    doc = target_docs.get(target_id)
+                    created = ""
+                    summary = ""
+                    if doc is not None:
+                        created = local_date(
+                            doc.tags.get("_created") or doc.tags.get("_updated") or ""
+                        )
+                        summary = doc.summary or ""
+                    _upsert(key, EdgeRef(
+                        source_id=target_id, date=created, summary=summary,
+                    ))
+
+        raw_edges = self._document_store.get_inverse_edges(doc_coll, item_id)
+        if raw_edges:
+            source_ids = list({src for _, src, _ in raw_edges})
+            source_docs = self._document_store.get_many(doc_coll, source_ids)
+            for inverse, source_id, created in raw_edges:
+                doc = source_docs.get(source_id)
+                _upsert(inverse, EdgeRef(
+                    source_id=source_id,
+                    date=local_date(created),
+                    summary=doc.summary if doc else "",
+                ), prefer_new=True)
+
+        return {
+            key: list(refs_by_source.values())
+            for key, refs_by_source in edge_ref_index.items()
+        }
+
+    @staticmethod
+    def _map_flow_similar(binding: dict) -> list:
+        """Map find action output to SimilarRef list."""
+        refs = []
+        for r in binding.get("results", []):
+            if not isinstance(r, dict):
+                continue
+            tags = r.get("tags") or {}
+            refs.append(SimilarRef(
+                id=tags.get("_base_id", r.get("id", "")),
+                offset=0,
+                score=r.get("score"),
+                date=local_date(tags.get("_updated") or tags.get("_created", "")),
+                summary=r.get("summary", ""),
+            ))
+        return refs
+
+    @staticmethod
+    def _map_flow_meta(binding: dict) -> dict:
+        """Map resolve_meta action output to MetaRef dict."""
+        refs: dict[str, list] = {}
+        for name, items in (binding.get("sections") or {}).items():
+            if not isinstance(items, list):
+                continue
+            refs[name] = [
+                MetaRef(id=r.get("id", ""), summary=r.get("summary", ""))
+                for r in items if isinstance(r, dict)
+            ]
+        return refs
+
+    @staticmethod
+    def _map_flow_parts(binding: dict) -> list:
+        """Map find action (prefix mode) output to PartRef list."""
+        refs = []
+        for r in binding.get("results", []):
+            if not isinstance(r, dict):
+                continue
+            rid = r.get("id", "")
+            # Extract part_num from ID like "base@p3"
+            part_num = 0
+            if "@p" in rid:
+                suffix = rid.rsplit("@p", 1)[-1]
+                try:
+                    part_num = int(suffix)
+                except ValueError:
+                    pass
+            refs.append(PartRef(
+                part_num=part_num,
+                summary=r.get("summary", ""),
+                tags=r.get("tags") or {},
+            ))
+        return refs
+
     def get_context(
         self,
         id: str,
@@ -3684,6 +4133,8 @@ class Keeper:
         version: int | None = None,
         similar_limit: int = 3,
         meta_limit: int = 3,
+        parts_limit: int = 100,
+        versions_limit: int = 5,
         include_similar: bool = True,
         include_meta: bool = True,
         include_parts: bool = True,
@@ -3703,12 +4154,28 @@ class Keeper:
                 - N < 0: archived ordinal from oldest (-1=oldest)
             similar_limit: Max similar items to include
             meta_limit: Max items per meta-doc section
+            parts_limit: Max parts to include
+            versions_limit: Max prev/next versions to include
             include_similar: Whether to resolve similar items
             include_meta: Whether to resolve meta-doc sections
             include_parts: Whether to include parts manifest
             include_versions: Whether to include version navigation
         """
+        # Ensure state docs are in the store for the read flow.
+        if self._needs_sysdoc_migration:
+            try:
+                self._migrate_system_documents()
+                self._needs_sysdoc_migration = False
+            except Exception as e:
+                logger.warning("System doc migration deferred: %s", e)
+
         id = normalize_id(id)
+        target_id = self._resolve_get_target_via_flow(
+            id=id,
+            version=version,
+        )
+        if target_id:
+            id = target_id
         resolved = self.resolve_version_offset(id, version)
         if resolved is None:
             return None
@@ -3726,7 +4193,7 @@ class Keeper:
         if include_versions:
             if offset == 0:
                 nav = self.get_version_nav(id, None)
-                for i, v in enumerate(nav.get("prev", [])):
+                for i, v in enumerate(nav.get("prev", [])[:versions_limit]):
                     prev_refs.append(VersionRef(
                         offset=i + 1,
                         date=local_date(v.tags.get("_created") or v.created_at or ""),
@@ -3751,147 +4218,42 @@ class Keeper:
                             summary=newer.summary,
                         ))
 
-        # Similar items (only for current version)
+        # Data gathering via state-doc flow (similar, parts, meta).
+        # Edge resolution stays inline — it requires direct database
+        # queries (inverse edges, explicit edge-tag lookup) that the
+        # generic traverse action doesn't support.
         similar_refs: list[SimilarRef] = []
-        if include_similar and offset == 0:
-            raw = self.get_similar_for_display(id, limit=similar_limit)
-            for s in raw:
-                s_offset = self.get_version_offset(s)
-                similar_refs.append(SimilarRef(
-                    id=s.tags.get("_base_id", s.id),
-                    offset=s_offset,
-                    score=s.score,
-                    date=local_date(
-                        s.tags.get("_updated") or s.tags.get("_created", "")
-                    ),
-                    summary=s.summary,
-                ))
-
-        # Meta-doc sections (only for current version)
         meta_refs: dict[str, list[MetaRef]] = {}
-        if include_meta and offset == 0:
-            raw_meta = self.resolve_meta(id, limit_per_doc=meta_limit)
-            for name, meta_items in raw_meta.items():
-                meta_refs[name] = [
-                    MetaRef(id=mi.id, summary=mi.summary)
-                    for mi in meta_items
-                ]
-
-        # Parts manifest (only for current version)
         part_refs: list[PartRef] = []
-        if include_parts and offset == 0:
-            for p in self.list_parts(id):
-                part_refs.append(PartRef(
-                    part_num=p.part_num,
-                    summary=p.summary,
-                    tags=dict(p.tags),
-                ))
-
-        # Edge references (only for current version)
-        # - Inverse refs: current item is edge target (existing behavior)
-        # - Explicit refs: current item has edge-tag values (query-time union)
-        # Dedup key: (edge key, source_id). If both explicit+inverse produce
-        # the same source, inverse data takes precedence.
         edge_refs: dict[str, list[EdgeRef]] = {}
+
         if offset == 0:
-            doc_coll = self._resolve_doc_collection()
-            edge_ref_index: dict[str, dict[str, EdgeRef]] = {}
-
-            def _upsert_edge_ref(
-                key: str,
-                ref: EdgeRef,
-                *,
-                prefer_new: bool = False,
-            ) -> None:
-                refs_for_key = edge_ref_index.setdefault(key, {})
-                existing = refs_for_key.get(ref.source_id)
-                if existing is None:
-                    refs_for_key[ref.source_id] = ref
-                    return
-
-                if prefer_new:
-                    refs_for_key[ref.source_id] = EdgeRef(
-                        source_id=ref.source_id,
-                        date=ref.date or existing.date,
-                        summary=ref.summary or existing.summary,
-                    )
+            if include_similar or include_meta or include_parts:
+                flow_result = self._run_read_flow(
+                    "get-context",
+                    {
+                        "item_id": id,
+                        "similar_limit": similar_limit if include_similar else 0,
+                        "meta_limit": meta_limit if include_meta else 0,
+                        "parts_limit": parts_limit if include_parts else 0,
+                    },
+                )
+                if flow_result.status == "done":
+                    bindings = flow_result.bindings
+                    if include_similar:
+                        similar_refs = self._map_flow_similar(bindings.get("similar", {}))
+                    if include_meta:
+                        meta_refs = self._map_flow_meta(bindings.get("meta", {}))
+                    if include_parts:
+                        part_refs = self._map_flow_parts(bindings.get("parts", {}))
                 else:
-                    refs_for_key[ref.source_id] = EdgeRef(
-                        source_id=ref.source_id,
-                        date=existing.date or ref.date,
-                        summary=existing.summary or ref.summary,
+                    logger.warning(
+                        "get-context flow returned %s for %r: %s",
+                        flow_result.status, id, flow_result.data,
                     )
 
-            # Explicit edge refs from current item's edge-tag values.
-            # These are rendered alongside inverse refs under the same tag key.
-            explicit_targets_by_key: dict[str, list[str]] = {}
-            user_keys = [
-                k for k in item.tags
-                if not k.startswith(SYSTEM_TAG_PREFIX) and tag_values(item.tags, k)
-            ]
-            if user_keys:
-                tagdoc_ids = [f".tag/{k}" for k in user_keys]
-                tagdocs = self._document_store.get_many(doc_coll, tagdoc_ids)
-                for key in user_keys:
-                    td = tagdocs.get(f".tag/{key}")
-                    if td is None or not td.tags.get("_inverse"):
-                        continue
-                    seen_targets: set[str] = set()
-                    resolved_targets: list[str] = []
-                    for raw_target in tag_values(item.tags, key):
-                        try:
-                            target_id = normalize_id(raw_target)
-                        except ValueError:
-                            continue
-                        if target_id.startswith(".") or target_id in seen_targets:
-                            continue
-                        seen_targets.add(target_id)
-                        resolved_targets.append(target_id)
-                    if resolved_targets:
-                        explicit_targets_by_key[key] = resolved_targets
-
-            if explicit_targets_by_key:
-                target_ids = {
-                    tid for tids in explicit_targets_by_key.values() for tid in tids
-                }
-                target_docs = self._document_store.get_many(doc_coll, list(target_ids))
-                for key, target_ids_for_key in explicit_targets_by_key.items():
-                    for target_id in target_ids_for_key:
-                        doc = target_docs.get(target_id)
-                        created = ""
-                        summary = ""
-                        if doc is not None:
-                            created = local_date(
-                                doc.tags.get("_created") or doc.tags.get("_updated") or ""
-                            )
-                            summary = doc.summary or ""
-                        _upsert_edge_ref(
-                            key,
-                            EdgeRef(
-                                source_id=target_id,
-                                date=created,
-                                summary=summary,
-                            ),
-                        )
-
-            raw_edges = self._document_store.get_inverse_edges(doc_coll, id)
-            if raw_edges:
-                # Batch-fetch source docs to avoid N+1
-                source_ids = list({src for _, src, _ in raw_edges})
-                source_docs = self._document_store.get_many(doc_coll, source_ids)
-                for inverse, source_id, created in raw_edges:
-                    doc = source_docs.get(source_id)
-                    ref = EdgeRef(
-                        source_id=source_id,
-                        date=local_date(created),
-                        summary=doc.summary if doc else "",
-                    )
-                    _upsert_edge_ref(inverse, ref, prefer_new=True)
-
-            edge_refs = {
-                key: list(refs_by_source.values())
-                for key, refs_by_source in edge_ref_index.items()
-            }
+            # Edge resolution (inline — structural edge queries)
+            edge_refs = self._resolve_edge_refs(item, id)
 
         return ItemContext(
             item=item,
@@ -3903,6 +4265,184 @@ class Keeper:
             prev=prev_refs,
             next=next_refs,
         )
+
+    @staticmethod
+    def _normalize_flow_get_projection(
+        *,
+        id: str,
+        projection: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        raw = projection if isinstance(projection, dict) else {}
+
+        seed_mode = str(raw.get("seed_mode") or "id").strip().lower()
+        if seed_mode not in {"id", "query", "similar_to"}:
+            seed_mode = "id"
+
+        seed_value_raw = raw.get("seed_value")
+        seed_value = str(seed_value_raw).strip() if seed_value_raw is not None else ""
+        if not seed_value:
+            seed_value = str(id)
+
+        try:
+            rank = int(raw.get("rank", 0))
+        except Exception:
+            rank = 0
+        rank = max(rank, 0)
+
+        try:
+            max_nodes = int(raw.get("max_nodes", 10))
+        except Exception:
+            max_nodes = 10
+        max_nodes = min(max(max_nodes, 1), 100)
+
+        metadata_level = str(raw.get("metadata") or "basic").strip().lower()
+        if metadata_level not in {"none", "basic", "rich"}:
+            metadata_level = "basic"
+
+        where_tags_in = raw.get("where_tags")
+        where_tags: dict[str, Any] = {}
+        if isinstance(where_tags_in, dict):
+            for key, value in where_tags_in.items():
+                key_str = str(key).strip()
+                if not key_str:
+                    continue
+                if isinstance(value, list):
+                    values = [str(v).strip() for v in value if str(v).strip()]
+                    if not values:
+                        continue
+                    where_tags[key_str] = values if len(values) > 1 else values[0]
+                    continue
+                value_str = str(value).strip()
+                if value_str:
+                    where_tags[key_str] = value_str
+
+        return {
+            "seed_mode": seed_mode,
+            "seed_value": seed_value,
+            "rank": rank,
+            "max_nodes": max_nodes,
+            "metadata": metadata_level,
+            "deep": bool(raw.get("deep")),
+            "where_tags": where_tags,
+            "prefer_base_id": bool(raw.get("prefer_base_id", True)),
+        }
+
+    @staticmethod
+    def _frame_request_from_get_projection(projection: dict[str, Any]) -> dict[str, Any]:
+        seed_mode = str(projection.get("seed_mode") or "id")
+        seed_value = str(projection.get("seed_value") or "")
+        max_nodes = int(projection.get("max_nodes") or 10)
+        metadata_level = str(projection.get("metadata") or "basic")
+        where_tags = projection.get("where_tags") if isinstance(projection.get("where_tags"), dict) else {}
+
+        pipeline: list[dict[str, Any]] = []
+        if where_tags:
+            facts: list[str] = []
+            for key in sorted(where_tags.keys()):
+                value = where_tags[key]
+                if isinstance(value, list):
+                    for one in value:
+                        one_str = str(one).strip()
+                        if one_str:
+                            facts.append(f"{key}={one_str}")
+                    continue
+                value_str = str(value).strip()
+                if value_str:
+                    facts.append(f"{key}={value_str}")
+            if facts:
+                pipeline.append({"op": "where", "args": {"facts": facts}})
+        pipeline.append({"op": "slice", "args": {"limit": max_nodes}})
+
+        return {
+            "seed": {"mode": seed_mode, "value": seed_value},
+            "pipeline": pipeline,
+            "budget": {"max_nodes": max_nodes},
+            "options": {
+                "metadata": metadata_level,
+                "deep": bool(projection.get("deep")),
+            },
+        }
+
+    @staticmethod
+    def _project_get_target_id(
+        flow_output: dict[str, Any],
+        *,
+        projection: dict[str, Any],
+    ) -> Optional[str]:
+        frame = flow_output.get("frame") if isinstance(flow_output, dict) else {}
+        if not isinstance(frame, dict):
+            return None
+        evidence = frame.get("evidence")
+        if not isinstance(evidence, list) or not evidence:
+            return None
+
+        rank = int(projection.get("rank") or 0)
+        idx = min(max(rank, 0), len(evidence) - 1)
+        entry = evidence[idx] if isinstance(evidence[idx], dict) else {}
+        if not isinstance(entry, dict):
+            return None
+
+        target_id = str(entry.get("id") or "").strip()
+        if bool(projection.get("prefer_base_id", True)):
+            metadata = entry.get("metadata")
+            if isinstance(metadata, dict):
+                base_id = str(metadata.get("base_id") or "").strip()
+                if base_id:
+                    target_id = base_id
+
+        if not target_id:
+            return None
+        try:
+            return normalize_id(target_id)
+        except Exception:
+            return target_id
+
+    def _resolve_get_target_via_flow(
+        self,
+        id: str,
+        *,
+        version: int | None = None,
+        projection: Optional[dict[str, Any]] = None,
+    ) -> Optional[str]:
+        """
+        Resolve target ID for get-context through flow evidence.
+
+        Internal-only helper: keeps public get/get_context surface unchanged while
+        allowing flow-backed targeting.
+        """
+        id = normalize_id(id)
+        normalized_projection = self._normalize_flow_get_projection(
+            id=id,
+            projection=projection,
+        )
+        frame_request = self._frame_request_from_get_projection(normalized_projection)
+        payload = {
+            "goal": "get",
+            "params": {
+                "id": id,
+                "version": version,
+                "projection": normalized_projection,
+            },
+            "frame_request": frame_request,
+            "work_results": [],
+        }
+
+        fallback_to_direct = str(normalized_projection.get("seed_mode") or "id") == "id"
+        try:
+            out = self.continue_flow(payload)
+        except Exception as exc:
+            logger.debug("Flow get failed for %s: %s", id, exc)
+            if fallback_to_direct:
+                return id
+            return None
+
+        if str(out.get("status") or "") == "failed":
+            if fallback_to_direct:
+                return id
+            return None
+
+        target_id = self._project_get_target_id(out, projection=normalized_projection)
+        return target_id or (id if fallback_to_direct else None)
 
     def resolve_version_offset(self, id: str, selector: int | None) -> Optional[int]:
         """Resolve a public version selector to a concrete offset.
@@ -5454,7 +5994,7 @@ class Keeper:
             tag_keys: Tag key-only filters (item must have key, any value).
             since: Only items updated since (ISO duration like P3D, or date).
             until: Only items updated before (ISO duration or date).
-            order_by: Sort order - "updated" (default) or "accessed".
+            order_by: Sort order - "updated" (default), "accessed", or "created".
             include_hidden: Include system notes (dot-prefix IDs).
             include_history: Include previous versions alongside current items.
             limit: Maximum results to return.
@@ -5622,16 +6162,11 @@ class Keeper:
                 logger.info("Skipping enqueue for %s: parts already current", id)
                 return False
 
-        metadata = {}
-        if tags:
-            metadata["tags"] = tags
-        if force:
-            metadata["force"] = True
-
-        self._pending_queue.enqueue(
-            id, doc_coll, "",
-            task_type="analyze",
-            metadata=metadata,
+        self._enqueue_analyze_background(
+            id=id,
+            doc_coll=doc_coll,
+            tags=tags,
+            force=force,
         )
         self._spawn_processor()
         return True
@@ -5642,21 +6177,10 @@ class Keeper:
         item: Any,
         error: str,
         failure_class: str,
-    ) -> Optional[str]:
-        event_material = f"{item.collection}|{item.task_type}|{item.id}"
-        event_id = hashlib.sha256(event_material.encode("utf-8")).hexdigest()[:16]
-        context = {
-            "event_id": event_id,
-            "task_type": str(item.task_type or ""),
-            "item_id": str(item.id or ""),
-            "collection": str(item.collection or ""),
-            "attempt": int(getattr(item, "attempts", 0) or 0),
-            "error": str(error or ""),
-            "failure_class": str(failure_class or "unknown"),
-        }
-        return self.emit_escalation_note(
-            "breakdown",
-            context=context,
+    ) -> None:
+        logger.warning(
+            "Processing breakdown for %s/%s (%s): %s",
+            item.id, item.task_type, failure_class, error,
         )
 
     def process_pending(self, limit: int = 10) -> dict:
@@ -6011,7 +6535,7 @@ class Keeper:
         scope_key: str | None = None,
         candidates: list[str] | None = None,
     ) -> dict:
-        """Return minimal planner priors for continuation discriminators.
+        """Return minimal planner priors for flow discriminators.
 
         Shape:
         {
@@ -6148,7 +6672,7 @@ class Keeper:
         content: str,
         metadata: Optional[dict] = None,
     ) -> dict:
-        """Run shared local workflow for summarize/ocr/analyze tasks.
+        """Run shared local workflow for summarize/ocr/analyze/tag tasks.
 
         Returns a small status envelope:
         {"status": "applied|skipped", "details": {...}}
@@ -6462,6 +6986,31 @@ class Keeper:
         """Get count of pending summaries awaiting processing."""
         return self._pending_queue.count()
 
+    def pending_work_count(self, *, claimable_only: bool = False) -> int:
+        """Get count of requested flow work items."""
+        if not self._is_local:
+            return 0
+        runtime = self._get_flow_runtime()
+        return runtime.count_requested_work(claimable_only=claimable_only)
+
+    def process_pending_work(
+        self,
+        *,
+        limit: int = 10,
+        worker_id: Optional[str] = None,
+        lease_seconds: int = 120,
+    ) -> dict:
+        """Process a batch of requested flow work items."""
+        if not self._is_local:
+            return {"claimed": 0, "processed": 0, "failed": 0, "dead_lettered": 0, "errors": []}
+        runtime = self._get_flow_runtime()
+        worker = worker_id or f"local-daemon:{os.getpid()}"
+        return runtime.process_requested_work_batch(
+            worker_id=worker,
+            limit=limit,
+            lease_seconds=lease_seconds,
+        )
+
     def pending_stats(self) -> dict:
         """Get pending summary queue statistics.
 
@@ -6483,30 +7032,122 @@ class Keeper:
         return self._pending_queue.get_status(id)
 
     # -------------------------------------------------------------------------
-    # Continuation API (local-only preview)
+    # Flow API (local-only preview)
     # -------------------------------------------------------------------------
 
-    def _get_continuation_runtime(self) -> LocalContinuationRuntime:
-        runtime = self._continuation
+    def _get_flow_runtime(self) -> LocalFlowRuntime:
+        runtime = self._flow_runtime
         if runtime is not None:
             return runtime
-        with self._continuation_lock:
-            runtime = self._continuation
+        with self._flow_runtime_lock:
+            runtime = self._flow_runtime
             if runtime is None:
-                runtime = LocalContinuationRuntime(
+                runtime = LocalFlowRuntime(
                     self._store_path / "continuation.db",
-                    LocalContinuationEnvironment(self),
+                    LocalFlowEnvironment(self),
                 )
-                self._continuation = runtime
+                self._flow_runtime = runtime
         return runtime
 
     def continue_flow(self, payload: dict) -> dict:
-        """Run one continuation tick for local API-first flows."""
-        return self._get_continuation_runtime().continue_flow(payload)
+        """Run one flow tick for local API-first flows."""
+        result = self._get_flow_runtime().continue_flow(payload)
+        self._flush_deferred_flow_tasks()
+        return result
 
     def continue_run_work(self, cursor: str, work_id: str) -> dict:
         """Execute a pending local work item and return a work_result envelope."""
-        return self._get_continuation_runtime().run_work(cursor, work_id)
+        return self._get_flow_runtime().run_work(cursor, work_id)
+
+    def _run_read_flow(
+        self,
+        state: str,
+        params: dict[str, Any],
+        *,
+        budget: int = 5,
+        query_embedding: Any = None,
+    ) -> "FlowResult":
+        """Run a synchronous state-doc flow for the read/query path.
+
+        Creates a read-only environment, wires up a state doc loader
+        and action runner, then evaluates the flow to completion.
+        State docs are loaded from ``.state/*`` notes in the store
+        (seeded by system doc migration).
+
+        Args:
+            state: Name of the starting state doc (e.g. "get-context").
+            params: Caller-supplied parameters.
+            budget: Maximum ticks before forced stop.
+            query_embedding: Optional embedding vector for semantic
+                tiebreaking in traverse actions.
+
+        Returns:
+            FlowResult with terminal status and accumulated bindings.
+        """
+        from .state_doc_runtime import (
+            FlowResult,
+            make_action_runner,
+            make_state_doc_loader,
+            run_flow,
+        )
+
+        env = LocalFlowEnvironment(self)
+        if query_embedding is not None:
+            env._query_embedding = query_embedding
+        loader = make_state_doc_loader(env)
+        runner = make_action_runner(env)
+        return run_flow(state, params, budget=budget, load_state_doc=loader, run_action=runner)
+
+    def _deep_follow_via_flow(
+        self,
+        *,
+        query: str,
+        limit: int = 10,
+        deep_limit: int = 5,
+        embedding: Any = None,
+    ) -> dict[str, list["Item"]]:
+        """Run the find-deep state-doc flow for deep follow.
+
+        Used as the tag-follow fallback when the store has no edges.
+        The find-deep flow runs a search then traverses the results,
+        exercising the CEL predicate ``search.count == 0``.
+        """
+        if not query:
+            return {}
+
+        result = self._run_read_flow(
+            "find-deep",
+            {
+                "query": query,
+                "limit": limit,
+                "deep_limit": deep_limit,
+            },
+            query_embedding=embedding,
+        )
+        if result.status != "done":
+            return {}
+
+        related_binding = result.bindings.get("related", {})
+        groups_raw = related_binding.get("groups") or {}
+
+        # Map action output dicts back to Item objects
+        deep_groups: dict[str, list[Item]] = {}
+        for source_id, items_raw in groups_raw.items():
+            if not isinstance(items_raw, list):
+                continue
+            group = []
+            for r in items_raw:
+                if not isinstance(r, dict):
+                    continue
+                group.append(Item(
+                    id=r.get("id", ""),
+                    summary=r.get("summary", ""),
+                    tags=r.get("tags") or {},
+                    score=r.get("score"),
+                ))
+            if group:
+                deep_groups[source_id] = group
+        return deep_groups
 
     @property
     def _processor_pid_path(self) -> Path:
@@ -6752,10 +7393,10 @@ class Keeper:
             self._task_client.close()
             self._task_client = None
 
-        # Close continuation runtime
-        if hasattr(self, "_continuation") and self._continuation is not None:
+        # Close flow runtime
+        if hasattr(self, "_flow_runtime") and self._flow_runtime is not None:
             try:
-                self._continuation.close()
+                self._flow_runtime.close()
             except Exception:
                 pass
 

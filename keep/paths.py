@@ -99,3 +99,22 @@ def get_default_store_path(config: Optional[StoreConfig] = None) -> Path:
 
     # Default: config directory is also the store
     return get_config_dir()
+
+
+def validate_path_within_home(path: Path) -> Path:
+    """Resolve a path and verify it falls within the user's home directory.
+
+    Args:
+        path: Path to validate (will be resolved to absolute).
+
+    Returns:
+        The resolved absolute path.
+
+    Raises:
+        ValueError: If the resolved path is outside the home directory.
+    """
+    resolved = path.expanduser().resolve()
+    home = Path.home().resolve()
+    if not resolved.is_relative_to(home):
+        raise ValueError(f"Path outside home directory: {resolved}")
+    return resolved

@@ -74,6 +74,12 @@ class TrackingPendingQueue:
         self._items.clear()
         return n
 
+    def fail(
+        self, id: str, collection: str, task_type: str = "summarize",
+        error: str | None = None,
+    ) -> None:
+        pass  # no-op in test mock
+
     def abandon(
         self, id: str, collection: str, task_type: str = "summarize",
         error: str | None = None,

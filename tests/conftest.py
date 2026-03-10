@@ -361,6 +361,13 @@ class MockDocumentStore:
     def exists(self, collection: str, id: str) -> bool:
         return collection in self._data and id in self._data[collection]
 
+    def insert_if_absent(self, collection: str, id: str, summary: str,
+                         tags: dict, created_at: str = None) -> bool:
+        if self.exists(collection, id):
+            return False
+        self.upsert(collection, id, summary, tags, created_at=created_at)
+        return True
+
     def find_by_content_hash(self, collection: str, content_hash: str, *,
                              content_hash_full: str = "", exclude_id: str = ""):
         if collection not in self._data or not content_hash:
@@ -412,16 +419,23 @@ class MockDocumentStore:
             return True
         return False
 
-    def list_recent(self, collection: str, limit: int = 10, order_by: str = "updated") -> list:
+    def list_recent(
+        self,
+        collection: str,
+        limit: int = 10,
+        order_by: str = "updated",
+        offset: int = 0,
+    ) -> list:
         if collection not in self._data:
             return []
         records = []
-        for id, rec in list(self._data[collection].items())[:limit]:
+        rows = list(self._data[collection].items())
+        for id, rec in rows[offset:offset + limit]:
             records.append(self._make_record(collection, id, rec))
         return records
 
     def query_by_tag_key(self, collection: str, key: str, limit: int = 100,
-                         since_date: str = None, until_date: str = None) -> list:
+                         since_date: str = None, until_date: str = None, offset: int = 0) -> list:
         if collection not in self._data:
             return []
         results = []
@@ -434,7 +448,7 @@ class MockDocumentStore:
             if until_date and updated >= until_date:
                 continue
             results.append(self._make_record(collection, id, rec))
-        return results[:limit]
+        return results[offset:offset + limit]
 
     def list_distinct_tag_keys(self, collection: str) -> list[str]:
         keys = set()
@@ -570,14 +584,22 @@ class MockDocumentStore:
     def _fts_available(self) -> bool:
         return True
 
-    def query_by_id_prefix(self, collection: str, prefix: str) -> list:
+    def query_by_id_prefix(
+        self,
+        collection: str,
+        prefix: str,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> list:
         if collection not in self._data:
             return []
         results = []
         for id, rec in self._data[collection].items():
             if id.startswith(prefix):
                 results.append(self._make_record(collection, id, rec))
-        return results
+        if limit is None:
+            return results[offset:]
+        return results[offset:offset + limit]
 
     def touch_many(self, collection: str, ids: list[str]) -> None:
         pass
@@ -657,6 +679,19 @@ class MockDocumentStore:
             "predicate": predicate, "target_id": target_id,
             "inverse": inverse, "created": created,
         })
+
+    def upsert_edges_batch(self, collection: str,
+                           edges: list[tuple[str, str, str, str, str]]) -> int:
+        for source_id, predicate, target_id, inverse, created in edges:
+            self.upsert_edge(collection, source_id, predicate, target_id, inverse, created)
+        return len(edges)
+
+    def delete_edges_batch(self, collection: str,
+                           edges: list[tuple[str, str, str]]) -> int:
+        count = 0
+        for source_id, predicate, target_id in edges:
+            count += self.delete_edge(collection, source_id, predicate, target_id)
+        return count
 
     def delete_edge(
         self, collection: str, source_id: str, predicate: str, target_id: str | None = None
@@ -865,7 +900,8 @@ def mock_providers():
          patch("keep.api.CachingEmbeddingProvider", side_effect=lambda p, **kw: p), \
          patch("keep.store.ChromaStore", MockChromaStore), \
          patch("keep.document_store.DocumentStore", MockDocumentStore), \
-         patch("keep.pending_summaries.PendingSummaryQueue", MockPendingSummaryQueue):
+         patch("keep.pending_summaries.PendingSummaryQueue", MockPendingSummaryQueue), \
+         patch("keep.api.Keeper._spawn_processor", return_value=False):
         yield {
             "embedding": mock_embed,
             "summarization": mock_summ,

@@ -1,7 +1,7 @@
-"""Continuation decision support and query.auto policy logic.
+"""Flow decision support and query.auto policy logic.
 
 This module isolates strategy/discriminator computation from the core
-continuation tick runtime to reduce engine complexity while preserving the
+flow tick runtime to reduce engine complexity while preserving the
 continue(input) -> output contract.
 """
 
@@ -12,7 +12,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
-from .continuation_env import ContinuationRuntimeEnv
+from .flow_env import FlowRuntimeEnv
 
 logger = logging.getLogger(__name__)
 
@@ -29,13 +29,13 @@ DEFAULT_DECISION_POLICY = {
 }
 
 
-class ContinuationDecisionPolicy:
-    """Decision/discriminator policy for continuation query refinement."""
+class FlowDecisionPolicy:
+    """Decision/discriminator policy for flow query refinement."""
 
     def __init__(
         self,
         *,
-        env: ContinuationRuntimeEnv,
+        env: FlowRuntimeEnv,
         parse_where_tags: Callable[[dict[str, Any]], dict[str, Any]],
         pipeline_limit: Callable[[dict[str, Any], int], int],
         normalize_metadata_level: Callable[[Any], str],

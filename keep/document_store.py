@@ -1854,6 +1854,37 @@ class DocumentStore:
         """, (id, collection))
         return cursor.fetchone() is not None
 
+    def insert_if_absent(
+        self,
+        collection: str,
+        id: str,
+        summary: str,
+        tags: dict[str, Any],
+        created_at: Optional[str] = None,
+    ) -> bool:
+        """Insert a document only if it doesn't already exist.
+
+        Atomic INSERT OR IGNORE — avoids the TOCTOU race of
+        exists() + upsert() where a concurrent writer could create
+        the real document between check and write.
+
+        Returns:
+            True if a new row was inserted, False if it already existed.
+        """
+        now = self._now()
+        tags = normalize_tag_map(tags)
+        tags_json = json.dumps(tags, ensure_ascii=False)
+        ts = created_at or now
+
+        with self._lock:
+            cursor = self._conn.execute("""
+                INSERT OR IGNORE INTO documents
+                    (id, collection, summary, tags_json, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (id, collection, summary, tags_json, ts, now))
+            self._conn.commit()
+        return cursor.rowcount > 0
+
     def find_by_content_hash(
         self,
         collection: str,
@@ -1941,10 +1972,10 @@ class DocumentStore:
         Returns:
             List of DocumentRecords, most recent first
         """
-        allowed_order = {"updated": "updated_at", "accessed": "accessed_at"}
+        allowed_order = {"updated": "updated_at", "accessed": "accessed_at", "created": "created_at"}
         order_col = allowed_order.get(order_by)
         if order_col is None:
-            raise ValueError(f"Invalid order_by: {order_by!r} (expected 'updated' or 'accessed')")
+            raise ValueError(f"Invalid order_by: {order_by!r} (expected 'updated', 'accessed', or 'created')")
         cursor = self._execute(f"""
             SELECT id, collection, summary, tags_json, created_at, updated_at, content_hash, accessed_at
             FROM documents
@@ -1980,10 +2011,10 @@ class DocumentStore:
         have '_version' tag set to their offset (1=previous, 2=two ago...).
         Current versions have no '_version' tag (equivalent to offset 0).
         """
-        allowed_order = {"updated": "updated_at", "accessed": "accessed_at"}
+        allowed_order = {"updated": "updated_at", "accessed": "accessed_at", "created": "created_at"}
         order_col = allowed_order.get(order_by)
         if order_col is None:
-            raise ValueError(f"Invalid order_by: {order_by!r} (expected 'updated' or 'accessed')")
+            raise ValueError(f"Invalid order_by: {order_by!r} (expected 'updated', 'accessed', or 'created')")
 
         cursor = self._execute(f"""
             SELECT id, summary, tags_json, {order_col} as sort_ts,
@@ -2927,6 +2958,64 @@ class DocumentStore:
             (source_id, collection, predicate, target_id, inverse, created),
         )
         self._conn.commit()
+
+    def upsert_edges_batch(
+        self,
+        collection: str,
+        edges: list[tuple[str, str, str, str, str]],
+    ) -> int:
+        """Batch insert/replace edge rows in a single transaction.
+
+        Each tuple is (source_id, predicate, target_id, inverse, created).
+        """
+        if not edges:
+            return 0
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                self._conn.executemany(
+                    """
+                    INSERT OR REPLACE INTO edges
+                        (source_id, collection, predicate, target_id, inverse, created)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    [(s, collection, p, t, inv, c) for s, p, t, inv, c in edges],
+                )
+                self._conn.commit()
+                return len(edges)
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    def delete_edges_batch(
+        self,
+        collection: str,
+        edges: list[tuple[str, str, str]],
+    ) -> int:
+        """Batch delete edge rows in a single transaction.
+
+        Each tuple is (source_id, predicate, target_id).
+        """
+        if not edges:
+            return 0
+        count = 0
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                for source_id, predicate, target_id in edges:
+                    cur = self._conn.execute(
+                        """
+                        DELETE FROM edges
+                        WHERE source_id = ? AND collection = ? AND predicate = ? AND target_id = ?
+                        """,
+                        (source_id, collection, predicate, target_id),
+                    )
+                    count += cur.rowcount
+                self._conn.commit()
+                return count
+            except Exception:
+                self._conn.rollback()
+                raise
 
     def delete_edge(
         self,

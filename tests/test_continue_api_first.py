@@ -3,6 +3,7 @@ import json
 import pytest
 
 from keep.api import Keeper
+from keep.api import _text_content_id
 
 
 def _summarize_request(note_id: str, content: str, *, request_id: str, idempotency_key: str | None = None) -> dict:
@@ -551,38 +552,6 @@ def test_continue_custom_steps_applies_tags(mock_providers, tmp_path):
         kp.close()
 
 
-def test_continue_work_request_includes_quality_gates_and_escalation(mock_providers, tmp_path):
-    kp = Keeper(store_path=tmp_path)
-    try:
-        content = "quality gate sample"
-        kp.put(content=content, id="note:quality", summary=content)
-        out = kp.continue_flow(
-            {
-                "request_id": "req-quality-1",
-                "goal": "pipeline",
-                "params": {"id": "note:quality", "content": content},
-                "steps": [
-                    {
-                        "kind": "quality_step",
-                        "runner": {"type": "echo", "outputs": {"ok": True}},
-                        "input_mode": "note_content",
-                        "output_contract": {"must_return": ["ok"]},
-                        "quality_gates": {"min_confidence": 0.7, "citation_required": True},
-                        "escalate_if": ["low_confidence", "missing_citation"],
-                    }
-                ],
-                "work_results": [],
-            }
-        )
-        assert out["status"] == "waiting_work"
-        assert out["work"]
-        work = out["work"][0]
-        assert work["quality_gates"] == {"min_confidence": 0.7, "citation_required": True}
-        assert work["escalate_if"] == ["low_confidence", "missing_citation"]
-    finally:
-        kp.close()
-
-
 def test_continue_set_tags_preserves_list_values(mock_providers, tmp_path):
     kp = Keeper(store_path=tmp_path)
     try:
@@ -641,6 +610,27 @@ def test_continue_inline_write_single_tick(mock_providers, tmp_path):
         item = kp.get("note:write")
         assert item is not None
         assert item.summary
+        assert item.tags.get("topic") == "demo"
+    finally:
+        kp.close()
+
+
+def test_continue_inline_write_without_id_uses_content_addressed_id(mock_providers, tmp_path):
+    kp = Keeper(store_path=tmp_path)
+    try:
+        content = "hello without explicit id"
+        out = kp.continue_flow(
+            {
+                "request_id": "req-write-no-id-1",
+                "goal": "write",
+                "params": {"content": content, "tags": {"topic": "demo"}},
+                "work_results": [],
+            }
+        )
+        assert out["status"] == "done"
+        expected_id = _text_content_id(content)
+        item = kp.get(expected_id)
+        assert item is not None
         assert item.tags.get("topic") == "demo"
     finally:
         kp.close()
@@ -716,41 +706,6 @@ def test_continue_multi_step_plan_orders_work(mock_providers, tmp_path):
         )
         assert third["status"] == "waiting_work"
         assert third["work"][0]["kind"] == "condense"
-    finally:
-        kp.close()
-
-
-def test_continue_profile_steps_are_loaded(mock_providers, tmp_path):
-    kp = Keeper(store_path=tmp_path)
-    try:
-        content = "profile-driven work"
-        kp.put(content=content, id="note:profile", summary=content)
-        profile_doc = json.dumps(
-            {
-                "steps": [
-                    {
-                        "kind": "profile_step",
-                        "runner": {"type": "echo", "outputs": {"labels": {"profile_loaded": "yes"}}},
-                        "input_mode": "note_content",
-                        "output_contract": {"must_return": ["labels"]},
-                        "apply": {"ops": [{"op": "set_tags", "tags": "$output.labels"}]},
-                    }
-                ]
-            }
-        )
-        kp.put(content=profile_doc, id=".profile/demo.profile", summary=profile_doc)
-
-        first = kp.continue_flow(
-            {
-                "request_id": "req-profile-1",
-                "goal": "pipeline",
-                "profile": "demo.profile",
-                "params": {"id": "note:profile", "content": content},
-                "work_results": [],
-            }
-        )
-        assert first["status"] == "waiting_work"
-        assert first["work"][0]["kind"] == "profile_step"
     finally:
         kp.close()
 
@@ -959,11 +914,11 @@ def test_continue_surfaces_frame_evidence_query_errors(mock_providers, tmp_path)
         kp.close()
 
 
-def test_continuation_runtime_is_lazy_initialized(mock_providers, tmp_path):
+def test_flow_runtime_is_lazy_initialized(mock_providers, tmp_path):
     kp = Keeper(store_path=tmp_path)
-    continuation_path = tmp_path / "continuation.db"
+    flow_db_path = tmp_path / "continuation.db"
     try:
-        assert not continuation_path.exists()
+        assert not flow_db_path.exists()
         out = kp.continue_flow(
             {
                 "request_id": "req-lazy-1",
@@ -975,8 +930,159 @@ def test_continuation_runtime_is_lazy_initialized(mock_providers, tmp_path):
             }
         )
         assert out["status"] in {"done", "failed"}
-        assert continuation_path.exists()
+        assert flow_db_path.exists()
     finally:
+        kp.close()
+
+
+def test_put_routes_through_flow_runtime(mock_providers, tmp_path):
+    kp = Keeper(store_path=tmp_path)
+    flow_db_path = tmp_path / "continuation.db"
+    try:
+        assert not flow_db_path.exists()
+        item = kp.put(content="put via flow", id="note:put-via-cont")
+        assert item.id == "note:put-via-cont"
+        assert flow_db_path.exists()
+    finally:
+        kp.close()
+
+
+def test_put_long_content_schedules_flow_work(monkeypatch, mock_providers, tmp_path):
+    kp = Keeper(store_path=tmp_path)
+    try:
+        monkeypatch.setattr(kp, "_needs_sysdoc_migration", False)
+        baseline_pending = kp.pending_count()
+        baseline_flow = kp.pending_work_count()
+        content = "default queue " * 200
+        item = kp.put(content=content, id="note:default-queue")
+        assert item.summary.endswith("...")
+        assert kp.pending_count() == baseline_pending
+        # summarize + analyze + tag all fire for non-system items
+        assert kp.pending_work_count() == baseline_flow + 3
+    finally:
+        kp.close()
+
+
+def test_put_long_content_flow_work_processing_updates_summary(monkeypatch, mock_providers, tmp_path):
+    kp = Keeper(store_path=tmp_path)
+    try:
+        monkeypatch.setattr(kp, "_needs_sysdoc_migration", False)
+        baseline_pending = kp.pending_count()
+        baseline_flow = kp.pending_work_count()
+        content = "flow queue " * 200
+        item = kp.put(content=content, id="note:flow-queue")
+        assert item.summary.endswith("...")
+        assert kp.pending_count() == baseline_pending
+        # summarize + analyze + tag all fire for non-system items
+        assert kp.pending_work_count() == baseline_flow + 3
+
+        result = kp.process_pending_work(limit=10, worker_id="test-worker")
+        assert result["claimed"] >= 1
+        assert result["processed"] >= 1
+        assert result["failed"] == 0
+        assert result["dead_lettered"] == 0
+
+        updated = kp.get("note:flow-queue")
+        assert updated is not None
+        assert updated.summary == content[:200]
+        assert kp.pending_work_count() == 0
+    finally:
+        kp.close()
+
+
+def test_enqueue_analyze_schedules_flow_work(monkeypatch, mock_providers, tmp_path):
+    kp = Keeper(store_path=tmp_path)
+    try:
+        monkeypatch.setattr(kp, "_needs_sysdoc_migration", False)
+        kp.put(content="Analyze me " * 60, id="note:analyze-queued")
+        baseline = kp.pending_work_count()
+        queued = kp.enqueue_analyze("note:analyze-queued")
+        assert queued is True
+        # The new analyze supersedes the one already enqueued by put(),
+        # so count stays the same rather than increasing.
+        assert kp.pending_work_count() == baseline
+    finally:
+        kp.close()
+
+
+def test_enqueue_analyze_flow_work_executes_local_task(monkeypatch, mock_providers, tmp_path):
+    kp = Keeper(store_path=tmp_path)
+    calls: list[dict] = []
+    original = kp._run_local_task_workflow
+    try:
+        monkeypatch.setattr(kp, "_needs_sysdoc_migration", False)
+        kp.put(content="Analyze me " * 60, id="note:analyze-run")
+
+        def _fake_run_local_task_workflow(
+            *,
+            task_type: str,
+            item_id: str,
+            collection: str,
+            content: str,
+            metadata: dict | None = None,
+        ) -> dict:
+            calls.append(
+                {
+                    "task_type": task_type,
+                    "item_id": item_id,
+                    "collection": collection,
+                    "content": content,
+                    "metadata": dict(metadata or {}),
+                }
+            )
+            return {"status": "applied", "details": {"parts_count": 2}}
+
+        kp._run_local_task_workflow = _fake_run_local_task_workflow  # type: ignore[assignment]
+        queued = kp.enqueue_analyze("note:analyze-run", tags=["topic"], force=True)
+        assert queued is True
+        result = kp.process_pending_work(limit=10, worker_id="test-worker")
+        assert result["processed"] >= 1
+        assert any(call["task_type"] == "analyze" for call in calls)
+    finally:
+        kp._run_local_task_workflow = original  # type: ignore[assignment]
+        kp.close()
+
+
+def test_enqueue_ocr_background_flow_executes_local_task(monkeypatch, mock_providers, tmp_path):
+    kp = Keeper(store_path=tmp_path)
+    calls: list[dict] = []
+    original = kp._run_local_task_workflow
+    try:
+        monkeypatch.setattr(kp, "_needs_sysdoc_migration", False)
+
+        def _fake_run_local_task_workflow(
+            *,
+            task_type: str,
+            item_id: str,
+            collection: str,
+            content: str,
+            metadata: dict | None = None,
+        ) -> dict:
+            calls.append(
+                {
+                    "task_type": task_type,
+                    "item_id": item_id,
+                    "collection": collection,
+                    "content": content,
+                    "metadata": dict(metadata or {}),
+                }
+            )
+            return {"status": "applied", "details": {"chars": 42}}
+
+        kp._run_local_task_workflow = _fake_run_local_task_workflow  # type: ignore[assignment]
+        doc_coll = kp._resolve_doc_collection()
+        kp._enqueue_ocr_background(
+            id="note:ocr-run",
+            doc_coll=doc_coll,
+            uri="file:///tmp/scan.pdf",
+            ocr_pages=[1, 3],
+            content_type="application/pdf",
+        )
+        result = kp.process_pending_work(limit=10, worker_id="test-worker")
+        assert result["processed"] >= 1
+        assert any(call["task_type"] == "ocr" for call in calls)
+    finally:
+        kp._run_local_task_workflow = original  # type: ignore[assignment]
         kp.close()
 
 
@@ -1001,7 +1107,7 @@ def test_continue_replays_pending_mutations_on_tick(mock_providers, tmp_path):
     kp = Keeper(store_path=tmp_path)
     try:
         kp.put(content="pending mutation source", id="note:pending", summary="pending mutation source")
-        runtime = kp._get_continuation_runtime()
+        runtime = kp._get_flow_runtime()
         mutation_id = runtime._insert_pending_mutation(
             flow_id="f_test_pending",
             work_id=None,
@@ -1032,7 +1138,7 @@ def test_continue_mutation_journal_is_idempotent_for_duplicate_ops(mock_provider
     kp = Keeper(store_path=tmp_path)
     try:
         kp.put(content="dup mutation source", id="note:dup-mutation", summary="dup mutation source")
-        runtime = kp._get_continuation_runtime()
+        runtime = kp._get_flow_runtime()
         op = {"op": "set_tags", "target": "note:dup-mutation", "tags": {"k": "v"}}
         first = runtime._insert_pending_mutation(flow_id="f_dup", work_id="w_dup", op=op)
         second = runtime._insert_pending_mutation(flow_id="f_dup", work_id="w_dup", op=op)
@@ -1066,7 +1172,7 @@ def test_continue_work_result_mutations_are_queued_then_replayed(mock_providers,
         op_entries = [op for op in work_ops if op.get("source") == "work" and op.get("op") == "set_summary"]
         assert op_entries
         assert op_entries[0]["status"] in {"queued", "applied"}
-        runtime = kp._get_continuation_runtime()
+        runtime = kp._get_flow_runtime()
         mutation_id = op_entries[0].get("mutation_id")
         assert isinstance(mutation_id, str) and mutation_id
         row = runtime._get_mutation(mutation_id)
@@ -1119,34 +1225,3 @@ def test_continue_debug_response_includes_state_and_output_hash(mock_providers, 
         kp.close()
 
 
-def test_continue_paused_flow_emits_decision_request_note(mock_providers, tmp_path):
-    kp = Keeper(store_path=tmp_path)
-    try:
-        content = "pause escalation content"
-        kp.put(content=content, id="note:pause", summary="placeholder")
-        first = kp.continue_flow(_summarize_request("note:pause", content, request_id="req-pause-1"))
-        assert first["status"] == "waiting_work"
-        current = first
-        for i in range(2, 5):
-            current = kp.continue_flow(
-                {
-                    "request_id": f"req-pause-{i}",
-                    "cursor": current["cursor"],
-                    "work_results": [],
-                }
-            )
-            if current["status"] == "paused":
-                break
-        assert current["status"] == "paused"
-        open_requests = kp.list_items(
-            tags={
-                "act": "request",
-                "status": "open",
-                "type": "decision",
-            },
-            limit=20,
-        )
-        assert open_requests
-        assert any(item.id.startswith("esc/decision/") for item in open_requests)
-    finally:
-        kp.close()

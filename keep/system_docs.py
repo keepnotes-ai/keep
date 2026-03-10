@@ -51,12 +51,11 @@ SYSTEM_DOC_DIR = _get_system_doc_dir()
 # Examples:
 #   tag-act-commitment.md                    -> .tag/act/commitment
 #   prompt-agent-session-start.md            -> .prompt/agent/session-start
-#   template-escalation-decision-request.md  -> .template/escalation/decision-request
 _PREFIX_DEPTH = {
     "tag": 2,
     "meta": 1,
     "prompt": 2,
-    "template": 2,
+    "state": 1,
 }
 
 

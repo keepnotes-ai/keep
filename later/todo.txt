@@ -1,7 +1,36 @@
 
+* move remaining stuff from the pending-queue?
+
+* summaries still begin with "Here’s a summary of the document, under 200 words:"
+
+* really bad summary for the Pixies tickets: doesn't name the event
+    Here’s a summary of the document, under 200 words:
+    This document confirms a customer’s order for a ticket to the Massachusetts Museum of Contemporary Art (MASS MoCA), organized by the Muhheaconneok or Mohican community and the Wabanaki peoples. The event celebrates Indigenous heritage and fosters inclusivity. MASS MoCA is committed to honoring and respecting these ancestral cultures, drawing inspiration from the land where the Muhheaconneok or Mohican people reside in Wisconsin and the Wabanaki Confederacy.
+    The document details the event’s location, featuring exhibits, performances, and educational opportunities centered around this history. It provides contact information for the box office and highlights a ticketing system. The document also includes information about the museum’s sponsors and mission, emphasizing its commitment to arts and culture.
+    Essentially, it’s a promotional message welcoming attendees to the MASS MoCA, with a significant focus on Indigenous history and the museum’s commitment to respectful representation.
+
+* `keep doctor --log` tail the ops log
+
+* `keep list` needs --sort id, created
+
+* `keep validate` should be merged into `keep doctor`
+
+* `keep validate --diagram` should move to `keep config --state-diagram`
+
+* CLI docstrings need update (and need tests since they keep breaking the rendered output)
+
 * chatgpt import
 
+* type: code
+
+* poc: "an append-only journal narrated in first person (experiences, not task logs)"
+    (also: "with periodic consolidation that compresses episodes into thematic structures" - our `analyze`)
+
 * `keep put --no-version` for volatile items
+
+* how to optimize the "get... relevant things"
+
+* how to optimize the "do... skillful things"
 
 * edge migration over versioning and move
 
@@ -243,3 +272,4 @@ x check for CLI compatibility with windows (WLS should work but no plan to valid
 . more edge tags for linking "artifacts" with "notes"
 . "reflective callback" queue -> continuations
 . simple "set status closed" thing -> singular tags
+. debounce

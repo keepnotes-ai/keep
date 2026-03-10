@@ -1,4 +1,4 @@
-"""Backend-agnostic continuation engine.
+"""Backend-agnostic flow engine.
 
 Implements a minimal `continue(input) -> output` loop with durable flow state
 and idempotency over pluggable storage/execution adapters.
@@ -14,15 +14,16 @@ import threading
 import uuid
 from typing import Any, Optional
 
-from .continuation_env import ContinuationRuntimeEnv
-from .continuation_executor import LocalWorkExecutor, WorkExecutor
-from .continuation_policy import (
+from .flow_env import FlowRuntimeEnv
+from .flow_executor import LocalWorkExecutor, WorkExecutor
+from .state_doc import EvalResult, StateDoc, parse_state_doc, evaluate_state_doc
+from .flow_policy import (
     DECISION_STRATEGIES,
     DECISION_SUPPORT_VERSION,
     DEFAULT_DECISION_POLICY,
-    ContinuationDecisionPolicy,
+    FlowDecisionPolicy,
 )
-from .continuation_store import (
+from .work_store import (
     FlowRow,
     FlowStore,
     MutationRow,
@@ -42,21 +43,24 @@ MAX_CONTINUE_EVENTS_PER_FLOW = 500
 CONTINUE_RESPONSE_MODES = {"standard", "debug"}
 PROGRAM_OVERRIDE_KEYS = {"params", "frame_request", "decision_policy"}
 
-class ContinuationEngine:
-    """Durable local continuation runtime."""
+class FlowEngine:
+    """Durable local flow runtime."""
 
     def __init__(
         self,
         *,
         flow_store: FlowStore,
-        env: ContinuationRuntimeEnv,
+        env: FlowRuntimeEnv,
         work_executor: WorkExecutor | None = None,
     ) -> None:
         self._env = env
         self._work_executor = work_executor or LocalWorkExecutor(env)
+        # Shared state-doc loader (reads .state/* notes from the store)
+        from .state_doc_runtime import make_state_doc_loader
+        self._state_doc_loader = make_state_doc_loader(env)
         self._flow_store = flow_store
         self._lock = threading.RLock()
-        self._decision_policy = ContinuationDecisionPolicy(
+        self._decision_policy = FlowDecisionPolicy(
             env=env,
             parse_where_tags=self._parse_where_tags,
             pipeline_limit=self._pipeline_limit,
@@ -270,6 +274,7 @@ class ContinuationEngine:
             for key in (
                 "goal",
                 "profile",
+                "template",
                 "params",
                 "frame_request",
                 "decision_policy",
@@ -283,6 +288,8 @@ class ContinuationEngine:
             program["goal"] = str(payload.get("goal") or "").strip().lower()
         if "profile" in payload:
             program["profile"] = str(payload.get("profile") or "").strip()
+        if "template" in payload:
+            program["template"] = str(payload.get("template") or "").strip()
         if "params" in payload:
             params = payload.get("params")
             program["params"] = params if isinstance(params, dict) else {}
@@ -602,56 +609,155 @@ class ContinuationEngine:
             return [step for step in plan if isinstance(step, dict)]
         return []
 
-    def _profile_steps(
-        self, program: dict[str, Any],
-    ) -> tuple[list[dict[str, Any]], Optional[dict[str, str]]]:
-        if self._is_query_auto_profile(program):
-            return [], None
+    # -----------------------------------------------------------------------
+    # State-doc integration
+    # -----------------------------------------------------------------------
 
-        profile = str(program.get("profile") or "").strip()
-        if not profile:
-            return [], None
+    def _load_state_doc(self, name: str) -> Optional[StateDoc]:
+        """Load a compiled state doc via the shared loader."""
+        return self._state_doc_loader(name)
 
-        profile_id = profile if profile.startswith(".profile/") else f".profile/{profile}"
-        doc = self._env.get(profile_id)
-        if doc is None:
-            return [], {"code": "unknown_profile", "message": f"Profile not found: {profile_id}"}
+    def _build_write_eval_context(
+        self,
+        target_id: str,
+        program: dict[str, Any],
+        write_context: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Build the CEL evaluation context for after-write state docs.
 
-        raw = str(doc.summary or "").strip()
-        if not raw:
-            return [], {"code": "invalid_input", "message": f"Profile is empty: {profile_id}"}
+        Exposes the written item's full observable state so predicates can
+        reference any field without the wiring layer pre-selecting which
+        fields are available.
 
-        parsed: Any = None
+        Context namespaces:
+            ``item.*``   — written item state (tags, content_length, source, …)
+            ``params.*`` — caller-supplied write parameters
+            ``write.*``  — write context (content_type, ocr_pages, …)
+        """
+        params = program.get("params") or {}
+        if not isinstance(params, dict):
+            params = {}
+
+        content = write_context.get("content") or ""
+        uri = write_context.get("uri") or ""
+        ocr_pages = write_context.get("ocr_pages") or []
+
+        # Fetch the written item to inspect current state
+        item_note = self._env.get(target_id)
+        item_tags: dict[str, Any] = {}
+        item_summary = ""
+        if item_note is not None:
+            raw_tags = getattr(item_note, "tags", None)
+            item_tags = dict(raw_tags) if isinstance(raw_tags, dict) else {}
+            item_summary = str(getattr(item_note, "summary", "") or "")
+
+        # has_summary: True only if the caller explicitly provided a summary.
+        # The auto-truncated summary from put_item doesn't count — the purpose
+        # of after-write is to decide whether AI summarization is needed.
+        has_summary = bool(params.get("summary"))
+
+        source = str(item_tags.get("_source") or "inline").strip().lower()
+        is_system_note = target_id.startswith(".")
+
+        item_ctx: dict[str, Any] = {
+            "id": target_id,
+            "content_length": len(content) if isinstance(content, str) else 0,
+            "has_summary": has_summary,
+            "is_system_note": is_system_note,
+            "source": source,
+            "has_uri": bool(uri),
+            "uri": uri,
+            "summary": item_summary,
+            "tags": item_tags,
+            "ocr_pages": list(ocr_pages) if isinstance(ocr_pages, list) else [],
+        }
+
+        params_ctx = dict(params)
+        params_ctx["item_id"] = target_id
+
+        if "max_summary_length" not in params_ctx:
+            params_ctx["max_summary_length"] = 0
+
+        write_ctx: dict[str, Any] = {
+            "content_type": str(write_context.get("content_type") or ""),
+            "uri": uri,
+            "ocr_pages": item_ctx["ocr_pages"],
+        }
+
+        return {"item": item_ctx, "params": params_ctx, "write": write_ctx}
+
+    def _state_doc_followup_ops(
+        self,
+        *,
+        flow_id: str,
+        doc: StateDoc,
+        context: dict[str, Any],
+        target_id: str,
+        write_context: dict[str, Any],
+    ) -> tuple[list[dict[str, Any]], Optional[EvalResult], Optional[dict[str, str]]]:
+        """Evaluate state doc and convert fired actions to enqueue_task ops.
+
+        Returns ``(ops, eval_result, error)``.  The caller uses
+        ``eval_result`` to inspect terminal/transition status from the
+        state doc.  Action ``with:`` params are passed through generically
+        as task metadata — the wiring layer does not filter or gate actions.
+        """
         try:
-            parsed = json.loads(raw)
-        except Exception:
-            try:
-                import yaml
+            result = evaluate_state_doc(doc, context)
+        except Exception as exc:
+            logger.warning("State doc %r evaluation failed: %s", doc.name, exc)
+            return [], None, {"code": "state_doc_eval_error", "message": str(exc)}
 
-                parsed = yaml.safe_load(raw)
-            except Exception:
-                parsed = None
-        if not isinstance(parsed, dict):
-            return [], {"code": "invalid_input", "message": f"Profile must parse to an object: {profile_id}"}
+        if not result.actions:
+            return [], result, None
 
-        if not isinstance(program.get("decision_policy"), dict):
-            profile_policy = parsed.get("decision_policy")
-            if isinstance(profile_policy, dict):
-                program["decision_policy"] = dict(profile_policy)
+        doc_coll = self._env.resolve_doc_collection()
+        content = str(write_context.get("content") or "")
+        item_tags = context.get("item", {}).get("tags")
+        ops: list[dict[str, Any]] = []
 
-        steps = parsed.get("steps")
-        if isinstance(steps, list):
-            normalized_steps = [dict(step) for step in steps if isinstance(step, dict)]
-            return normalized_steps, None
-        return [], {"code": "invalid_input", "message": f"Profile missing steps: {profile_id}"}
+        for action_entry in result.actions:
+            action_name = str(action_entry.get("action") or "").strip()
+            if not action_name:
+                continue
+
+            # State doc with: params become task metadata (generic passthrough)
+            action_params = action_entry.get("params") or {}
+            metadata = dict(action_params) if isinstance(action_params, dict) else {}
+
+            # Merge write-context defaults that the task workflow may need.
+            # State doc with: params take precedence over these defaults.
+            write_defaults = {
+                "uri": write_context.get("uri") or "",
+                "content_type": write_context.get("content_type") or "",
+            }
+            ocr_pages = write_context.get("ocr_pages")
+            if isinstance(ocr_pages, list):
+                write_defaults["ocr_pages"] = self._coerce_ocr_pages(ocr_pages)
+            for key, default_val in write_defaults.items():
+                if key not in metadata and default_val:
+                    metadata[key] = default_val
+
+            op: dict[str, Any] = {
+                "op": "enqueue_task",
+                "task_type": action_name,
+                "target": target_id,
+                "collection": doc_coll,
+                "content": content,
+            }
+            if metadata:
+                op["metadata"] = metadata
+            if isinstance(item_tags, dict):
+                op["tags"] = dict(item_tags)
+
+            ops.append(op)
+
+        return ops, result, None
 
     def _resolved_plan(
         self, program: dict[str, Any],
     ) -> tuple[list[dict[str, Any]], Optional[dict[str, str]]]:
-        inline = self._program_steps(program)
-        if inline:
-            return inline, None
-        return self._profile_steps(program)
+        return self._program_steps(program), None
 
     @staticmethod
     def _work_step_key(step: dict[str, Any], idx: int) -> str:
@@ -725,25 +831,37 @@ class ContinuationEngine:
         executor_class: str,
         input_payload: dict[str, Any],
         output_contract: dict[str, Any],
-        quality_gates: dict[str, Any],
-        escalate_if: list[str],
         executor_id: str,
     ) -> dict[str, Any]:
+        # Build supersede key from (kind, item_id) so rapid updates
+        # to the same item supersede older unclaimed work of the same type.
+        item_id = input_payload.get("item_id")
+        supersede_key = f"{kind}:{item_id}" if item_id else None
+
         work_id = self._flow_store.insert_work(
             flow_id=flow_id,
             kind=kind,
             input_json=json.dumps(input_payload, ensure_ascii=False),
             output_contract_json=json.dumps(output_contract, ensure_ascii=False),
+            supersede_key=supersede_key,
         )
+        # Mark older unclaimed work for same (kind, item_id) as superseded.
+        if supersede_key:
+            superseded = self._flow_store.supersede_prior_work(supersede_key, work_id)
+            if superseded:
+                logger.info("work: enqueued %s %s (superseded %d prior)", kind, item_id, superseded)
+            else:
+                logger.info("work: enqueued %s %s", kind, item_id)
+        else:
+            logger.info("work: enqueued %s", kind)
+
         return {
             "work_id": work_id,
             "kind": kind,
             "executor_class": executor_class or "unspecified",
             "suggested_executor_id": executor_id,
-            "input": {"id": input_payload.get("item_id")},
+            "input": {"id": item_id},
             "output_contract": output_contract,
-            "quality_gates": quality_gates,
-            "escalate_if": escalate_if,
         }
 
     def _enqueue_work_step(
@@ -771,26 +889,12 @@ class ContinuationEngine:
             executor = {}
         executor_class = str(step.get("executor_class") or executor.get("class") or "unspecified")
         executor_id = str(step.get("executor_id") or executor.get("id") or "")
-        quality_gates = step.get("quality_gates") or {}
-        if not isinstance(quality_gates, dict):
-            return None, {"code": "invalid_input", "message": "work step quality_gates must be an object"}
-        if not quality_gates:
-            quality_gates = {
-                "min_confidence": 0.0,
-                "citation_required": False,
-            }
-        escalate_if = step.get("escalate_if") or []
-        if not isinstance(escalate_if, list):
-            return None, {"code": "invalid_input", "message": "work step escalate_if must be a list"}
-        normalized_escalate_if = [str(reason) for reason in escalate_if if str(reason).strip()]
 
         input_payload: dict[str, Any] = {
             "runner": runner,
             "apply": step.get("apply") or {},
             "_executor_class": executor_class,
             "_executor_id": executor_id,
-            "_quality_gates": quality_gates,
-            "_escalate_if": normalized_escalate_if,
         }
 
         if input_mode == "note_content":
@@ -830,8 +934,6 @@ class ContinuationEngine:
             executor_class=executor_class,
             input_payload=input_payload,
             output_contract=output_contract,
-            quality_gates=quality_gates,
-            escalate_if=normalized_escalate_if,
             executor_id=executor_id,
         )
         return request_work, None
@@ -875,8 +977,6 @@ class ContinuationEngine:
             "suggested_executor_id": str(work_input.get("_executor_id") or ""),
             "input": {"id": work_input.get("item_id")},
             "output_contract": json.loads(row.output_contract_json),
-            "quality_gates": work_input.get("_quality_gates") or {},
-            "escalate_if": work_input.get("_escalate_if") or [],
         }
 
     def _apply_work_result(
@@ -946,45 +1046,68 @@ class ContinuationEngine:
             return value
         if isinstance(value, list):
             return [
-                ContinuationEngine._resolve_mutation_value(v, outputs=outputs, work_input=work_input)
+                FlowEngine._resolve_mutation_value(v, outputs=outputs, work_input=work_input)
                 for v in value
             ]
         if isinstance(value, dict):
             return {
-                str(k): ContinuationEngine._resolve_mutation_value(v, outputs=outputs, work_input=work_input)
+                str(k): FlowEngine._resolve_mutation_value(v, outputs=outputs, work_input=work_input)
                 for k, v in value.items()
             }
         return value
 
+    @staticmethod
+    def _coerce_ocr_pages(value: Any) -> list[int]:
+        if isinstance(value, list):
+            out: list[int] = []
+            for item in value:
+                try:
+                    out.append(int(item))
+                except Exception:
+                    continue
+            return out
+        return []
+
     def _mutation_ops_from_work(
         self, work_input: dict[str, Any], outputs: dict[str, Any],
     ) -> tuple[list[dict[str, Any]], Optional[dict[str, str]]]:
+        raw_lists: list[list[Any]] = []
+
+        output_mutations = outputs.get("mutations")
+        if output_mutations is not None:
+            if not isinstance(output_mutations, list):
+                return [], {"code": "invalid_input", "message": "output.mutations must be a list"}
+            raw_lists.append(output_mutations)
+
         apply_spec = work_input.get("apply") or {}
         if not isinstance(apply_spec, dict):
             return [], {"code": "invalid_input", "message": "work input apply spec must be an object"}
-        ops = apply_spec.get("ops")
-        if ops is None:
+        apply_ops = apply_spec.get("ops")
+        if apply_ops is not None:
+            if not isinstance(apply_ops, list):
+                return [], {"code": "invalid_input", "message": "apply.ops must be a list"}
+            raw_lists.append(apply_ops)
+        if not raw_lists:
             return [], None
-        if not isinstance(ops, list):
-            return [], {"code": "invalid_input", "message": "apply.ops must be a list"}
 
         default_target = work_input.get("item_id")
         normalized: list[dict[str, Any]] = []
-        for raw in ops:
-            if not isinstance(raw, dict):
-                return [], {"code": "invalid_input", "message": "apply.ops entries must be objects"}
-            op = {str(k): v for k, v in raw.items()}
-            op_name = str(op.get("op") or "")
-            if not op_name:
-                return [], {"code": "invalid_input", "message": "mutation op requires op field"}
-            if "target" not in op and default_target:
-                op["target"] = default_target
+        for raw_ops in raw_lists:
+            for raw in raw_ops:
+                if not isinstance(raw, dict):
+                    return [], {"code": "invalid_input", "message": "mutation op entries must be objects"}
+                op = {str(k): v for k, v in raw.items()}
+                op_name = str(op.get("op") or "")
+                if not op_name:
+                    return [], {"code": "invalid_input", "message": "mutation op requires op field"}
+                if "target" not in op and default_target:
+                    op["target"] = default_target
 
-            resolved = {
-                str(k): self._resolve_mutation_value(v, outputs=outputs, work_input=work_input)
-                for k, v in op.items()
-            }
-            normalized.append(resolved)
+                resolved = {
+                    str(k): self._resolve_mutation_value(v, outputs=outputs, work_input=work_input)
+                    for k, v in op.items()
+                }
+                normalized.append(resolved)
         return normalized, None
 
     def _validate_mutation_op(
@@ -992,8 +1115,21 @@ class ContinuationEngine:
     ) -> tuple[dict[str, Any], Optional[dict[str, str]]]:
         allowed_fields: dict[str, set[str]] = {
             "upsert_item": {"op", "target", "content", "tags", "summary"},
+            "put_item": {
+                "op",
+                "content",
+                "uri",
+                "id",
+                "tags",
+                "summary",
+                "created_at",
+                "force",
+                "queue_background_tasks",
+                "capture_write_context",
+            },
             "set_tags": {"op", "target", "tags"},
             "set_summary": {"op", "target", "summary"},
+            "enqueue_task": {"op", "task_type", "target", "collection", "content", "metadata", "tags"},
         }
         normalized = {str(k): v for k, v in op.items()}
         op_name = str(normalized.get("op") or "")
@@ -1007,7 +1143,7 @@ class ContinuationEngine:
                 "message": f"Unsupported fields for {op_name}: " + ", ".join(unknown_fields),
             }
         target = normalized.get("target")
-        if target:
+        if target and op_name in {"upsert_item", "set_tags", "set_summary"}:
             target_id = str(target)
             if self._is_protected_note_id(target_id):
                 return {}, {
@@ -1022,6 +1158,23 @@ class ContinuationEngine:
             tags = normalized.get("tags")
             if tags is not None and not isinstance(tags, dict):
                 return {}, {"code": "invalid_input", "message": "upsert_item.tags must be an object"}
+        elif op_name == "put_item":
+            has_content = normalized.get("content") is not None
+            has_uri = bool(normalized.get("uri"))
+            if has_content == has_uri:
+                return {}, {
+                    "code": "missing_required_field",
+                    "message": "put_item requires exactly one of content or uri",
+                }
+            tags = normalized.get("tags")
+            if tags is not None and not isinstance(tags, dict):
+                return {}, {"code": "invalid_input", "message": "put_item.tags must be an object"}
+            if "force" in normalized and not isinstance(normalized.get("force"), bool):
+                return {}, {"code": "invalid_input", "message": "put_item.force must be a boolean"}
+            if "queue_background_tasks" in normalized and not isinstance(normalized.get("queue_background_tasks"), bool):
+                return {}, {"code": "invalid_input", "message": "put_item.queue_background_tasks must be a boolean"}
+            if "capture_write_context" in normalized and not isinstance(normalized.get("capture_write_context"), bool):
+                return {}, {"code": "invalid_input", "message": "put_item.capture_write_context must be a boolean"}
         elif op_name == "set_tags":
             if not target:
                 return {}, {"code": "missing_required_field", "message": "set_tags requires target"}
@@ -1032,6 +1185,15 @@ class ContinuationEngine:
                 return {}, {"code": "missing_required_field", "message": "set_summary requires target"}
             if normalized.get("summary") is None:
                 return {}, {"code": "missing_required_field", "message": "set_summary requires summary"}
+        elif op_name == "enqueue_task":
+            if not target:
+                return {}, {"code": "missing_required_field", "message": "enqueue_task requires target"}
+            if not str(normalized.get("task_type") or "").strip():
+                return {}, {"code": "missing_required_field", "message": "enqueue_task requires task_type"}
+            if "metadata" in normalized and not isinstance(normalized.get("metadata"), dict):
+                return {}, {"code": "invalid_input", "message": "enqueue_task.metadata must be an object"}
+            if "tags" in normalized and not isinstance(normalized.get("tags"), dict):
+                return {}, {"code": "invalid_input", "message": "enqueue_task.tags must be an object"}
         return normalized, None
 
     def _insert_pending_mutation(
@@ -1075,6 +1237,27 @@ class ContinuationEngine:
                 summary=str(summary) if summary is not None else None,
             )
             return {"op": op_name, "target": target, "status": "applied"}, None
+        if op_name == "put_item":
+            tags = op.get("tags")
+            summary = op.get("summary")
+            item = self._env.put_item(
+                content=str(op.get("content")) if op.get("content") is not None else None,
+                uri=str(op.get("uri")) if op.get("uri") else None,
+                id=str(op.get("id")) if op.get("id") else None,
+                summary=str(summary) if summary is not None else None,
+                tags=tags if isinstance(tags, dict) else None,
+                created_at=str(op.get("created_at")) if op.get("created_at") else None,
+                force=bool(op.get("force", False)),
+                queue_background_tasks=bool(op.get("queue_background_tasks", True)),
+                capture_write_context=bool(op.get("capture_write_context", False)),
+            )
+            changed = getattr(item, "changed", None)
+            status = "noop" if changed is False else "applied"
+            return {
+                "op": op_name,
+                "target": str(getattr(item, "id", "") or op.get("id") or ""),
+                "status": status,
+            }, None
         if op_name == "set_tags":
             tags = op.get("tags")
             if not isinstance(tags, dict):
@@ -1091,6 +1274,26 @@ class ContinuationEngine:
                 return {"op": op_name, "target": target, "status": "noop"}, None
             self._env.set_summary(target, str(summary))
             return {"op": op_name, "target": target, "status": "applied"}, None
+        if op_name == "enqueue_task":
+            task_type = str(op.get("task_type") or "").strip()
+            metadata = op.get("metadata") if isinstance(op.get("metadata"), dict) else {}
+            tags = op.get("tags") if isinstance(op.get("tags"), dict) else {}
+            collection = str(op.get("collection") or self._env.resolve_doc_collection())
+            content = str(op.get("content") or "")
+            self._env.enqueue_task(
+                task_type=task_type,
+                item_id=target,
+                collection=collection,
+                content=content,
+                metadata=metadata,
+                tags=tags,
+            )
+            return {
+                "op": op_name,
+                "target": target,
+                "status": "queued",
+                "task_type": task_type,
+            }, None
         return {}, {"code": "invalid_input", "message": f"Unsupported mutation op: {op_name}"}
 
     def _replay_pending_mutations(
@@ -1144,6 +1347,7 @@ class ContinuationEngine:
             op, err = self._validate_mutation_op(raw_op)
             if err is not None:
                 return [], err
+            target_hint = str(op.get("target") or op.get("id") or "")
             mutation_id = self._insert_pending_mutation(flow_id=flow_id, work_id=work_id, op=op)
             existing = self._get_mutation(mutation_id)
             if existing is not None and existing.status == "applied":
@@ -1151,7 +1355,7 @@ class ContinuationEngine:
                     source=source,
                     work_id=work_id,
                     op=str(op.get("op") or ""),
-                    target=str(op.get("target") or ""),
+                    target=target_hint,
                     status="applied",
                     mutation_id=mutation_id,
                 ))
@@ -1161,12 +1365,13 @@ class ContinuationEngine:
                     "code": "mutation_failed",
                     "message": existing.error or "previous mutation attempt failed",
                 }
-            if in_tx:
+            apply_in_tx = str(op.get("op") or "") in {"put_item", "enqueue_task"}
+            if in_tx and not apply_in_tx:
                 applied.append(self._applied_entry(
                     source=source,
                     work_id=work_id,
                     op=str(op.get("op") or ""),
-                    target=str(op.get("target") or ""),
+                    target=target_hint,
                     status="queued",
                     mutation_id=mutation_id,
                 ))
@@ -1264,88 +1469,12 @@ class ContinuationEngine:
 
     @staticmethod
     def _empty_discriminators() -> dict[str, Any]:
-        return ContinuationDecisionPolicy.empty_discriminators()
-
-    @staticmethod
-    def _as_float(value: Any, default: float) -> float:
-        return ContinuationDecisionPolicy.as_float(value, default)
-
-    @staticmethod
-    def _clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
-        return ContinuationDecisionPolicy.clamp(value, low, high)
-
-    def _decision_policy_from_program(self, program: dict[str, Any]) -> dict[str, Any]:
-        return self._decision_policy.decision_policy_from_program(program)
-
-    @staticmethod
-    def _empty_lineage_signal() -> dict[str, Any]:
-        return ContinuationDecisionPolicy.empty_lineage_signal()
-
-    def _lineage_signal(
-        self, evidence: list[dict[str, Any]], *, field: str, topk: int,
-    ) -> dict[str, Any]:
-        return self._decision_policy.lineage_signal(evidence, field=field, topk=topk)
-
-    def _lineage_signals(self, evidence: list[dict[str, Any]], *, topk: int) -> dict[str, Any]:
-        return self._decision_policy.lineage_signals(evidence, topk=topk)
+        return FlowDecisionPolicy.empty_discriminators()
 
     def _decision_override_from_payload(
         self, payload: dict[str, Any],
     ) -> tuple[Optional[dict[str, Any]], Optional[dict[str, str]]]:
-        return ContinuationDecisionPolicy.decision_override_from_payload(payload)
-
-    def _candidate_subject_keys(
-        self, frame_request: dict[str, Any], evidence: list[dict[str, Any]],
-    ) -> list[str]:
-        return self._decision_policy.candidate_subject_keys(frame_request, evidence)
-
-    def _tag_key_kind(self, key: str, *, cache: Optional[dict[str, str]] = None) -> str:
-        return self._decision_policy.tag_key_kind(key, cache=cache)
-
-    @staticmethod
-    def _best_fact_from_counts(
-        counts: dict[tuple[str, str], int], *, total: int,
-    ) -> Optional[str]:
-        return ContinuationDecisionPolicy.best_fact_from_counts(counts, total=total)
-
-    def _tag_profile(self, evidence: list[dict[str, Any]], *, topk: int) -> dict[str, Any]:
-        return self._decision_policy.tag_profile(evidence, topk=topk)
-
-    def _query_stats(
-        self,
-        *,
-        frame_request: dict[str, Any],
-        evidence: list[dict[str, Any]],
-        previous_evidence_ids: list[str],
-        topk: int,
-    ) -> dict[str, float]:
-        return self._decision_policy.query_stats(
-            frame_request=frame_request,
-            evidence=evidence,
-            previous_evidence_ids=previous_evidence_ids,
-            topk=topk,
-        )
-
-    def _choose_strategy(
-        self,
-        *,
-        query_stats: dict[str, float],
-        lineage: dict[str, Any],
-        policy: dict[str, Any],
-        staleness: dict[str, Any],
-        decision_override: Optional[dict[str, Any]],
-    ) -> tuple[str, list[str]]:
-        return self._decision_policy.choose_strategy(
-            query_stats=query_stats,
-            lineage=lineage,
-            policy=policy,
-            staleness=staleness,
-            decision_override=decision_override,
-        )
-
-    @staticmethod
-    def _pivot_ids(evidence: list[dict[str, Any]], *, strategy: str, max_pivots: int) -> list[str]:
-        return ContinuationDecisionPolicy.pivot_ids(evidence, strategy=strategy, max_pivots=max_pivots)
+        return FlowDecisionPolicy.decision_override_from_payload(payload)
 
     def _decision_capsule(
         self,
@@ -1364,9 +1493,6 @@ class ContinuationEngine:
             decision_override=decision_override,
         )
 
-    def _dominant_tag_fact(self, evidence: list[dict[str, Any]]) -> Optional[str]:
-        return self._decision_policy.dominant_tag_fact(evidence)
-
     def _query_auto_next_frame_request(
         self,
         *,
@@ -1380,16 +1506,11 @@ class ContinuationEngine:
             decision_snapshot=decision_snapshot,
         )
 
-    def _top_tag_facts(
-        self, evidence: list[dict[str, Any]], *, max_facts: int = 2,
-    ) -> list[str]:
-        return self._decision_policy.top_tag_facts(evidence, max_facts=max_facts)
-
     @staticmethod
     def _query_auto_branch_utility(
         *, discriminators: dict[str, Any], evidence_count: int,
     ) -> float:
-        return ContinuationDecisionPolicy.query_auto_branch_utility(
+        return FlowDecisionPolicy.query_auto_branch_utility(
             discriminators=discriminators,
             evidence_count=evidence_count,
         )
@@ -1405,6 +1526,8 @@ class ContinuationEngine:
             evidence=evidence,
         )
 
+    _WRITE_OP_FIELDS = ["content", "uri", "id", "summary", "tags", "created_at", "force"]
+
     def _apply_inline_write(
         self, state: dict[str, Any], program: dict[str, Any], *, flow_id: str,
     ) -> tuple[list[dict[str, Any]], Optional[dict[str, str]]]:
@@ -1417,23 +1540,101 @@ class ContinuationEngine:
         if not isinstance(params, dict):
             return [], {"code": "invalid_input", "message": "write goal requires params object"}
 
-        item_id = params.get("id")
-        content = params.get("content")
-        if not item_id or content is None:
+        # Validate required fields
+        has_content = params.get("content") is not None
+        has_uri = bool(params.get("uri"))
+        if has_content == has_uri:  # exactly one required
             return [], {
                 "code": "missing_required_field",
-                "message": "write goal requires params.id and params.content",
+                "message": "write goal requires exactly one of params.content, params.uri",
             }
-        ops = [{
-            "op": "upsert_item",
-            "target": str(item_id),
-            "content": str(content),
-            "tags": params.get("tags"),
-            "summary": params.get("summary"),
-        }]
-        applied, err = self._apply_mutation_ops(ops, flow_id=flow_id, work_id=None)
+
+        # Build put_item mutation
+        op: dict[str, Any] = {"op": "put_item"}
+        for key in self._WRITE_OP_FIELDS:
+            if key in params:
+                op[key] = params.get(key)
+        op["queue_background_tasks"] = False
+        op["capture_write_context"] = True
+
+        applied, err = self._apply_mutation_ops([op], flow_id=flow_id, work_id=None)
         if err is not None:
             return [], err
+
+        target_id = ""
+        write_status = ""
+        for entry in reversed(applied):
+            if not isinstance(entry, dict):
+                continue
+            if str(entry.get("op") or "") not in {"put_item", "upsert_item"}:
+                continue
+            target_id = str(entry.get("target") or "").strip()
+            write_status = str(entry.get("status") or "").strip()
+            if target_id:
+                break
+        if not target_id:
+            if params.get("id"):
+                target_id = str(params.get("id"))
+            elif params.get("uri"):
+                target_id = str(params.get("uri"))
+
+        if target_id and write_status != "noop":
+            write_context = self._env.consume_write_context(target_id) or {}
+            if not isinstance(write_context, dict):
+                write_context = {}
+            if "content" not in write_context and params.get("content") is not None:
+                write_context["content"] = params.get("content")
+            if "uri" not in write_context and params.get("uri"):
+                write_context["uri"] = params.get("uri")
+            if "ocr_pages" not in write_context:
+                write_context["ocr_pages"] = []
+            if "content_type" not in write_context:
+                write_context["content_type"] = ""
+
+            # State-doc evaluation for after-write processing.
+            # Skip for system notes (id starts with ".") — infrastructure
+            # should not trigger user-defined processing flows.
+            followup_ops: list[dict[str, Any]] = []
+            if not target_id.startswith("."):
+                state_doc = self._load_state_doc("after-write")
+                if state_doc is not None:
+                    eval_ctx = self._build_write_eval_context(target_id, program, write_context)
+                    followup_ops, eval_result, sd_err = self._state_doc_followup_ops(
+                        flow_id=flow_id,
+                        doc=state_doc,
+                        context=eval_ctx,
+                        target_id=target_id,
+                        write_context=write_context,
+                    )
+                    if sd_err is not None:
+                        logger.warning(
+                            "State doc after-write eval failed: %s",
+                            sd_err.get("message"),
+                        )
+                        followup_ops = []
+                    elif eval_result is not None:
+                        if eval_result.terminal == "error":
+                            return applied, {
+                                "code": "state_doc_terminal_error",
+                                "message": (
+                                    eval_result.terminal_data.get("reason", "state doc returned error")
+                                    if isinstance(eval_result.terminal_data, dict)
+                                    else "state doc returned error"
+                                ),
+                            }
+                        if eval_result.transition is not None:
+                            frontier = state.setdefault("frontier", {})
+                            frontier["state_doc_transition"] = eval_result.transition
+
+            if followup_ops:
+                followup_applied, followup_apply_err = self._apply_mutation_ops(
+                    followup_ops,
+                    flow_id=flow_id,
+                    work_id=None,
+                )
+                if followup_apply_err is not None:
+                    return [], followup_apply_err
+                applied.extend(followup_applied)
         state.setdefault("frontier", {})["write_applied"] = True
         return applied, None
 
@@ -1454,43 +1655,6 @@ class ContinuationEngine:
         if has_evidence:
             return "explore"
         return "tick"
-
-    def _emit_pause_decision_request(
-        self,
-        *,
-        flow_id: str,
-        cursor: str,
-        goal: str,
-        stage: str,
-        requested_work: list[dict[str, Any]],
-    ) -> Optional[str]:
-        requested_kinds = sorted(
-            {
-                str(w.get("kind") or "").strip()
-                for w in requested_work
-                if isinstance(w, dict) and str(w.get("kind") or "").strip()
-            }
-        )
-        event_material = f"{flow_id}|paused|{goal}"
-        event_id = hashlib.sha256(event_material.encode("utf-8")).hexdigest()[:16]
-        context = {
-            "event_id": event_id,
-            "flow_id": flow_id,
-            "cursor": cursor,
-            "goal": goal or "unknown",
-            "stage": stage or "paused",
-            "requested_count": len(requested_work),
-            "requested_kinds": ",".join(requested_kinds) if requested_kinds else "none",
-            "reason": "Flow paused awaiting work feedback or decision",
-        }
-        try:
-            return self._env.emit_escalation_note(
-                "decision-request",
-                context=context,
-            )
-        except Exception as exc:
-            logger.warning("Could not emit pause decision request for %s: %s", flow_id, exc)
-            return None
 
     def continue_flow(self, payload: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(payload, dict):
@@ -1929,7 +2093,7 @@ class ContinuationEngine:
                 state_bytes = len(state_json.encode("utf-8"))
                 if state_bytes > MAX_CONTINUE_STATE_BYTES:
                     raise ValueError(
-                        f"continuation state exceeds max size ({state_bytes} > {MAX_CONTINUE_STATE_BYTES} bytes)"
+                        f"flow state exceeds max size ({state_bytes} > {MAX_CONTINUE_STATE_BYTES} bytes)"
                     )
                 self._flow_store.update_flow(
                     flow.flow_id,
@@ -2028,23 +2192,6 @@ class ContinuationEngine:
                             "errors": output.get("errors", []),
                         }
                     )
-                if output.get("status") == "paused":
-                    pause_note_id = self._emit_pause_decision_request(
-                        flow_id=flow.flow_id,
-                        cursor=str(output.get("cursor") or ""),
-                        goal=goal,
-                        stage=cursor_stage,
-                        requested_work=request_work,
-                    )
-                    if pause_note_id:
-                        if include_debug_fields:
-                            state_obj = output.get("state")
-                            if isinstance(state_obj, dict):
-                                frontier_obj = state_obj.get("frontier")
-                                if not isinstance(frontier_obj, dict):
-                                    frontier_obj = {}
-                                    state_obj["frontier"] = frontier_obj
-                                frontier_obj["pause_request_id"] = pause_note_id
                 if idempotency_key:
                     self._store_idempotent(str(idempotency_key), request_hash, output)
                 return output
@@ -2065,9 +2212,28 @@ class ContinuationEngine:
             if work.status != "requested":
                 raise ValueError(f"work_id is not pending: {work_id}")
             payload = json.loads(work.input_json)
-            attempt = work.attempt
+            work_row = work
 
         execution = self._work_executor.execute(payload)
+        return self._work_result_from_execution(
+            work_id=work_id,
+            payload=payload,
+            execution=execution,
+            attempt=int(work_row.attempt),
+        )
+
+    def count_requested_work(self, *, claimable_only: bool = False) -> int:
+        with self._lock:
+            return self._flow_store.count_requested_work(claimable_only=claimable_only)
+
+    def _work_result_from_execution(
+        self,
+        *,
+        work_id: str,
+        payload: dict[str, Any],
+        execution: Any,
+        attempt: int,
+    ) -> dict[str, Any]:
         content = str(payload.get("content") or "")
         runner = payload.get("runner") or {}
         executor_id = str(payload.get("_executor_id") or runner.get("executor_id") or execution.executor_id or "local.runner")
@@ -2079,9 +2245,137 @@ class ContinuationEngine:
             "quality": execution.quality,
             "provenance": {
                 "input_hash": hashlib.sha256(content.encode("utf-8")).hexdigest(),
-                "attempt": attempt,
+                "attempt": int(attempt),
             },
         }
+
+    def _submit_work_result(self, flow_id: str, work_result: dict[str, Any]) -> dict[str, Any]:
+        # Multiple workers may advance flow state in parallel. Retry state conflicts
+        # with a fresh cursor so the claimed work result is eventually applied.
+        last_output: Optional[dict[str, Any]] = None
+        for _ in range(3):
+            with self._lock:
+                flow = self._get_flow(flow_id)
+                if flow is None:
+                    raise ValueError(f"unknown flow_id: {flow_id}")
+                cursor = self._encode_cursor(flow.flow_id, flow.state_version)
+            output = self.continue_flow(
+                {
+                    "request_id": f"work-{work_result.get('work_id')}-{uuid.uuid4().hex[:8]}",
+                    "cursor": cursor,
+                    "work_results": [work_result],
+                }
+            )
+            last_output = output
+            if str(output.get("status") or "") != "failed":
+                return output
+            errors = output.get("errors") or []
+            first = errors[0] if isinstance(errors, list) and errors and isinstance(errors[0], dict) else {}
+            if str(first.get("code") or "") != "state_conflict":
+                return output
+        return last_output or {"status": "failed", "errors": [{"code": "state_conflict"}]}
+
+    def _release_claim_for_retry(
+        self,
+        *,
+        work: WorkRow,
+        worker_id: str,
+        error: str,
+    ) -> str:
+        with self._lock:
+            self._flow_store.release_work_for_retry(
+                work_id=work.work_id,
+                worker_id=worker_id,
+                error=error,
+            )
+            refreshed = self._get_work(work.flow_id, work.work_id)
+        return str(refreshed.status) if refreshed is not None else "unknown"
+
+    def process_requested_work_batch(
+        self,
+        *,
+        worker_id: str,
+        limit: int = 10,
+        lease_seconds: int = 120,
+    ) -> dict[str, Any]:
+        worker = str(worker_id or "").strip()
+        if not worker:
+            raise ValueError("worker_id is required")
+        with self._lock:
+            claimed = self._flow_store.claim_requested_work(
+                worker_id=worker,
+                limit=max(1, int(limit)),
+                lease_seconds=max(1, int(lease_seconds)),
+            )
+
+        if claimed:
+            logger.info("work: claimed %d items (%s)", len(claimed), worker)
+
+        result: dict[str, Any] = {
+            "claimed": len(claimed),
+            "processed": 0,
+            "failed": 0,
+            "dead_lettered": 0,
+            "errors": [],
+        }
+        for work in claimed:
+            # Bail early if a newer task for the same (kind, item_id) was
+            # enqueued after this one was claimed — avoids wasted work on
+            # rapidly-updated items like the "now" vstring.
+            if work.supersede_key and work.created_at:
+                with self._lock:
+                    if self._flow_store.has_superseding_work(work.work_id, work.supersede_key, work.created_at):
+                        self._flow_store.update_work_result(
+                            work_id=work.work_id,
+                            status="superseded",
+                            result_json='{"status":"superseded"}',
+                        )
+                        logger.info("Superseded claimed work %s (%s)", work.work_id, work.supersede_key)
+                        continue
+
+            payload = json.loads(work.input_json)
+            attempt = int(work.attempt)
+            try:
+                execution = self._work_executor.execute(payload)
+                work_result = self._work_result_from_execution(
+                    work_id=work.work_id,
+                    payload=payload,
+                    execution=execution,
+                    attempt=attempt,
+                )
+                output = self._submit_work_result(work.flow_id, work_result)
+                with self._lock:
+                    refreshed = self._get_work(work.flow_id, work.work_id)
+                if refreshed is not None and refreshed.status in {"completed", "failed"}:
+                    result["processed"] += 1
+                    logger.info("work: completed %s %s", work.kind, work.work_id)
+                    continue
+                errors = output.get("errors") or []
+                first = errors[0] if isinstance(errors, list) and errors and isinstance(errors[0], dict) else {}
+                code = str(first.get("code") or "work_apply_failed")
+                message = str(first.get("message") or "Continuation work result was not applied")
+                status = self._release_claim_for_retry(
+                    work=work,
+                    worker_id=worker,
+                    error=f"{code}: {message}",
+                )
+                if status in {"dead_letter", "dead_lettered"}:
+                    result["dead_lettered"] += 1
+                else:
+                    result["failed"] += 1
+                result["errors"].append(f"{work.work_id}: {code}: {message}")
+            except Exception as exc:
+                status = self._release_claim_for_retry(
+                    work=work,
+                    worker_id=worker,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+                if status in {"dead_letter", "dead_lettered"}:
+                    result["dead_lettered"] += 1
+                else:
+                    result["failed"] += 1
+                result["errors"].append(f"{work.work_id}: {type(exc).__name__}: {exc}")
+        return result
 
     def close(self) -> None:
         self._flow_store.close()

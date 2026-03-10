@@ -1,8 +1,9 @@
 """Validation for system documents with parser-based semantics.
 
-System docs (.tag/*, .meta/*, .prompt/*) have structured content that
-keep parses and interprets at runtime.  Malformed docs fail silently —
-a broken tag spec stops classifying, a bad meta doc returns no results.
+System docs (.tag/*, .meta/*, .prompt/*, .state/*) have structured
+content that keep parses and interprets at runtime.  Malformed docs
+fail silently — a broken tag spec stops classifying, a bad state doc
+falls back to templates.
 
 This module provides upfront validation: parse the doc, check structure,
 report diagnostics.  Validators mirror the real parsers — they check
@@ -16,11 +17,13 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+import yaml
+
 from .analyzers import _PROMPT_SECTION_RE
 from .api import _META_CONTEXT_KEY, _META_PREREQ_KEY, _META_QUERY_PAIR
 
 Severity = Literal["error", "warning", "info"]
-DocType = Literal["tag", "meta", "prompt", "unknown"]
+DocType = Literal["tag", "meta", "prompt", "state", "unknown"]
 
 _IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
@@ -124,6 +127,8 @@ def validate_system_doc(
         return _validate_meta_doc(doc_id, content, tags)
     if doc_id.startswith(".prompt/"):
         return _validate_prompt_doc(doc_id, content, tags)
+    if doc_id.startswith(".state/"):
+        return _validate_state_doc(doc_id, content, tags)
 
     return ValidationResult(
         doc_id=doc_id,
@@ -335,3 +340,386 @@ def _validate_prompt_doc(
             )
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# .state/* validator
+# ---------------------------------------------------------------------------
+
+_VALID_MATCH = {"sequence", "all"}
+_VALID_TERMINALS = {"done", "error", "stopped"}
+
+
+
+def _validate_state_doc(
+    doc_id: str,
+    content: str,
+    tags: dict[str, Any],
+) -> ValidationResult:
+    """Validate a .state/* document against the state-doc schema."""
+    result = ValidationResult(doc_id=doc_id, doc_type="state")
+    parts = doc_id.split("/")
+
+    if len(parts) < 2 or not parts[1]:
+        result.diagnostics.append(
+            Diagnostic("error", "state doc ID must be .state/{name}")
+        )
+        return result
+
+    if not content.strip():
+        result.diagnostics.append(
+            Diagnostic("error", "empty content — state doc has no rules")
+        )
+        return result
+
+    # Parse YAML
+    try:
+        parsed = yaml.safe_load(content)
+    except Exception as exc:
+        result.diagnostics.append(
+            Diagnostic("error", f"invalid YAML: {exc}")
+        )
+        return result
+
+    if not isinstance(parsed, dict):
+        result.diagnostics.append(
+            Diagnostic("error", "state doc must be a YAML mapping")
+        )
+        return result
+
+    # Match strategy
+    match = str(parsed.get("match") or "sequence").strip().lower()
+    if match not in _VALID_MATCH:
+        result.diagnostics.append(
+            Diagnostic("error", f"match must be 'sequence' or 'all', got {match!r}")
+        )
+
+    # Rules list
+    raw_rules = parsed.get("rules")
+    if not isinstance(raw_rules, list):
+        result.diagnostics.append(
+            Diagnostic("error", "rules must be a list")
+        )
+        return result
+
+    if not raw_rules:
+        result.diagnostics.append(
+            Diagnostic("warning", "rules list is empty")
+        )
+
+    # Validate each rule
+    rule_ids: set[str] = set()
+    for i, raw in enumerate(raw_rules):
+        _validate_state_rule(result, raw, i, "rules", rule_ids)
+
+    # Post block
+    raw_post = parsed.get("post")
+    if raw_post is not None:
+        if match != "all":
+            result.diagnostics.append(
+                Diagnostic("warning", "post block is only evaluated with match: all", "post")
+            )
+        if isinstance(raw_post, list):
+            for i, raw in enumerate(raw_post):
+                _validate_state_rule(result, raw, i, "post", rule_ids)
+        else:
+            result.diagnostics.append(
+                Diagnostic("error", "post must be a list", "post")
+            )
+
+    # Try full parse (catches CEL compilation errors)
+    _try_compile_state_doc(result, doc_id, content)
+
+    return result
+
+
+def _validate_state_rule(
+    result: ValidationResult,
+    raw: Any,
+    index: int,
+    section: str,
+    rule_ids: set[str],
+) -> None:
+    """Validate a single rule entry."""
+    loc = f"{section}[{index}]"
+
+    if not isinstance(raw, dict):
+        result.diagnostics.append(
+            Diagnostic("error", f"rule must be a mapping, got {type(raw).__name__}", loc)
+        )
+        return
+
+    has_do = "do" in raw
+    has_then = "then" in raw
+    has_return = "return" in raw
+    has_when = "when" in raw
+
+    if not any([has_do, has_then, has_return, has_when]):
+        result.diagnostics.append(
+            Diagnostic("warning", "rule has no do, then, return, or when — will be skipped", loc)
+        )
+
+    # id
+    if "id" in raw:
+        rule_id = raw["id"]
+        if not isinstance(rule_id, str) or not rule_id.strip():
+            result.diagnostics.append(
+                Diagnostic("error", "rule id must be a non-empty string", loc)
+            )
+        else:
+            rule_id = rule_id.strip()
+            if rule_id in rule_ids:
+                result.diagnostics.append(
+                    Diagnostic("error", f"duplicate rule id {rule_id!r}", loc)
+                )
+            rule_ids.add(rule_id)
+
+    # when
+    if has_when:
+        when = raw["when"]
+        if not isinstance(when, str) or not when.strip():
+            result.diagnostics.append(
+                Diagnostic("error", "when must be a non-empty string", loc)
+            )
+
+    # do
+    if has_do:
+        action_name = raw["do"]
+        if not isinstance(action_name, str) or not action_name.strip():
+            result.diagnostics.append(
+                Diagnostic("error", "do must be a non-empty string (action name)", loc)
+            )
+        else:
+            _check_action_name(result, action_name.strip(), loc)
+
+    # with
+    if "with" in raw:
+        with_params = raw["with"]
+        if not isinstance(with_params, dict):
+            result.diagnostics.append(
+                Diagnostic("error", "with must be a mapping", loc)
+            )
+    # return
+    if has_return:
+        ret = raw["return"]
+        if isinstance(ret, str):
+            if ret.strip() not in _VALID_TERMINALS:
+                result.diagnostics.append(
+                    Diagnostic("error", f"return status must be one of {_VALID_TERMINALS}, got {ret!r}", loc)
+                )
+        elif isinstance(ret, dict):
+            status = ret.get("status") or ret.get("return")
+            if isinstance(status, str) and status.strip() not in _VALID_TERMINALS:
+                result.diagnostics.append(
+                    Diagnostic("error", f"return status must be one of {_VALID_TERMINALS}, got {status!r}", loc)
+                )
+            ret_with = ret.get("with")
+            if ret_with is not None and not isinstance(ret_with, dict):
+                result.diagnostics.append(
+                    Diagnostic("error", "return.with must be a mapping", loc)
+                )
+        else:
+            result.diagnostics.append(
+                Diagnostic("error", "return must be a string or mapping", loc)
+            )
+
+    # then
+    if has_then:
+        then = raw["then"]
+        if isinstance(then, str):
+            if not then.strip():
+                result.diagnostics.append(
+                    Diagnostic("error", "then must be a non-empty state name", loc)
+                )
+        elif isinstance(then, dict):
+            state_name = then.get("state")
+            if not isinstance(state_name, str) or not state_name.strip():
+                result.diagnostics.append(
+                    Diagnostic("error", "then.state must be a non-empty string", loc)
+                )
+            then_with = then.get("with")
+            if then_with is not None:
+                if not isinstance(then_with, dict):
+                    result.diagnostics.append(
+                        Diagnostic("error", "then.with must be a mapping", loc)
+                    )
+        else:
+            result.diagnostics.append(
+                Diagnostic("error", "then must be a string or mapping", loc)
+            )
+
+    # Conflicting terminal + transition
+    if has_return and has_then:
+        result.diagnostics.append(
+            Diagnostic("warning", "rule has both return and then — return takes precedence", loc)
+        )
+
+
+_known_actions: set[str] | None = None
+
+
+def _check_action_name(result: ValidationResult, name: str, loc: str) -> None:
+    """Check if an action name is known."""
+    global _known_actions
+    if _known_actions is None:
+        try:
+            from .actions import list_actions
+            _known_actions = set(list_actions())
+        except ImportError:
+            return
+    if name not in _known_actions:
+        result.diagnostics.append(
+            Diagnostic("warning", f"unknown action {name!r} (known: {', '.join(sorted(_known_actions))})", loc)
+        )
+
+
+# ---------------------------------------------------------------------------
+# State-doc diagram generation
+# ---------------------------------------------------------------------------
+
+# Entry points: which state docs are reachable from which caller paths.
+_STATE_ENTRY_POINTS: dict[str, str] = {
+    "after-write": "put()",
+    "get-context": "get()",
+    "find-deep": "find(deep)",
+    "query-resolve": "query",
+}
+
+
+def state_doc_diagram(
+    state_docs: dict[str, str],
+) -> str:
+    """Generate a Mermaid stateDiagram-v2 from state doc YAML bodies.
+
+    Args:
+        state_docs: Mapping of state name to YAML body string.
+
+    Returns:
+        Mermaid diagram source wrapped in a markdown fenced code block.
+    """
+    lines = ["```mermaid", "stateDiagram-v2"]
+
+    # Sanitize names for Mermaid (hyphens → underscores)
+    def _node(name: str) -> str:
+        return name.replace("-", "_")
+
+    # Sanitize labels (colons break the Mermaid parser)
+    def _label(text: str) -> str:
+        return text.replace(":", "∶")  # fullwidth colon
+
+    # Collect transitions: (src, dst, edge_label)
+    # Terminal edges: (src, "[*]:status", guard)  — status after colon
+    edges: list[tuple[str, str, str]] = []
+
+    for name, body in sorted(state_docs.items()):
+        try:
+            parsed = yaml.safe_load(body)
+        except Exception:
+            continue
+        if not isinstance(parsed, dict):
+            continue
+
+        # Entry points
+        if name in _STATE_ENTRY_POINTS:
+            edges.append(("[*]", name, _STATE_ENTRY_POINTS[name]))
+
+        # Walk rules and post blocks
+        for section in ("rules", "post"):
+            raw_rules = parsed.get(section)
+            if not isinstance(raw_rules, list):
+                continue
+            for rule in raw_rules:
+                if not isinstance(rule, dict):
+                    continue
+                guard = str(rule.get("when") or "").strip()
+                _extract_edges(name, rule, guard, edges)
+
+    # Per-state terminal nodes: each (src, status) pair gets its own node
+    # so "done" from different states doesn't collapse.
+    terminal_nodes: dict[tuple[str, str], str] = {}  # (src, status) -> node_id
+    for src, dst, _ in edges:
+        if dst.startswith("[*]:"):
+            status = dst[4:]
+            key = (src, status)
+            if key not in terminal_nodes:
+                safe = _node(status.replace(" ", "_").replace(":", ""))
+                terminal_nodes[key] = f"{_node(src)}_{safe}"
+
+    for (src, status) in sorted(terminal_nodes):
+        node_id = terminal_nodes[(src, status)]
+        lines.append(f"    {node_id} : {_label(status)}")
+
+    if terminal_nodes:
+        lines.append("")
+
+    # Emit edges
+    seen: set[tuple[str, str, str]] = set()
+    for src, dst, label in edges:
+        key = (src, dst, label)
+        if key in seen:
+            continue
+        seen.add(key)
+        src_node = _node(src)
+        if dst.startswith("[*]:"):
+            status = dst[4:]
+            dst_node = terminal_nodes[(src, status)]
+        else:
+            dst_node = _node(dst)
+        if label:
+            lines.append(f"    {src_node} --> {dst_node} : {_label(label)}")
+        else:
+            lines.append(f"    {src_node} --> {dst_node}")
+
+    lines.append("```")
+    return "\n".join(lines) + "\n"
+
+
+def _extract_edges(
+    state_name: str,
+    rule: dict[str, Any],
+    guard: str,
+    edges: list[tuple[str, str, str]],
+) -> None:
+    """Extract transition/terminal edges from a single rule."""
+    # return → terminal (encode status in destination as "[*]:status")
+    if "return" in rule:
+        ret = rule["return"]
+        if isinstance(ret, str):
+            status = ret.strip() or "done"
+        elif isinstance(ret, dict):
+            s = str(ret.get("status") or ret.get("return") or "done")
+            reason = ret.get("with", {}).get("reason", "")
+            status = f"{s}: {reason}" if reason else s
+        else:
+            status = "done"
+        edges.append((state_name, f"[*]:{status}", guard))
+
+    # then → transition
+    if "then" in rule:
+        then = rule["then"]
+        if isinstance(then, str):
+            target = then.strip()
+        elif isinstance(then, dict):
+            target = str(then.get("state") or "").strip()
+        else:
+            target = ""
+        if target:
+            edges.append((state_name, target, guard))
+
+
+def _try_compile_state_doc(result: ValidationResult, doc_id: str, content: str) -> None:
+    """Attempt full parse+compile to catch CEL compilation errors."""
+    try:
+        from .state_doc import parse_state_doc
+        name = doc_id.split("/", 1)[1] if "/" in doc_id else doc_id
+        parse_state_doc(name, content)
+    except ValueError as exc:
+        msg = str(exc)
+        if not any(msg in d.message for d in result.diagnostics):
+            result.diagnostics.append(
+                Diagnostic("error", f"compilation failed: {msg}")
+            )
+    except Exception as exc:
+        result.diagnostics.append(
+            Diagnostic("error", f"unexpected error during compilation: {exc}")
+        )

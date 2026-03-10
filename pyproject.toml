@@ -48,6 +48,8 @@ dependencies = [
     "httpx>=0.27",
     # MCP stdio server
     "mcp>=1.0",
+    # CEL predicates for state-doc rules
+    "common-expression-language>=0.5",
     # Interactive CLI prompts (setup wizard)
     "questionary>=2.0",
 ]

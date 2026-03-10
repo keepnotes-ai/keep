@@ -281,11 +281,21 @@ def detect_default_providers() -> dict[str, ProviderConfig | None]:
     """
     providers: dict[str, ProviderConfig | None] = {}
 
-    # Check for Apple Silicon
-    is_apple_silicon = (
+    # Check for Apple Silicon with enough memory for local ML models.
+    # MLX models need significant RAM; skip on machines with < 16 GB
+    # to prevent OOM crashes.
+    _is_arm_mac = (
         platform.system() == "Darwin" and
         platform.machine() == "arm64"
     )
+    if _is_arm_mac:
+        try:
+            _mem_gb = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / (1024 ** 3)
+        except (ValueError, OSError, AttributeError):
+            _mem_gb = 0
+        is_apple_silicon = _mem_gb >= 16
+    else:
+        is_apple_silicon = False
 
     # KEEP_LOCAL_ONLY=1 suppresses remote API provider auto-detection
     local_only = bool(os.environ.get("KEEP_LOCAL_ONLY"))

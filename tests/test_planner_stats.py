@@ -630,7 +630,7 @@ class TestPlannerPriorsShape:
 
 class TestKeeperPlannerPriorsAPI:
 
-    def test_keeper_returns_minimal_priors_shape(self, tmp_path):
+    def test_keeper_returns_minimal_priors_shape(self, mock_providers, tmp_path):
         kp = Keeper(store_path=tmp_path)
         try:
             # Seed some stats directly; API should map internal metric names
