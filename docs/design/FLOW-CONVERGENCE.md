@@ -50,7 +50,7 @@ work_queue  ←──  process_work_batch()  ──→  _run_local_task_workflow
 **Self-contained cursors.** Base64url-encoded JSON with state name,
 tick count, and accumulated bindings. No database, no server state.
 Caller provides params, budget, and state doc source fresh each call.
-See [FLOW-INVOCATION.md](../FLOW-INVOCATION.md) for details.
+See [KEEP-FLOW.md](../KEEP-FLOW.md) for details.
 
 **Direct task dispatch.** After-write tasks bypass flow orchestration
 entirely. `_enqueue_after_write_tasks()` inserts work items directly
