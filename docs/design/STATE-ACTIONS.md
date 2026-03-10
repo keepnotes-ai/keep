@@ -650,31 +650,3 @@ class Transcribe:
 | `ContinuationExecutorRegistry` | auto-discovery in `actions/__init__.py` |
 | `ContinuationRuntimeEnv` (full) | `ActionContext` (read-only subset) |
 | Engine mutation pipeline | unchanged — applies mutations from action output |
-
-## 7) Open questions
-
-- [x] Should `analyze` mutations (storing parts) be in the action or
-      the runtime? **Action returns `put_item` mutations.** Each part
-      becomes a mutation; the existing pipeline stores them. `parts`
-      is also in the output as data for downstream predicates.
-- [x] Budget accounting per action: **ticks only.** Each rule
-      evaluation is one tick; a `match: all` block counts as one tick.
-      Simple, predictable, extensible later. Provider cost control
-      belongs in config (rate limits, model selection), not flow budgets.
-- [x] Provider selection: **config default, no override via `with:`.**
-      Provider names are deployment-specific; putting them in state docs
-      makes docs non-portable. Per-action provider config already exists
-      in keep config. Non-breaking to add `with: provider` later if
-      needed.
-- [x] Error handling: actions raise exceptions on failure. The runtime
-      catches them. In `match: all`, a failed action's `id` binding is
-      left unset — predicates check `when: "!summary"` to detect
-      failure. In `match: sequence`, an uncaught failure terminates
-      the flow with `error` status. No `status` field in action output.
-- [x] `find` with tag-only queries: current `Keeper.find()` requires
-      `query` or `similar_to`. The `find` action routes tag-only
-      queries to `Keeper.list_items()` with `order_by`. This is a new
-      routing layer in the action, not a change to the Keeper API.
-- [ ] **Migration path**: document how the old runner system
-      (`_run_provider_*` methods, `ContinuationRuntimeEnv`) transitions
-      to the new action system. Both can coexist during migration.

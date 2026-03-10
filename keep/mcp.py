@@ -277,6 +277,9 @@ async def keep_list(
     until: Annotated[Optional[str], Field(
         description="Only items updated before this value (ISO duration or date).",
     )] = None,
+    sort: Annotated[Optional[str], Field(
+        description="Sort order: 'updated' (default), 'accessed', 'created', or 'id'.",
+    )] = None,
     limit: Annotated[int, Field(
         description="Max results to return.",
     )] = 10,
@@ -284,9 +287,12 @@ async def keep_list(
     """List recent items."""
     async with _lock:
         keeper = _get_keeper()
-        items = keeper.list_items(
+        kwargs: dict = dict(
             prefix=prefix, tags=tags, since=since, until=until, limit=limit,
         )
+        if sort:
+            kwargs["order_by"] = sort
+        items = keeper.list_items(**kwargs)
 
     if not items:
         return "No items found."
@@ -389,7 +395,7 @@ async def keep_prompt(
     description=(
         "Run one flow tick. Flows are stateful multi-step memory interactions "
         "with automatic refinement and decision support. "
-        "Pass a payload dict with the flow request — see docs/CONTINUATIONS.md for the full schema. "
+        "Pass a payload dict with the flow request — see docs/FLOWS.md for the full schema. "
         "Common fields: cursor (omit to start new), top-level flow fields, overrides, work_results."
     ),
     annotations=_IDEMPOTENT,

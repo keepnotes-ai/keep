@@ -410,10 +410,3 @@ imposing ordering constraints on `match: all`.
 
 If ordering matters, use `match: sequence` — rules execute in
 order, each action completes before the next rule is evaluated.
-
-## 9) Open questions
-
-- [x] Should `stopped` with reason `"background"` support push
-      notifications (webhooks, SSE) instead of requiring polling?
-      **No.** Polling is sufficient. The caller resumes with `cursor`.
-- [ ] Audit trail: can the caller inspect what happened after?

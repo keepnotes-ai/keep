@@ -9,16 +9,6 @@
     The document details the event’s location, featuring exhibits, performances, and educational opportunities centered around this history. It provides contact information for the box office and highlights a ticketing system. The document also includes information about the museum’s sponsors and mission, emphasizing its commitment to arts and culture.
     Essentially, it’s a promotional message welcoming attendees to the MASS MoCA, with a significant focus on Indigenous history and the museum’s commitment to respectful representation.
 
-* `keep doctor --log` tail the ops log
-
-* `keep list` needs --sort by id, created
-
-* `keep validate` should be merged into `keep doctor`
-
-* `keep validate --diagram` should move to `keep config --state-diagram`
-
-* CLI docstrings need update (and need tests since they keep breaking the rendered output)
-
 * chatgpt import
 
 * type: code
@@ -273,3 +263,9 @@ x check for CLI compatibility with windows (WLS should work but no plan to valid
 . "reflective callback" queue -> continuations
 . simple "set status closed" thing -> singular tags
 . debounce
+. `keep list` needs --sort by id, created
+. `keep validate` should be merged into `keep doctor`
+. `keep validate --diagram` should move to `keep config --state-diagram`
+. `keep doctor --log` should tail the ops log (like tail -f)
+. CLI docstrings (examples) need update (and need tests since they keep breaking the rendered output)
+. User-oriented documentation to replace CONTINUATIONS.md

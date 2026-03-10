@@ -1972,15 +1972,21 @@ class DocumentStore:
         Returns:
             List of DocumentRecords, most recent first
         """
-        allowed_order = {"updated": "updated_at", "accessed": "accessed_at", "created": "created_at"}
-        order_col = allowed_order.get(order_by)
-        if order_col is None:
-            raise ValueError(f"Invalid order_by: {order_by!r} (expected 'updated', 'accessed', or 'created')")
+        allowed_order = {
+            "updated": ("updated_at", "DESC"),
+            "accessed": ("accessed_at", "DESC"),
+            "created": ("created_at", "DESC"),
+            "id": ("id", "ASC"),
+        }
+        entry = allowed_order.get(order_by)
+        if entry is None:
+            raise ValueError(f"Invalid order_by: {order_by!r} (expected 'updated', 'accessed', 'created', or 'id')")
+        order_col, order_dir = entry
         cursor = self._execute(f"""
             SELECT id, collection, summary, tags_json, created_at, updated_at, content_hash, accessed_at
             FROM documents
             WHERE collection = ?
-            ORDER BY {order_col} DESC
+            ORDER BY {order_col} {order_dir}
             LIMIT ? OFFSET ?
         """, (collection, limit, offset))
 
@@ -2011,10 +2017,16 @@ class DocumentStore:
         have '_version' tag set to their offset (1=previous, 2=two ago...).
         Current versions have no '_version' tag (equivalent to offset 0).
         """
-        allowed_order = {"updated": "updated_at", "accessed": "accessed_at", "created": "created_at"}
-        order_col = allowed_order.get(order_by)
-        if order_col is None:
-            raise ValueError(f"Invalid order_by: {order_by!r} (expected 'updated', 'accessed', or 'created')")
+        allowed_order = {
+            "updated": ("updated_at", "DESC"),
+            "accessed": ("accessed_at", "DESC"),
+            "created": ("created_at", "DESC"),
+            "id": ("id", "ASC"),
+        }
+        entry = allowed_order.get(order_by)
+        if entry is None:
+            raise ValueError(f"Invalid order_by: {order_by!r} (expected 'updated', 'accessed', 'created', or 'id')")
+        order_col, order_dir = entry
 
         cursor = self._execute(f"""
             SELECT id, summary, tags_json, {order_col} as sort_ts,
@@ -2030,7 +2042,7 @@ class DocumentStore:
             FROM document_versions dv
             WHERE dv.collection = ?
 
-            ORDER BY sort_ts DESC
+            ORDER BY sort_ts {order_dir}
             LIMIT ? OFFSET ?
         """, (collection, collection, limit, offset))
 

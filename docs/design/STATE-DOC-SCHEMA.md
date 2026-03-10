@@ -4,7 +4,7 @@ Date: 2026-03-07
 Status: Draft
 Related:
 - `docs/design/STATE-ACTIONS.md`
-- `docs/CONTINUATIONS.md`
+- `docs/FLOWS.md`
 
 ## 1) What this is for
 
@@ -466,26 +466,3 @@ Code worth reusing:
 - `flow_env.py` — environment adapter pattern
 - Wire contract shape (`continue(input) -> output`)
 - Optimistic concurrency, idempotency, mutation dedup primitives
-
-## 14) Open design work
-
-- [ ] Concrete CEL subset spec
-- [x] Budget model: ticks only. `match: all` = 1 tick. Provider
-      cost control belongs in config, not flow budgets.
-- [x] Terminal states: three terminals (`done`, `error`, `stopped`).
-      No structured decision protocol. `stopped` covers budget
-      exhaustion, ambiguous results, and background work.
-- [x] `post:` block semantics: always evaluated in sequence (top-
-      to-bottom). Can include `return:` terminals and `then:`
-      transitions. Template resolution in `then.with:` is supported.
-      This is implemented in `state_doc.py` and tested.
-- [x] Error propagation in `match: all`: a failed action's `id`
-      binding is left unset. Post-block predicates check for missing
-      bindings (e.g. `when: "!summary.text"`) to detect failure.
-      The flow does not abort — other actions' results are preserved.
-      This is implemented in `state_doc.py` and documented in
-      STATE-ACTIONS.md §error-handling.
-- [ ] Serialization format (YAML in markdown body? pure YAML?)
-- [x] Constants in state docs: all thresholds and tunable values
-      come from config via `params.*`. State docs never contain
-      hardcoded numeric constants for policy decisions.

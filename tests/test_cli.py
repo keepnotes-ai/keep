@@ -91,6 +91,21 @@ class TestCliBasics:
             assert result.returncode == 0, f"{cmd} --help failed"
             assert "Usage" in result.stdout or "usage" in result.stdout.lower()
 
+    @pytest.mark.parametrize("cmd", ["find", "put", "get", "list", "tag", "del", "now", "config"])
+    def test_help_examples_formatted(self, cli, cmd):
+        r"""Examples sections render with preserved line breaks (not wrapped).
+
+        Click uses \b (backspace char) to mark sections that should not be
+        re-wrapped.  If docstrings use raw strings (r\"\"\"), \b becomes literal
+        backslash-b which Click ignores, collapsing examples into a paragraph.
+        """
+        result = cli(cmd, "--help")
+        assert result.returncode == 0, f"{cmd} --help failed"
+        assert r"\b" not in result.stdout, (
+            f"{cmd} --help contains literal '\\b' — "
+            f"docstring is likely a raw string (r\"\"\") instead of regular string"
+        )
+
 
 # -----------------------------------------------------------------------------
 # JSON Output Tests (Composability with jq)

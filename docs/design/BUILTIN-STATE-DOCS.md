@@ -245,25 +245,20 @@ like `when: "search.margin > 0.18"`.
 
 ---
 
-## Appendix: aspirational — query resolution state docs
+## Appendix: query resolution state docs
 
-> **Status: unproven.** These state docs express the strategy
-> selection logic from the first-draft continuations work
-> (`flow_policy.choose_strategy()`). That code path exists
-> but has never been validated against real get/find behavior. The
-> thresholds and branching strategies below are hypothetical — they
-> may or may not reflect useful decision boundaries.
->
-> These are included as design sketches, not as implementation
-> targets. The actual query resolution path should be derived from
-> observed get/find behavior, not from these drafts.
+> **Status: wired but thresholds untuned.** These state docs are
+> bundled as `.md` files and loaded into the store. The flow runtime
+> evaluates them via `state_doc_runtime.run_flow()`. Thresholds
+> come from `flow_policy.DEFAULT_DECISION_POLICY` and have not yet
+> been validated against real query patterns.
 
 Three state docs — `query-resolve`, `query-branch`,
-`query-explore` — are defined in `builtin_state_docs.py` but have
-no callers. They reference threshold params (`margin_high`,
+`query-explore` — form the multi-step query resolution loop.
+They reference threshold params (`margin_high`,
 `entropy_low`, etc.) from `flow_policy.py` defaults.
 
-### .state/query-resolve (draft)
+### .state/query-resolve
 
 ```yaml
 # match: sequence
@@ -289,7 +284,7 @@ rules:
   - then: query-explore
 ```
 
-### .state/query-branch (draft)
+### .state/query-branch
 
 ```yaml
 # match: all
@@ -311,7 +306,7 @@ post:
         reason: "ambiguous"
 ```
 
-### .state/query-explore (draft)
+### .state/query-explore
 
 ```yaml
 # match: sequence
@@ -329,7 +324,7 @@ rules:
     with: { reason: "budget" }
 ```
 
-### Hypothetical thresholds
+### Default thresholds
 
 ```python
 margin_high:    0.18    # confident winner
@@ -340,4 +335,4 @@ lineage_strong: 0.75    # version/part concentration
 ```
 
 These values come from `flow_policy.DEFAULT_DECISION_POLICY`.
-They have not been validated against real query patterns.
+They have not yet been validated against real query patterns.

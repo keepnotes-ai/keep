@@ -133,7 +133,7 @@ def _quote_scalar_tag_value(value) -> str:
 
 
 def _render_edge_ref_value(ref: EdgeRef) -> str:
-    r"""Render an edge reference as: id [date] \"summary\"."""
+    """Render an edge reference as: id [date] "summary"."""
     ref_id = _shell_quote_id(ref.source_id)
     date_part = f" [{ref.date}]" if ref.date else ""
     summary_part = _quote_scalar_tag_value(ref.summary or "")
@@ -1303,7 +1303,7 @@ def find(
         help="Token budget for rich context output (includes parts and versions)"
     )] = None,
 ):
-    r"""Find notes by hybrid search (semantic + full-text) or similarity.
+    """Find notes by hybrid search (semantic + full-text) or similarity.
 
     \b
     Examples:
@@ -1376,7 +1376,7 @@ def list_recent(
     )] = None,
     sort: Annotated[str, typer.Option(
         "--sort",
-        help="Sort order: 'updated' (default) or 'accessed'"
+        help="Sort order: 'updated' (default), 'accessed', 'created', or 'id'"
     )] = "updated",
     since: SinceOption = None,
     until: UntilOption = None,
@@ -1397,7 +1397,7 @@ def list_recent(
         help="Include hidden system notes (IDs starting with '.')"
     )] = False,
 ):
-    r"""List recent notes, filter by tags, or list tag keys/values.
+    """List recent notes, filter by tags, or list tag keys/values.
 
     \b
     Examples:
@@ -1407,6 +1407,8 @@ def list_recent(
         keep list session-*            # All session-* items (glob)
         keep list *auth*               # Items with 'auth' anywhere in ID
         keep list --sort accessed      # Recent notes (by access time)
+        keep list --sort created       # Sort by creation time
+        keep list --sort id            # Sort alphabetically by ID
         keep list --tag foo            # Notes with tag 'foo' (any value)
         keep list --tag foo=bar        # Notes with tag foo=bar
         keep list --tag foo --tag bar  # Notes with both tags
@@ -1501,7 +1503,7 @@ def tag(
     )] = None,
     store: StoreOption = None,
 ):
-    r"""Add, update, or remove tags on existing notes.
+    """Add, update, or remove tags on existing notes.
 
     Does not re-process the note - only updates tags.
 
@@ -1743,7 +1745,7 @@ def put(
         help="Re-process even if content is unchanged"
     )] = False,
 ):
-    r"""Add or update a note in the store.
+    """Add or update a note in the store.
 
     \b
     Input modes (auto-detected):
@@ -1870,7 +1872,7 @@ def now(
         help="Max similar/meta notes to show (default 3)"
     )] = 3,
 ):
-    r"""Get or set the current working intentions.
+    """Get or set the current working intentions.
 
     With no arguments, displays the current intentions.
     With content, replaces it.
@@ -2116,7 +2118,7 @@ def prompt(
     )] = None,
     store: StoreOption = None,
 ):
-    r"""Render an agent prompt with injected context.
+    """Render an agent prompt with injected context.
 
     \b
     The prompt doc may contain {get} and {find} placeholders:
@@ -2293,7 +2295,7 @@ def get(
     )] = 10,
     store: StoreOption = None,
 ):
-    r"""Retrieve note(s) by ID.
+    """Retrieve note(s) by ID.
 
     Accepts one or more IDs. Version identifiers: Append @V{N} to get a specific version.
     N>=0 selects from current; N<0 selects from oldest archived (-1 oldest).
@@ -2589,7 +2591,7 @@ def del_cmd(
     id: Annotated[list[str], typer.Argument(help="ID(s) of note(s) to delete")],
     store: StoreOption = None,
 ):
-    r"""Delete the current version of note(s), or a specific version.
+    """Delete the current version of note(s), or a specific version.
 
     Without @V{N}: reverts to the previous version (or fully deletes if no history).
     With @V{N}: deletes that specific archived version; other versions remain.
@@ -2919,7 +2921,7 @@ def _format_config_with_defaults(cfg, store_path: Path) -> str:
     return "\n".join(lines)
 
 
-@app.command()
+@app.command(hidden=True, deprecated=True)
 def validate(
     id: Annotated[Optional[list[str]], typer.Argument(
         help="System doc ID(s) to validate (e.g. '.tag/act', '.meta/related')"
@@ -2934,7 +2936,7 @@ def validate(
     )] = False,
     store: StoreOption = None,
 ):
-    r"""Validate system documents with parser-based semantics.
+    """Validate system documents with parser-based semantics.
 
     Checks .tag/*, .meta/*, .prompt/*, and .state/* documents for
     structural correctness. Reports errors (will cause runtime failures)
@@ -3045,9 +3047,13 @@ def config(
         "--setup",
         help="Run interactive setup wizard (provider and tool selection)"
     )] = False,
+    state_diagram: Annotated[bool, typer.Option(
+        "--state-diagram",
+        help="Print Mermaid state-transition diagram for .state/* docs"
+    )] = False,
     store: StoreOption = None,
 ):
-    r"""Show configuration. Optionally get a specific value by path.
+    """Show configuration. Optionally get a specific value by path.
 
     \b
     Examples:
@@ -3061,6 +3067,7 @@ def config(
         keep config providers.embedding  # Embedding provider name
         keep config --setup      # Re-run interactive setup wizard
         keep config --reset-system-docs  # Reset bundled system docs
+        keep config --state-diagram  # Mermaid state-transition diagram
     """
     # Handle setup wizard
     if setup:
@@ -3075,6 +3082,33 @@ def config(
             config_dir = get_config_dir()
         store_path = Path(actual_store).resolve() if actual_store else None
         run_wizard(config_dir, store_path, restart_command="keep config --setup")
+        return
+
+    # Handle state diagram
+    if state_diagram:
+        from .validate import state_doc_diagram
+        from .system_docs import SYSTEM_DOC_DIR, _filename_to_id, _load_frontmatter
+        state_docs: dict[str, str] = {}
+        # Load from store if available, else from disk
+        try:
+            kp = _get_keeper(store)
+            doc_coll = kp._resolve_doc_collection()
+            for rec in kp._document_store.query_by_id_prefix(doc_coll, ".state/"):
+                name = str(getattr(rec, "id", "")).removeprefix(".state/")
+                body = str(getattr(rec, "summary", "") or "").strip()
+                if name and body:
+                    state_docs[name] = body
+        except Exception:
+            pass
+        # Fall back to / supplement with bundled files
+        if not state_docs:
+            for p in sorted(SYSTEM_DOC_DIR.glob("state-*.md")):
+                doc_id = _filename_to_id(p.name)
+                name = doc_id.removeprefix(".state/")
+                content, _ = _load_frontmatter(p)
+                if content.strip():
+                    state_docs[name] = content
+        typer.echo(state_doc_diagram(state_docs))
         return
 
     # Handle system docs reset - requires full Keeper initialization
@@ -3595,6 +3629,9 @@ def data_import(
 @app.command(hidden=True)
 def doctor(
     store: StoreOption = None,
+    log: Annotated[bool, typer.Option(
+        "--log", "-l", help="Tail the ops log (Ctrl-C to stop)"
+    )] = False,
     use_faulthandler: Annotated[bool, typer.Option(
         "--faulthandler", help="Enable faulthandler for native crash traces"
     )] = False,
@@ -3602,6 +3639,31 @@ def doctor(
     """Diagnostic checks for debugging setup and crash issues."""
     import platform
     import time
+
+    if log:
+        from .paths import get_config_dir, get_default_store_path
+        from .config import load_or_create_config
+        actual_store = store if store is not None else _get_store_override()
+        config_dir = Path(actual_store).resolve() if actual_store else get_config_dir()
+        cfg = load_or_create_config(config_dir)
+        sp = Path(get_default_store_path(cfg) if actual_store is None else actual_store)
+        log_path = sp / "keep-ops.log"
+        if not log_path.exists():
+            typer.echo(f"No ops log at {log_path}", err=True)
+            raise typer.Exit(1)
+        typer.echo(f"Tailing {log_path} (Ctrl-C to stop)\n", err=True)
+        try:
+            with open(log_path) as f:
+                f.seek(0, 2)  # seek to end
+                while True:
+                    line = f.readline()
+                    if line:
+                        typer.echo(line.rstrip())
+                    else:
+                        time.sleep(0.3)
+        except (KeyboardInterrupt, EOFError):
+            pass
+        return
 
     if use_faulthandler:
         import faulthandler
@@ -3786,6 +3848,45 @@ def doctor(
     finally:
         if tmp_dir:
             shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    # 12. System doc validation
+    if store_path:
+        try:
+            from .validate import validate_system_doc
+            kp = _get_keeper(store)
+            doc_coll = kp._resolve_doc_collection()
+            docs_by_id: dict[str, tuple[str, dict]] = {}
+            for sys_prefix in (".tag/", ".meta/", ".prompt/", ".state/"):
+                for rec in kp._document_store.query_by_id_prefix(doc_coll, sys_prefix):
+                    doc_id = str(getattr(rec, "id", ""))
+                    if doc_id:
+                        summary = str(getattr(rec, "summary", "") or "")
+                        raw_tags = getattr(rec, "tags", None)
+                        tags_dict = dict(raw_tags) if isinstance(raw_tags, dict) else {}
+                        docs_by_id[doc_id] = (summary, tags_dict)
+            if docs_by_id:
+                errors = 0
+                warnings = 0
+                bad_docs = []
+                for doc_id in sorted(docs_by_id):
+                    content, tags_dict = docs_by_id[doc_id]
+                    result = validate_system_doc(doc_id, content, tags_dict)
+                    errors += len(result.errors)
+                    warnings += len(result.warnings)
+                    if result.errors:
+                        bad_docs.append(doc_id)
+                if errors:
+                    fail(f"System docs: {len(docs_by_id)} docs, {errors} error(s) in {', '.join(bad_docs)}")
+                elif warnings:
+                    ok(f"System docs: {len(docs_by_id)} docs, {warnings} warning(s)")
+                else:
+                    ok(f"System docs: {len(docs_by_id)} docs validated")
+            else:
+                ok("System docs: none found (new store)")
+        except Exception as e:
+            fail(f"System docs: {e}")
+    else:
+        ok("System docs: skipped (no store path)")
 
     typer.echo()
 
