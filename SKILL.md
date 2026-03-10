@@ -1,6 +1,6 @@
 ---
 name: keep
-version: 0.88.0
+version: 0.88.1
 description: Reflective Memory
 homepage: https://github.com/keepnotes-ai/keep
 runtime: python:3.12-slim
