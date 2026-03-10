@@ -11,7 +11,7 @@
 
 * `keep doctor --log` tail the ops log
 
-* `keep list` needs --sort id, created
+* `keep list` needs --sort by id, created
 
 * `keep validate` should be merged into `keep doctor`
 
