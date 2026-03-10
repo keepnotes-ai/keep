@@ -93,6 +93,7 @@ TOOL_CONFIGS = {
     "codex": ".codex",
     "kiro": ".kiro",
     "openclaw": ".openclaw",
+    "github_copilot": ".config/github-copilot",
 }
 
 
@@ -343,6 +344,40 @@ def install_openclaw(config_dir: Path) -> list[str]:
     return actions
 
 
+def install_github_copilot(config_dir: Path) -> list[str]:
+    """Install MCP server config for GitHub Copilot CLI.
+
+    Adds/updates the keep entry in ~/.config/github-copilot/mcp.json.
+    Returns list of actions taken.
+    """
+    actions = []
+
+    mcp_json = config_dir / "mcp.json"
+    data: dict[str, Any] = {}
+    if mcp_json.exists():
+        try:
+            data = json.loads(mcp_json.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning("Cannot parse %s, skipping: %s", mcp_json, e)
+            return actions
+
+    servers = data.setdefault("mcpServers", {})
+    keep_entry = {
+        "type": "local",
+        "command": "keep",
+        "args": ["mcp"],
+        "tools": ["*"],
+    }
+    if servers.get("keep") == keep_entry:
+        return actions  # Already up to date
+
+    servers["keep"] = keep_entry
+    mcp_json.parent.mkdir(parents=True, exist_ok=True)
+    mcp_json.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    actions.append("MCP server")
+    return actions
+
+
 def _check_cwd_agents_md() -> None:
     """Install protocol block into AGENTS.md in cwd if present.
 
@@ -385,6 +420,7 @@ def check_and_install(config: "StoreConfig") -> None:
         "codex": install_codex,
         "kiro": install_kiro,
         "openclaw": install_openclaw,
+        "github_copilot": install_github_copilot,
     }
 
     for key, tool_dir in new_tools.items():

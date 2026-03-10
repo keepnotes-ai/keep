@@ -507,6 +507,23 @@ def _check_mcp_setup():
                 '    codex mcp add keep -- keep mcp'
             )
 
+    # GitHub Copilot CLI: ~/.config/github-copilot/mcp.json → mcpServers.keep
+    copilot_mcp = home / ".config" / "github-copilot" / "mcp.json"
+    if copilot_mcp.parent.is_dir():
+        configured = False
+        if copilot_mcp.exists():
+            try:
+                data = json.loads(copilot_mcp.read_text(encoding="utf-8"))
+                configured = "keep" in data.get("mcpServers", {})
+            except (json.JSONDecodeError, OSError):
+                pass
+        if not configured:
+            hints.append(
+                'GitHub Copilot CLI:\n'
+                '    Add to ~/.config/github-copilot/mcp.json:\n'
+                '    {"mcpServers":{"keep":{"type":"local","command":"keep","args":["mcp"],"tools":["*"]}}}'
+            )
+
     # VS Code: user-level mcp.json → servers.keep
     import platform
     if platform.system() == "Darwin":

@@ -21,7 +21,7 @@ from .config import (
     detect_default_providers,
     save_config,
 )
-from .integrations import HOOKS_VERSION, TOOL_CONFIGS, detect_new_tools, install_claude_code, install_codex, install_kiro, install_openclaw
+from .integrations import HOOKS_VERSION, TOOL_CONFIGS, detect_new_tools, install_claude_code, install_codex, install_github_copilot, install_kiro, install_openclaw
 
 
 # --- Provider definitions (single source of truth for display names / models) ---
@@ -334,6 +334,7 @@ def _detect_tool_choices() -> list[dict[str, Any]]:
         "codex": "Codex",
         "kiro": "Kiro",
         "openclaw": "OpenClaw",
+        "github_copilot": "GitHub Copilot CLI",
     }
     choices = []
     for key, dirname in TOOL_CONFIGS.items():
@@ -370,11 +371,11 @@ def _run_tool_selection(tool_choices: list[dict]) -> list[dict]:
         ))
     for t in not_found:
         qchoices.append(questionary.Separator(
-            f"  {t['name']}  (not found)"
+            f"  {t['name']}  (~/{TOOL_CONFIGS[t['key']]} not found)"
         ))
 
     q = questionary.checkbox(
-        "Install hooks:",
+        "Install hooks/MCP:",
         choices=qchoices,
         pointer=">",
         instruction="(arrow keys, <space> to select/deselect)",
@@ -383,7 +384,7 @@ def _run_tool_selection(tool_choices: list[dict]) -> list[dict]:
 
     # questionary prints "done" when 0 selected; overwrite with "none"
     if not selected_keys:
-        sys.stderr.write("\x1b[A\r\x1b[K? Install hooks: none\n")
+        sys.stderr.write("\x1b[A\r\x1b[K? Install hooks/MCP: none\n")
 
     return [t for t in tool_choices if t["key"] in selected_keys]
 
@@ -558,6 +559,7 @@ def _run_interactive_setup(
         "codex": install_codex,
         "kiro": install_kiro,
         "openclaw": install_openclaw,
+        "github_copilot": install_github_copilot,
     }
 
     installed_tools = []
