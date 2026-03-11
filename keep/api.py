@@ -5935,19 +5935,17 @@ class Keeper:
         )
 
     def process_pending(self, limit: int = 10) -> dict:
-        """Process pending work items (embedding, summaries, reindex, infrastructure).
+        """Process pending work items (embedding, reindex, infrastructure).
 
         Handles task types serially:
         - "embed": computes and stores embeddings (cloud mode deferred writes)
-        - "summarize": generates real summaries for lazy-indexed items
         - "reindex": re-embeds after model/dimension change
         - "backfill-edges": populates inverse edge tags
         - "planner-rebuild": rebuilds planner statistics
 
-        Analyze, OCR, describe, and tag tasks are handled by the work
-        queue (process_pending_work) via _dispatch_after_write_flow().
-        If any appear here (legacy data or fallback), they are re-routed
-        to the work queue.
+        Summarize, analyze, OCR, describe, and tag tasks are handled by
+        the work queue (process_pending_work) via task_workflows.
+        If any appear here (legacy data), they are completed and skipped.
 
         Items that fail MAX_SUMMARY_ATTEMPTS times are removed from
         the queue.
@@ -6007,16 +6005,15 @@ class Keeper:
                     "embed": "Embedding",
                     "planner-rebuild": "Rebuilding planner stats",
                     "reindex": "Re-embedding",
-                    "summarize": "Summarizing",
                 }
                 verb = _task_verbs.get(item.task_type, item.task_type)
                 logger.info("%s %s (attempt %d)", verb, item.id, item.attempts)
-                if item.task_type in ("analyze", "ocr", "describe", "tag"):
+                if item.task_type in ("analyze", "ocr", "describe", "tag", "summarize"):
                     # These tasks belong on the work queue, not here.
-                    # Skip — they'll be re-enqueued on next put() via
-                    # _dispatch_after_write_flow().
-                    logger.warning(
-                        "Skipping %s/%s on pending queue (belongs on work queue)",
+                    # Complete and skip — they'll be processed via
+                    # process_pending_work / task_workflows.
+                    logger.info(
+                        "Skipping %s/%s on pending queue (handled by work queue)",
                         item.task_type, item.id,
                     )
                     self._pending_queue.complete(
@@ -6038,10 +6035,10 @@ class Keeper:
                     self._process_pending_reindex(item)
                     self._release_embedding_provider()
                 else:
-                    self._process_pending_summarize(item)
-                    # Release summarization model between items to
-                    # prevent both models residing in memory at once
-                    self._release_summarization_provider()
+                    logger.warning(
+                        "Unknown task type %r for %s, completing",
+                        item.task_type, item.id,
+                    )
 
                 # Remove from queue
                 self._pending_queue.complete(
@@ -6462,19 +6459,6 @@ class Keeper:
             ),
         )
         return {"status": outcome.status, "details": dict(outcome.details)}
-
-    def _process_pending_summarize(self, item) -> None:
-        """Process a pending summarization work item."""
-        outcome = self._run_local_task_workflow(
-            task_type="summarize",
-            item_id=item.id,
-            collection=item.collection,
-            content=item.content,
-            metadata=item.metadata,
-        )
-        if outcome.get("status") == "skipped":
-            reason = outcome.get("details", {}).get("reason") or "skipped"
-            logger.info("Skipping summary for %s: %s", item.id, reason)
 
     def _process_pending_embed(self, item) -> None:
         """Process a deferred embedding task (cloud mode).

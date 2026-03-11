@@ -59,20 +59,6 @@ class TimeoutEmbeddingProvider:
         return [self.embed(t) for t in texts]
 
 
-class FailingSummarizationProvider:
-    """Summarization provider that fails N times then succeeds."""
-
-    def __init__(self, fail_count: int = 0):
-        self.calls = 0
-        self.fail_count = fail_count
-
-    def summarize(self, content: str, **kwargs) -> str:
-        self.calls += 1
-        if self.calls <= self.fail_count:
-            raise RuntimeError(f"LLM error (call {self.calls})")
-        return f"Summary of: {content[:50]}"
-
-
 # ---------------------------------------------------------------------------
 # Embedding dimension validation
 # ---------------------------------------------------------------------------
@@ -240,15 +226,22 @@ class TestProcessPendingRetry:
         """Failed items should be retried (after backoff)."""
         kp = self._make_keeper(mock_providers, tmp_path)
 
-        # Enqueue a summarize task
-        kp._pending_queue.enqueue("doc1", "default", "content", task_type="summarize")
+        # Enqueue an embed task
+        kp._pending_queue.enqueue("doc1", "default", "content", task_type="embed")
         assert kp._pending_queue.count() == 1
 
-        # Inject a provider that fails on first call
-        kp._summarization_provider = FailingSummarizationProvider(fail_count=1)
+        # Inject an embedding provider that fails on first call
+        embed = mock_providers["embedding"]
+        original_embed = embed.embed
+        call_count = [0]
+        def failing_embed(*args, **kwargs):
+            call_count[0] += 1
+            if call_count[0] <= 1:
+                raise RuntimeError("transient embedding failure")
+            return original_embed(*args, **kwargs)
+        embed.embed = failing_embed
 
-
-        # Put a doc so summarize actually runs
+        # Put a doc so embed actually runs
         kp._document_store.upsert("default", "doc1", "raw content", {})
         result = kp.process_pending(limit=10)
         assert result["failed"] == 1
@@ -263,7 +256,7 @@ class TestProcessPendingRetry:
         kp._pending_queue._conn.commit()
 
         # Second process — provider succeeds now
-        kp._summarization_provider = FailingSummarizationProvider(fail_count=0)
+        embed.embed = original_embed
 
         result = kp.process_pending(limit=10)
         assert result["processed"] == 1
@@ -372,24 +365,6 @@ class TestProviderTimeouts:
 
         # Item still pending (will be retried after backoff)
         assert kp._pending_queue.count() == 1
-        kp.close()
-
-    def test_summarize_error_marks_item_failed(self, mock_providers, tmp_path):
-        """RuntimeError from summarize() should be caught and item marked failed."""
-        kp = Keeper(store_path=tmp_path)
-        kp._needs_sysdoc_migration = False
-        kp._pending_queue = PendingSummaryQueue(tmp_path / "pending.db")
-
-        kp._pending_queue.enqueue("doc1", "default", "content", task_type="summarize")
-        kp._document_store.upsert("default", "doc1", "content", {})
-
-        # Inject failing summarization provider
-        kp._summarization_provider = FailingSummarizationProvider(fail_count=1)
-
-
-        result = kp.process_pending(limit=10)
-        assert result["failed"] == 1
-        assert "LLM error" in result["errors"][0]
         kp.close()
 
     def test_provider_error_doesnt_crash_batch(self, mock_providers, tmp_path):
