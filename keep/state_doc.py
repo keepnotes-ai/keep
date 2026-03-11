@@ -244,6 +244,209 @@ def parse_state_doc(name: str, body: str) -> StateDoc:
 
 
 # ---------------------------------------------------------------------------
+# Fragment parsing and composition
+# ---------------------------------------------------------------------------
+
+@dataclass
+class StateDocFragment:
+    """A parsed fragment that contributes rules to a base state doc."""
+
+    name: str
+    order: str  # "before", "after", "before:{id}", "after:{id}"
+    rules: list[CompiledRule]
+
+
+def parse_fragment(name: str, body: str) -> StateDocFragment:
+    """Parse a state doc fragment from its YAML body.
+
+    Fragments contribute rules to a base state doc. They have the same
+    ``rules:`` list as a full state doc but no ``match:`` or ``post:``.
+
+    Args:
+        name: Fragment name (e.g. "obsidian-links").
+        body: YAML text body.
+    """
+    parsed = yaml.safe_load(body)
+    if not isinstance(parsed, dict):
+        raise ValueError(f"fragment {name!r} must be a YAML mapping")
+
+    order = str(parsed.get("order", "after")).strip()
+
+    raw_rules = parsed.get("rules")
+    if not isinstance(raw_rules, list):
+        raise ValueError(f"fragment {name!r}: rules must be a list")
+
+    rules = []
+    for i, r in enumerate(raw_rules):
+        if isinstance(r, dict):
+            rules.append(_parse_rule(r))
+        else:
+            logger.warning("fragment %r: rules[%d] is not a mapping, skipping", name, i)
+
+    return StateDocFragment(name=name, order=order, rules=rules)
+
+
+def merge_fragments(base: StateDoc, fragments: list[StateDocFragment]) -> StateDoc:
+    """Merge fragment rules into a base state doc.
+
+    Fragments are inserted into the base rule list according to their
+    ``order`` field:
+    - ``after`` (default): appended after base rules
+    - ``before``: prepended before base rules
+    - ``after:{rule_id}``: inserted after the rule with that id
+    - ``before:{rule_id}``: inserted before the rule with that id
+
+    If a positional target is not found, falls back to ``after`` with
+    a warning.
+    """
+    if not fragments:
+        return base
+
+    # Start with a mutable copy of the base rules
+    merged = list(base.rules)
+
+    before_rules: list[CompiledRule] = []
+    after_rules: list[CompiledRule] = []
+
+    for frag in fragments:
+        order = frag.order
+
+        if order == "before":
+            before_rules.extend(frag.rules)
+        elif order == "after":
+            after_rules.extend(frag.rules)
+        elif ":" in order:
+            position, target_id = order.split(":", 1)
+            target_id = target_id.strip()
+            position = position.strip()
+
+            # Find the target rule index
+            idx = None
+            for i, rule in enumerate(merged):
+                if rule.id == target_id:
+                    idx = i
+                    break
+
+            if idx is None:
+                logger.warning(
+                    "fragment %r: order target %r not found, appending",
+                    frag.name, target_id,
+                )
+                after_rules.extend(frag.rules)
+            elif position == "after":
+                # Insert after the target
+                for j, rule in enumerate(frag.rules):
+                    merged.insert(idx + 1 + j, rule)
+            elif position == "before":
+                # Insert before the target
+                for j, rule in enumerate(frag.rules):
+                    merged.insert(idx + j, rule)
+            else:
+                logger.warning(
+                    "fragment %r: unknown order position %r, appending",
+                    frag.name, position,
+                )
+                after_rules.extend(frag.rules)
+        else:
+            logger.warning(
+                "fragment %r: unknown order %r, appending",
+                frag.name, order,
+            )
+            after_rules.extend(frag.rules)
+
+    merged = before_rules + merged + after_rules
+    return StateDoc(name=base.name, match=base.match, rules=merged, post=list(base.post))
+
+
+# ---------------------------------------------------------------------------
+# Unified loader with fragment composition
+# ---------------------------------------------------------------------------
+
+@dataclass
+class NoteStub:
+    """Minimal note interface for the loader."""
+    id: str
+    summary: str
+    tags: dict[str, Any]
+
+
+def load_state_doc(
+    name: str,
+    *,
+    get_note: Any,
+    list_children: Any,
+) -> Optional[StateDoc]:
+    """Load a state doc by name with fragment composition.
+
+    This is the single loader used by both the write path (background
+    processing) and the read path (flow runtime).
+
+    Args:
+        name: State doc name without ``.state/`` prefix (e.g. "after-write").
+        get_note: Callable ``(id: str) -> note | None`` returning a note-like
+            object with ``.summary`` and ``.tags`` attributes.
+        list_children: Callable ``(prefix: str) -> list[note]`` returning
+            child notes matching the prefix, each with ``.id``, ``.summary``,
+            and ``.tags``.
+    """
+    from .builtin_state_docs import BUILTIN_STATE_DOCS
+    from .state_doc_runtime import _get_compiled_builtin
+
+    base: Optional[StateDoc] = None
+
+    # Try store first (allows user overrides)
+    try:
+        note = get_note(f".state/{name}")
+        if note is not None:
+            body = str(getattr(note, "summary", "") or "").strip()
+            if body:
+                try:
+                    base = parse_state_doc(name, body)
+                except (ValueError, RuntimeError) as exc:
+                    logger.warning("Failed to compile state doc %r: %s", name, exc)
+    except Exception:
+        pass
+
+    # Fallback: compiled builtin
+    if base is None:
+        builtin_body = BUILTIN_STATE_DOCS.get(name)
+        if builtin_body:
+            base = _get_compiled_builtin(name, builtin_body)
+
+    if base is None:
+        return None
+
+    # Discover and merge child fragments
+    try:
+        prefix = f".state/{name}/"
+        children = list_children(prefix)
+        if children:
+            fragments = []
+            for child in sorted(children, key=lambda c: getattr(c, "id", "")):
+                tags = getattr(child, "tags", {}) or {}
+                if tags.get("active") == "false":
+                    logger.debug("Skipping inactive fragment: %s", getattr(child, "id", ""))
+                    continue
+                body = str(getattr(child, "summary", "") or "").strip()
+                if not body:
+                    continue
+                frag_name = getattr(child, "id", "").removeprefix(prefix)
+                try:
+                    fragments.append(parse_fragment(frag_name, body))
+                except (ValueError, RuntimeError) as exc:
+                    logger.warning("Failed to parse fragment %s: %s",
+                                   getattr(child, "id", ""), exc)
+                    continue
+            if fragments:
+                base = merge_fragments(base, fragments)
+                logger.debug("Merged %d fragment(s) into %s", len(fragments), name)
+    except Exception as exc:
+        logger.debug("Fragment discovery for %s skipped: %s", name, exc)
+
+    return base
+
+
+# ---------------------------------------------------------------------------
 # Evaluation
 # ---------------------------------------------------------------------------
 

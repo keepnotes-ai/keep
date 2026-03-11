@@ -167,6 +167,8 @@ class BackgroundProcessingMixin:
             "content_length": len(content),
             "has_summary": bool(summary),
             "has_uri": bool(uri),
+            "uri": uri or "",
+            "content_type": content_type or "",
             "is_system_note": item_id.startswith("."),
             "tags": all_tags,
             "has_media_content": bool(
@@ -226,30 +228,29 @@ class BackgroundProcessingMixin:
             self._spawn_processor()
 
     def _load_after_write_state_doc(self) -> Optional["StateDoc"]:
-        """Load the after-write state doc (store override -> builtin fallback)."""
-        from .state_doc import StateDoc, parse_state_doc
-        from .builtin_state_docs import BUILTIN_STATE_DOCS
-        from .state_doc_runtime import _get_compiled_builtin
+        """Load the after-write state doc with fragment composition."""
+        return self._load_state_doc("after-write")
 
-        # Try store first (allows user overrides)
+    def _load_state_doc(self, name: str) -> Optional["StateDoc"]:
+        """Load a state doc by name, with fragment composition."""
+        from .state_doc import load_state_doc
+
         try:
             doc_coll = self._resolve_doc_collection()
-            note = self._document_store.get(doc_coll, ".state/after-write")
-            if note is not None:
-                body = str(getattr(note, "summary", "") or "").strip()
-                if body:
-                    try:
-                        return parse_state_doc("after-write", body)
-                    except (ValueError, RuntimeError) as exc:
-                        logger.warning("Failed to compile stored after-write state doc: %s", exc)
         except Exception:
-            pass  # Store not ready; fall through to builtin
+            doc_coll = None
 
-        # Fallback: compiled builtin
-        builtin_body = BUILTIN_STATE_DOCS.get("after-write")
-        if builtin_body:
-            return _get_compiled_builtin("after-write", builtin_body)
-        return None
+        def _get_note(id: str):
+            if doc_coll is None:
+                return None
+            return self._document_store.get(doc_coll, id)
+
+        def _list_children(prefix: str):
+            if doc_coll is None:
+                return []
+            return self._document_store.query_by_id_prefix(doc_coll, prefix)
+
+        return load_state_doc(name, get_note=_get_note, list_children=_list_children)
 
     def _store_write_context(self, item_id: str, context: dict[str, Any]) -> None:
         note_id = normalize_id(item_id)

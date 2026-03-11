@@ -1,7 +1,4 @@
 
-* what's the easy-up composition model, e.g. to add a new step into `state-after-write`
-    multiple in parallel, multiple in series
-
 * expose flows as MCP tasks (SEP-1686)? (no good clients yet tho)
     https://github.com/modelcontextprotocol/modelcontextprotocol/issues/1686
     https://github.com/modelcontextprotocol/modelcontextprotocol/pull/1732
@@ -14,12 +11,15 @@
 
 * obsidian mode (for markdown files)
     - follow & index & make edges, for internal & external links
-    - extracting wiki-style URLs: good candidate for an 'action'?
-    - also general markdown-style links?  would we distinguish them?
-    - NOT just raw urls in content
+    - internal links: need to resolve paths (because our ids don't really have paths)
+    - external links: just URLs
+    - two styles: wiki-style, and markdown-style
+        - keep these separate? or just assume you want both??
+        - do NOT want just "URLs in content", at least right now
+    - action? where the links get parsed out and handed to the state processor?
+    - state doc defines if/they get applied as tags?
     - then just add `informs` edge-tags to the thing they came from
       or would "references/referenced-by" be a better expression (um, probably)
-    - add this action into the after-write process for markdown files
 
 * code mode
 
@@ -283,3 +283,4 @@ x check for CLI compatibility with windows (WLS should work but no plan to valid
 . improve some really bad OCRs
 . run `get`-type paths without persistence (late-bound, only when async is needed)
 . recurse option for CLI put
+. state-doc fragments and assembly

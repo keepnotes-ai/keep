@@ -308,30 +308,18 @@ def make_state_doc_loader(
     skip full migration, and the brief window before first migration
     on a fresh store.
     """
-    from .state_doc import parse_state_doc
-    from .builtin_state_docs import BUILTIN_STATE_DOCS
+    from .state_doc import load_state_doc as _load_state_doc
 
     def _load(name: str) -> Optional[StateDoc]:
         bare_name = name.removeprefix(".state/")
-        note_id = f".state/{bare_name}"
 
-        # Primary path: load from the store
-        doc_note = env.get(note_id)
-        if doc_note is not None:
-            body = str(getattr(doc_note, "summary", "") or "").strip()
-            if body:
-                try:
-                    return parse_state_doc(bare_name, body)
-                except (ValueError, RuntimeError) as exc:
-                    logger.warning("Failed to compile state doc %r: %s", note_id, exc)
+        def _get_note(id: str):
+            return env.get(id)
 
-        # Fallback: compiled builtins (pre-migration or test environments)
-        builtin_body = BUILTIN_STATE_DOCS.get(bare_name)
-        if builtin_body is not None:
-            logger.debug("State doc %r not in store, using builtin fallback", bare_name)
-            return _get_compiled_builtin(bare_name, builtin_body)
+        def _list_children(prefix: str):
+            return env.list_items(prefix=prefix, include_hidden=True, limit=50)
 
-        return None
+        return _load_state_doc(bare_name, get_note=_get_note, list_children=_list_children)
 
     return _load
 
