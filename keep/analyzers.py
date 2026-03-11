@@ -98,6 +98,10 @@ MODEL_BUDGETS: dict[str, int] = {
     "qwen2.5:14b":       8000,
     "mistral:7b":        6000,
     "gemma2:9b":         6000,
+    "gemma3:1b":         1500,
+    "gemma3:4b":         3000,
+    "gemma3:12b":        6000,
+    "gemma3:27b":        8000,
     # OpenAI
     "gpt-5-nano":        4000,
     "gpt-4o-mini":       6000,

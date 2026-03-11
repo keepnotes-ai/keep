@@ -1,17 +1,27 @@
 
-* run `get`-type paths without persistence (late-bound, only when async is needed)
+* what's the easy-up composition model, e.g. to add a new step into `state-after-write`
+    multiple in parallel, multiple in series
 
-* acq
+* expose flows as MCP tasks (SEP-1686)? (no good clients yet tho)
+    https://github.com/modelcontextprotocol/modelcontextprotocol/issues/1686
+    https://github.com/modelcontextprotocol/modelcontextprotocol/pull/1732
 
-* reddit q: benchmarks
-
-* move remaining stuff from the pending-queue?
+* acp
 
 * budget by tokens, not just by ticks
 
 * chatgpt import
 
-* type: code
+* obsidian mode (for markdown files)
+    - follow & index & make edges, for internal & external links
+    - extracting wiki-style URLs: good candidate for an 'action'?
+    - also general markdown-style links?  would we distinguish them?
+    - NOT just raw urls in content
+    - then just add `informs` edge-tags to the thing they came from
+      or would "references/referenced-by" be a better expression (um, probably)
+    - add this action into the after-write process for markdown files
+
+* code mode
 
 * poc: "an append-only journal narrated in first person (experiences, not task logs)"
     (also: "with periodic consolidation that compresses episodes into thematic structures" - our `analyze`)
@@ -270,3 +280,6 @@ x check for CLI compatibility with windows (WLS should work but no plan to valid
 . CLI docstrings (examples) need update (and need tests since they keep breaking the rendered output)
 . User-oriented documentation to replace CONTINUATIONS.md
 . improve some really bad summaries
+. improve some really bad OCRs
+. run `get`-type paths without persistence (late-bound, only when async is needed)
+. recurse option for CLI put

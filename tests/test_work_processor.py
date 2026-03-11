@@ -296,24 +296,36 @@ class TestApplyMutations:
         kp._get_embedding_provider.return_value.embed.assert_called_once_with("hello")
         kp._store.upsert.assert_called_once()
 
-    def test_put_item_calls_put_direct(self):
+    def test_put_item_part_uses_part_storage(self):
         kp = MagicMock()
         output = {"mutations": [
             {"op": "put_item", "id": "d1@p1", "content": "c", "summary": "s",
              "tags": {"_base_id": "d1"}, "queue_background_tasks": False},
         ]}
         _apply_mutations(kp, "coll", output)
+        # Part IDs go through part-specific storage, not _put_direct
+        kp._put_direct.assert_not_called()
+        kp._document_store.upsert_single_part.assert_called_once()
+        kp._store.upsert_part.assert_called_once()
+
+    def test_put_item_non_part_calls_put_direct(self):
+        kp = MagicMock()
+        output = {"mutations": [
+            {"op": "put_item", "id": "child1", "content": "c", "summary": "s",
+             "tags": {"topic": "test"}, "queue_background_tasks": False},
+        ]}
+        _apply_mutations(kp, "coll", output)
         kp._put_direct.assert_called_once_with(
-            content="c", id="d1@p1", summary="s",
-            tags={"_base_id": "d1"}, queue_background_tasks=False,
+            content="c", id="child1", summary="s",
+            tags={"topic": "test"}, queue_background_tasks=False,
         )
-        kp.put.assert_not_called()
 
     def test_set_tags(self):
         kp = MagicMock()
         output = {"mutations": [{"op": "set_tags", "target": "d1", "tags": {"topic": "AI"}}]}
         _apply_mutations(kp, "coll", output)
-        kp.tag.assert_called_once_with("d1", tags={"topic": "AI"})
+        kp._document_store.update_tags.assert_called_once_with("coll", "d1", {"topic": "AI"})
+        kp._store.update_tags.assert_called_once()
 
     def test_delete_prefix(self):
         kp = MagicMock()

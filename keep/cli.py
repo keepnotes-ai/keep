@@ -3246,6 +3246,10 @@ def pending_cmd(
         "--retry",
         help="Reset failed items back to pending for retry"
     )] = False,
+    purge: Annotated[bool, typer.Option(
+        "--purge",
+        help="Delete all pending work items from the queue"
+    )] = False,
     stop: Annotated[bool, typer.Option(
         "--stop",
         help="Stop the background processor"
@@ -3382,6 +3386,14 @@ def pending_cmd(
                 pass
             kp.close()
             processor_lock.release()
+        return
+
+    # --purge: delete all pending work items
+    if purge:
+        wq = kp._get_work_queue()
+        n = wq.purge()
+        typer.echo(f"Purged {n} pending work items.", err=True)
+        kp.close()
         return
 
     # --retry: reset failed items back to pending

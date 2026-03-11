@@ -89,6 +89,16 @@ def is_part_id(id: str) -> bool:
     return bool(_PART_ID_RE.search(id))
 
 
+def parse_part_id(id: str) -> tuple[str, int]:
+    """Parse a part ID into (base_id, part_num)."""
+    m = _PART_ID_RE.search(id)
+    if not m:
+        raise ValueError(f"Not a part ID: {id!r}")
+    base = id[:m.start()]
+    digits = "".join(c for c in m.group() if c.isdigit())
+    return base, int(digits)
+
+
 def validate_tag_key(key: str) -> None:
     """Validate a tag key is safe for JSON path queries."""
     if not key or len(key) > MAX_TAG_KEY_LENGTH:

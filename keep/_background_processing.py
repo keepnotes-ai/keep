@@ -632,92 +632,73 @@ class BackgroundProcessingMixin:
         )
 
     def apply_result(self, item_id, collection, result, *, existing_tags=None):
-        """Apply a ProcessorResult to the local store."""
+        """Apply a ProcessorResult to the local store.
+
+        Converts the legacy ProcessorResult into a mutation list and
+        delegates to the generic ``_apply_mutations`` applier.
+        """
+        from .task_workflows import _apply_mutations
+
+        mutations: list[dict[str, Any]] = []
+
         if result.task_type == "summarize":
-            self._document_store.update_summary(collection, item_id, result.summary)
-            self._store.update_summary(collection, item_id, result.summary)
+            mutations.append({
+                "op": "set_summary", "target": item_id,
+                "summary": result.summary or "",
+            })
 
         elif result.task_type == "ocr":
-            self._document_store.update_summary(collection, item_id, result.summary)
-            self._document_store.update_content_hash(
-                collection, item_id,
-                content_hash=result.content_hash,
-                content_hash_full=result.content_hash_full,
-            )
-            chroma_coll = self._resolve_chroma_collection()
-            embedding = self._get_embedding_provider().embed(result.summary)
-            self._store.upsert(
-                collection=chroma_coll,
-                id=item_id,
-                embedding=embedding,
-                summary=result.summary,
-                tags=casefold_tags_for_index(existing_tags or {}),
-            )
+            mutations.append({
+                "op": "set_content", "target": item_id,
+                "content": result.content or "",
+                "summary": result.summary or "",
+                "content_hash": result.content_hash or "",
+                "content_hash_full": result.content_hash_full or "",
+            })
 
         elif result.task_type == "describe":
-            # Media description: append description to existing summary,
-            # re-embed with enriched content.
-            self._document_store.update_summary(collection, item_id, result.summary)
-            chroma_coll = self._resolve_chroma_collection()
-            embedding = self._get_embedding_provider().embed(result.summary)
-            self._store.upsert(
-                collection=chroma_coll,
-                id=item_id,
-                embedding=embedding,
-                summary=result.summary,
-                tags=casefold_tags_for_index(existing_tags or {}),
-            )
+            mutations.append({
+                "op": "set_summary", "target": item_id,
+                "summary": result.summary or "",
+                "embed": True,
+            })
 
         elif result.task_type == "analyze":
-            from .document_store import PartInfo
-            from .types import utc_now
-
             doc = self._document_store.get(collection, item_id)
             if not doc:
                 return
+
+            mutations.append({"op": "delete_prefix", "prefix": f"{item_id}@p"})
 
             parent_user_tags = {
                 k: v for k, v in (existing_tags or {}).items()
                 if not k.startswith(SYSTEM_TAG_PREFIX)
             }
-
-            now = utc_now()
-            parts = []
             for i, raw in enumerate(result.parts or [], 1):
                 part_tags = dict(parent_user_tags)
                 if raw.get("tags"):
                     part_tags.update(raw["tags"])
-                parts.append(PartInfo(
-                    part_num=i,
-                    summary=raw.get("summary", ""),
-                    tags=part_tags,
-                    content=raw.get("content", ""),
-                    created_at=now,
-                ))
+                part_tags["_base_id"] = item_id
+                part_tags["_part_num"] = str(i)
+                mutations.append({
+                    "op": "put_item",
+                    "id": f"{item_id}@p{i}",
+                    "content": raw.get("content", ""),
+                    "summary": raw.get("summary", ""),
+                    "tags": part_tags,
+                    "queue_background_tasks": False,
+                })
 
-            chroma_coll = self._resolve_chroma_collection()
-
-            # Atomic replace: delete old, insert new
-            self._store.delete_parts(chroma_coll, item_id)
-            self._document_store.delete_parts(collection, item_id)
-            self._document_store.upsert_parts(collection, item_id, parts)
-
-            # Embed each part
-            embed = self._get_embedding_provider()
-            for part in parts:
-                embedding = embed.embed(part.summary)
-                self._store.upsert_part(
-                    chroma_coll, item_id, part.part_num,
-                    embedding, part.summary, casefold_tags_for_index(part.tags),
-                )
-
-            # Record _analyzed_hash
             if doc.content_hash:
                 updated_tags = dict(doc.tags)
                 updated_tags["_analyzed_hash"] = doc.content_hash
-                self._document_store.update_tags(collection, item_id, updated_tags)
-                self._store.update_tags(chroma_coll, item_id,
-                                        casefold_tags_for_index(updated_tags))
+                mutations.append({
+                    "op": "set_tags", "target": item_id,
+                    "tags": updated_tags,
+                })
+
+        if mutations:
+            _apply_mutations(self, collection, {"mutations": mutations})
 
     def _run_local_task_workflow(
         self,

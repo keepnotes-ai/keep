@@ -196,19 +196,45 @@ def _apply_mutations(
             )
 
         elif op == "put_item":
-            keeper._put_direct(
-                content=str(mut.get("content", "")),
-                id=mut.get("id"),
-                summary=str(mut.get("summary", "")),
-                tags=mut.get("tags"),
-                queue_background_tasks=mut.get("queue_background_tasks", False),
-            )
+            from .types import is_part_id, parse_part_id
+            item_id = mut.get("id", "")
+            if is_part_id(item_id):
+                # Parts go through part-specific storage, not _put_direct
+                base_id, part_num = parse_part_id(item_id)
+                from .document_store import PartInfo
+                from .types import utc_now
+                part = PartInfo(
+                    part_num=part_num,
+                    summary=str(mut.get("summary", "")),
+                    content=str(mut.get("content", "")),
+                    tags=dict(mut.get("tags") or {}),
+                    created_at=utc_now(),
+                )
+                keeper._document_store.upsert_single_part(collection, base_id, part)
+                chroma_coll = keeper._resolve_chroma_collection()
+                embedding = keeper._get_embedding_provider().embed(part.summary)
+                keeper._store.upsert_part(
+                    chroma_coll, base_id, part_num,
+                    embedding, part.summary, casefold_tags_for_index(part.tags),
+                )
+            else:
+                keeper._put_direct(
+                    content=str(mut.get("content", "")),
+                    id=item_id,
+                    summary=str(mut.get("summary", "")),
+                    tags=mut.get("tags"),
+                    queue_background_tasks=mut.get("queue_background_tasks", False),
+                )
 
         elif op == "set_tags":
             target = str(mut["target"])
             tags = _resolve_ref(mut["tags"], output)
             if isinstance(tags, dict):
-                keeper.tag(target, tags=tags)
+                keeper._document_store.update_tags(collection, target, tags)
+                chroma_coll = keeper._resolve_chroma_collection()
+                keeper._store.update_tags(
+                    chroma_coll, target, casefold_tags_for_index(tags),
+                )
 
         elif op == "delete_prefix":
             prefix = str(mut["prefix"])

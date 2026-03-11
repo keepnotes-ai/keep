@@ -376,6 +376,14 @@ class WorkQueue:
         ).fetchone()
         return row is not None
 
+    def purge(self) -> int:
+        """Delete all requested (unclaimed) work items. Returns count deleted."""
+        cur = self._conn.execute(
+            "DELETE FROM continue_work WHERE status = 'requested'"
+        )
+        self._conn.commit()
+        return cur.rowcount
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
