@@ -6,7 +6,7 @@ Covers:
 - Supersede skipping
 - Error handling and stats
 - run_local_task dispatch to individual workflows
-- _run_tag, _run_analyze skip conditions
+- Tag.run_task, Analyze.run_task skip conditions
 """
 
 from __future__ import annotations
@@ -21,9 +21,9 @@ from keep.task_workflows import (
     TaskRequest,
     TaskRunResult,
     run_local_task,
-    _run_analyze,
-    _run_tag,
 )
+from keep.actions.analyze import Analyze
+from keep.actions.tag import Tag
 
 
 # ---------------------------------------------------------------------------
@@ -192,7 +192,7 @@ class TestRunLocalTask:
     def test_unsupported_task_type_raises(self):
         kp = MagicMock()
         req = TaskRequest(task_type="bogus", id="d1", collection="c", content="x")
-        with pytest.raises(ValueError, match="unsupported"):
+        with pytest.raises(ValueError, match="unknown action"):
             run_local_task(kp, req)
 
     def test_dispatches_to_analyze(self):
@@ -227,7 +227,7 @@ class TestAnalyzeSkipConditions:
         kp = MagicMock()
         kp.analyze.return_value = []
         req = TaskRequest(task_type="analyze", id="d1", collection="c", content="x")
-        result = _run_analyze(kp, req)
+        result = Analyze().run_task(kp, req)
         assert result.status == "skipped"
         assert result.details["reason"] == "content_too_short"
 
@@ -236,7 +236,7 @@ class TestTagSkipConditions:
     def test_empty_content_returns_skipped(self):
         kp = MagicMock()
         req = TaskRequest(task_type="tag", id="d1", collection="c", content="")
-        result = _run_tag(kp, req)
+        result = Tag().run_task(kp, req)
         assert result.status == "skipped"
         assert result.details["reason"] == "no_content"
 
@@ -249,7 +249,7 @@ class TestTagSkipConditions:
         with patch("keep.providers.base.get_registry") as mock_reg:
             mock_provider = MagicMock(spec=[])  # no tag method
             mock_reg.return_value.create_tagging.return_value = mock_provider
-            result = _run_tag(kp, req)
+            result = Tag().run_task(kp, req)
         assert result.status == "skipped"
         assert result.details["reason"] == "provider_has_no_tag"
 
@@ -263,6 +263,6 @@ class TestTagSkipConditions:
             mock_provider = MagicMock()
             mock_provider.tag.return_value = {}
             mock_reg.return_value.create_tagging.return_value = mock_provider
-            result = _run_tag(kp, req)
+            result = Tag().run_task(kp, req)
         assert result.status == "skipped"
         assert result.details["reason"] == "empty_tags"

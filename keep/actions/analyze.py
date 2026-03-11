@@ -2,13 +2,17 @@ from __future__ import annotations
 
 """Item-scoped decomposition action for generating structured parts."""
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ..processors import process_analyze
 from ..providers.base import AnalysisChunk
 from . import action
 from ._item_scope import resolve_item_content
 from ._tagging import classify_parts_with_specs
+
+if TYPE_CHECKING:
+    from ..api import Keeper
+    from ..task_workflows import TaskRequest, TaskRunResult
 
 
 def _normalize_part(raw: Any) -> dict[str, Any]:
@@ -77,3 +81,14 @@ class Analyze:
             )
         out["mutations"] = mutations
         return out
+
+    def run_task(self, keeper: "Keeper", req: "TaskRequest") -> "TaskRunResult":
+        """Background task workflow for analysis."""
+        from ..task_workflows import TaskRunResult
+
+        tags = req.metadata.get("tags")
+        force = req.metadata.get("force", False)
+        parts = keeper.analyze(req.id, tags=tags, force=force)
+        if not parts:
+            return TaskRunResult(status="skipped", details={"reason": "content_too_short"})
+        return TaskRunResult(status="applied", details={"parts_count": len(parts)})

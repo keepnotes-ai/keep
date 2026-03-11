@@ -363,9 +363,10 @@ class TestDescribeTaskWorkflow:
     """Test the describe task workflow (background execution path)."""
 
     def test_describe_enriches_summary(self, mock_providers, tmp_path):
-        """_run_describe appends description to existing summary."""
+        """Describe.run_task appends description to existing summary."""
         from keep.api import Keeper
-        from keep.task_workflows import TaskRequest, _run_describe
+        from keep.task_workflows import TaskRequest
+        from keep.actions.describe import Describe
 
         kp = Keeper(store_path=tmp_path)
         _keeper_skip_migration(kp)
@@ -391,8 +392,8 @@ class TestDescribeTaskWorkflow:
             metadata={"uri": str(test_file), "content_type": "image/jpeg"},
         )
         # Patch path validation (tmp_path is outside home)
-        with patch("keep.paths.validate_path_within_home"):
-            result = _run_describe(kp, req)
+        with patch("keep.actions.describe.validate_path_within_home"):
+            result = Describe().run_task(kp, req)
 
         assert result.status == "applied"
         # Verify the summary was enriched
@@ -402,9 +403,10 @@ class TestDescribeTaskWorkflow:
         kp.close()
 
     def test_describe_skips_when_no_provider(self, mock_providers, tmp_path):
-        """_run_describe skips gracefully without a media provider."""
+        """Describe.run_task skips gracefully without a media provider."""
         from keep.api import Keeper
-        from keep.task_workflows import TaskRequest, _run_describe
+        from keep.task_workflows import TaskRequest
+        from keep.actions.describe import Describe
 
         with patch("keep.config._detect_ollama", return_value=None):
             kp = Keeper(store_path=tmp_path)
@@ -418,15 +420,16 @@ class TestDescribeTaskWorkflow:
             content="",
             metadata={"uri": "/test.jpg", "content_type": "image/jpeg"},
         )
-        result = _run_describe(kp, req)
+        result = Describe().run_task(kp, req)
         assert result.status == "skipped"
         assert result.details["reason"] == "no_media_provider"
         kp.close()
 
     def test_describe_skips_on_empty_description(self, mock_providers, tmp_path):
-        """_run_describe skips when describer returns empty string."""
+        """Describe.run_task skips when describer returns empty string."""
         from keep.api import Keeper
-        from keep.task_workflows import TaskRequest, _run_describe
+        from keep.task_workflows import TaskRequest
+        from keep.actions.describe import Describe
 
         kp = Keeper(store_path=tmp_path)
         _keeper_skip_migration(kp)
@@ -447,8 +450,8 @@ class TestDescribeTaskWorkflow:
             content="",
             metadata={"uri": str(test_file), "content_type": "image/jpeg"},
         )
-        with patch("keep.paths.validate_path_within_home"):
-            result = _run_describe(kp, req)
+        with patch("keep.actions.describe.validate_path_within_home"):
+            result = Describe().run_task(kp, req)
         assert result.status == "skipped"
         assert result.details["reason"] == "empty_description"
 

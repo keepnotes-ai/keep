@@ -2,11 +2,15 @@ from __future__ import annotations
 
 """Item-scoped constrained-tag classification action."""
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from . import action
 from ._item_scope import resolve_item_content
 from ._tagging import classify_parts_with_specs
+
+if TYPE_CHECKING:
+    from ..api import Keeper
+    from ..task_workflows import TaskRequest, TaskRunResult
 
 
 def _normalize_tag_value(value: Any) -> str | list[str] | None:
@@ -55,3 +59,35 @@ class Tag:
                 }
             ]
         return out
+
+    def run_task(self, keeper: "Keeper", req: "TaskRequest") -> "TaskRunResult":
+        """Background task workflow for tag classification."""
+        from ..task_workflows import TaskRunResult
+
+        content = str(req.content or "").strip()
+        if not content:
+            return TaskRunResult(status="skipped", details={"reason": "no_content"})
+
+        provider_name = str(req.metadata.get("provider") or "noop").strip()
+        provider_params = req.metadata.get("provider_params")
+        if provider_params is not None and not isinstance(provider_params, dict):
+            provider_params = None
+
+        from ..providers.base import get_registry
+
+        registry = get_registry()
+        provider = registry.create_tagging(provider_name, provider_params)
+        tag_method = getattr(provider, "tag", None)
+        if not callable(tag_method):
+            return TaskRunResult(status="skipped", details={"reason": "provider_has_no_tag"})
+
+        tags = tag_method(content)
+        if not isinstance(tags, dict):
+            return TaskRunResult(status="skipped", details={"reason": "invalid_provider_output"})
+
+        normalized = {str(k): str(v) for k, v in tags.items() if str(k).strip() and str(v).strip()}
+        if not normalized:
+            return TaskRunResult(status="skipped", details={"reason": "empty_tags"})
+
+        keeper.tag(req.id, tags=normalized)
+        return TaskRunResult(status="applied", details={"tag_count": len(normalized)})

@@ -358,9 +358,10 @@ class TestImageOcr:
         kp.close()
 
     def test_ocr_workflow_dispatches_image(self, tmp_path, mock_providers):
-        """_run_ocr routes to _ocr_image for image content types."""
+        """Ocr.run_task routes to _ocr_image for image content types."""
         from keep.api import Keeper
-        from keep.task_workflows import TaskRequest, _run_ocr
+        from keep.task_workflows import TaskRequest
+        from keep.actions.ocr import Ocr
 
         kp = Keeper(str(tmp_path / "store"))
 
@@ -388,8 +389,8 @@ class TestImageOcr:
             },
         )
 
-        with patch("keep.paths.validate_path_within_home"):
-            result = _run_ocr(kp, req)
+        with patch("keep.actions.ocr.validate_path_within_home"):
+            result = Ocr().run_task(kp, req)
 
         kp._ocr_image.assert_called_once()
         call_args = kp._ocr_image.call_args[0]
@@ -397,9 +398,10 @@ class TestImageOcr:
         kp.close()
 
     def test_ocr_workflow_dispatches_pdf(self, tmp_path, mock_providers):
-        """_run_ocr routes to _ocr_pdf for PDFs."""
+        """Ocr.run_task routes to _ocr_pdf for PDFs."""
         from keep.api import Keeper
-        from keep.task_workflows import TaskRequest, _run_ocr
+        from keep.task_workflows import TaskRequest
+        from keep.actions.ocr import Ocr
 
         kp = Keeper(str(tmp_path / "store"))
 
@@ -423,8 +425,8 @@ class TestImageOcr:
             },
         )
 
-        with patch("keep.paths.validate_path_within_home"):
-            result = _run_ocr(kp, req)
+        with patch("keep.actions.ocr.validate_path_within_home"):
+            result = Ocr().run_task(kp, req)
 
         kp._ocr_pdf.assert_called_once()
         kp.close()
