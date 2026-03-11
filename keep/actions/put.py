@@ -11,7 +11,7 @@ def _content_id(content: str) -> str:
     return f"%{digest}"
 
 
-@action
+@action(id="put")
 class Put:
     """Create a new item by returning a `put_item` mutation."""
 

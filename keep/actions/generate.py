@@ -7,7 +7,7 @@ from ..providers.base import parse_tag_json
 from . import action
 
 
-@action
+@action(id="generate")
 class Generate:
     def run(self, params: dict[str, Any], context) -> dict[str, Any]:
         provider = context.resolve_provider("summarization")

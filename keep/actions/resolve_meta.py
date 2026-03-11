@@ -5,7 +5,7 @@ from typing import Any
 from . import action, item_to_result
 
 
-@action(name="resolve_meta")
+@action(id="resolve_meta")
 class ResolveMeta:
     def run(self, params: dict[str, Any], context) -> dict[str, Any]:
         raw_item_id = params.get("item_id")

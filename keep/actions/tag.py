@@ -22,7 +22,7 @@ def _normalize_tag_value(value: Any) -> str | list[str] | None:
     return text or None
 
 
-@action
+@action(id="tag")
 class Tag:
     """Classify an item against `.tag/*` specs and emit tag mutations."""
 

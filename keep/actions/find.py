@@ -5,7 +5,7 @@ from typing import Any
 from . import action, item_to_result
 
 
-@action
+@action(id="find")
 class Find:
     def run(self, params: dict[str, Any], context) -> dict[str, Any]:
         query = params.get("query")

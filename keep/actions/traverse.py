@@ -12,7 +12,7 @@ def _updated_key(item: Any) -> str:
     return str(tags.get("_updated") or "")
 
 
-@action
+@action(id="traverse")
 class Traverse:
     def run(self, params: dict[str, Any], context) -> dict[str, Any]:
         raw_items = params.get("items")

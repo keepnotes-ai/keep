@@ -67,12 +67,21 @@ def _snake_case(name: str) -> str:
     return re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", s1).lower()
 
 
-def action(cls: type | None = None, *, name: str | None = None):
+def action(cls: type | None = None, *, id: str | None = None, name: str | None = None):
+    """Register a class as a named action.
+
+    Use ``@action(id="summarize")`` to declare the action's canonical ID.
+    The ``name`` kwarg is accepted as a legacy alias for ``id``.
+    If neither is provided, the ID is derived from the class name via snake_case.
+    """
+    effective_id = id or name
+
     def _register(target: type) -> type:
-        action_name = str(name or _snake_case(target.__name__)).strip()
-        if not action_name:
-            raise ValueError("action name cannot be empty")
-        _ACTION_REGISTRY[action_name] = target
+        action_id = str(effective_id or _snake_case(target.__name__)).strip()
+        if not action_id:
+            raise ValueError("action id cannot be empty")
+        _ACTION_REGISTRY[action_id] = target
+        target.ACTION_ID = action_id
         return target
 
     if cls is None:

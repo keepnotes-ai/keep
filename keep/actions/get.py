@@ -5,7 +5,7 @@ from typing import Any
 from . import action
 
 
-@action
+@action(id="get")
 class Get:
     def run(self, params: dict[str, Any], context) -> dict[str, Any]:
         raw_id = params.get("id")
