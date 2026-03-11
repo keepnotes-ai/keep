@@ -2,17 +2,13 @@ from __future__ import annotations
 
 """Item-scoped decomposition action for generating structured parts."""
 
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from ..processors import process_analyze
 from ..providers.base import AnalysisChunk
 from . import action
 from ._item_scope import resolve_item_content
 from ._tagging import classify_parts_with_specs
-
-if TYPE_CHECKING:
-    from ..api import Keeper
-    from ..task_workflows import TaskRequest, TaskRunResult
 
 
 def _normalize_part(raw: Any) -> dict[str, Any]:
@@ -64,6 +60,10 @@ class Analyze:
             return out
 
         mutations: list[dict[str, Any]] = []
+
+        # Delete old parts before inserting new ones
+        mutations.append({"op": "delete_prefix", "prefix": f"{item_id}@p"})
+
         for idx, part in enumerate(parts, start=1):
             part_id = f"{item_id}@p{idx}"
             tags = dict(part.get("tags") or {})
@@ -79,16 +79,20 @@ class Analyze:
                     "queue_background_tasks": False,
                 }
             )
+
+        # Record _analyzed_hash so we don't re-analyze unchanged content
+        doc = context.get_document(item_id) if hasattr(context, "get_document") else None
+        content_hash = getattr(doc, "content_hash", None) if doc else None
+        if content_hash:
+            existing_tags = dict(getattr(doc, "tags", None) or {})
+            existing_tags["_analyzed_hash"] = content_hash
+            mutations.append(
+                {
+                    "op": "set_tags",
+                    "target": item_id,
+                    "tags": existing_tags,
+                }
+            )
+
         out["mutations"] = mutations
         return out
-
-    def run_task(self, keeper: "Keeper", req: "TaskRequest") -> "TaskRunResult":
-        """Background task workflow for analysis."""
-        from ..task_workflows import TaskRunResult
-
-        tags = req.metadata.get("tags")
-        force = req.metadata.get("force", False)
-        parts = keeper.analyze(req.id, tags=tags, force=force)
-        if not parts:
-            return TaskRunResult(status="skipped", details={"reason": "content_too_short"})
-        return TaskRunResult(status="applied", details={"parts_count": len(parts)})

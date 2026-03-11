@@ -2,19 +2,10 @@ from __future__ import annotations
 
 """Item-scoped summary generation action."""
 
-import logging
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-from ..processors import process_summarize
-from ..types import filter_non_system_tags
 from . import action
 from ._item_scope import resolve_item_content
-
-if TYPE_CHECKING:
-    from ..api import Keeper
-    from ..task_workflows import TaskRequest, TaskRunResult
-
-logger = logging.getLogger(__name__)
 
 
 @action(id="summarize")
@@ -66,35 +57,7 @@ class Summarize:
                 {
                     "op": "set_summary",
                     "target": item_id,
-                    "summary": "$output.summary",
+                    "summary": out_summary,
                 }
             ],
         }
-
-    def run_task(self, keeper: "Keeper", req: "TaskRequest") -> "TaskRunResult":
-        """Background task workflow for summarization."""
-        from ..task_workflows import TaskRunResult
-
-        doc = keeper._document_store.get(req.collection, req.id)
-        if doc is None:
-            return TaskRunResult(status="skipped", details={"reason": "deleted"})
-
-        summarize_prompt = None
-        try:
-            summarize_prompt = keeper._resolve_prompt_doc("summarize", doc.tags)
-        except Exception as e:
-            logger.debug("Summarize prompt doc resolution failed: %s", e)
-
-        context = None
-        user_tags = filter_non_system_tags(doc.tags)
-        if user_tags:
-            context = keeper._gather_context(req.id, user_tags)
-
-        result = process_summarize(
-            req.content,
-            context=context,
-            summarization_provider=keeper._get_summarization_provider(),
-            system_prompt_override=summarize_prompt,
-        )
-        keeper.apply_result(req.id, req.collection, result)
-        return TaskRunResult(status="applied")

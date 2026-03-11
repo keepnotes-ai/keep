@@ -5,8 +5,8 @@ Covers:
 - _execute_work_item: input parsing, outcome propagation
 - Supersede skipping
 - Error handling and stats
-- run_local_task dispatch to individual workflows
-- Tag.run_task, Analyze.run_task skip conditions
+- run_local_task dispatch via action registry
+- Action run() skip conditions
 """
 
 from __future__ import annotations
@@ -22,8 +22,6 @@ from keep.task_workflows import (
     TaskRunResult,
     run_local_task,
 )
-from keep.actions.analyze import Analyze
-from keep.actions.tag import Tag
 
 
 # ---------------------------------------------------------------------------
@@ -196,73 +194,79 @@ class TestRunLocalTask:
             run_local_task(kp, req)
 
     def test_dispatches_to_analyze(self):
+        """Analyze action runs and produces parts via run_local_task."""
         kp = MagicMock()
-        kp.analyze.return_value = [MagicMock()]
+        mock_item = MagicMock(content="Long content for analysis " * 10, summary="", tags={})
+        kp.get.return_value = mock_item
+        # Mock analyzer to produce parts
+        mock_analyzer = MagicMock()
+        mock_analyzer.analyze.return_value = [
+            {"summary": "Part 1", "content": "content 1", "tags": {}},
+        ]
+        kp._get_analyzer.return_value = mock_analyzer
+        kp.list_items.return_value = []  # no tag specs
+        kp._document_store.get.return_value = None  # no doc for _analyzed_hash
+
         req = TaskRequest(task_type="analyze", id="d1", collection="c", content="x")
         result = run_local_task(kp, req)
         assert result.status == "applied"
-        kp.analyze.assert_called_once()
 
     def test_dispatches_to_tag(self):
+        """Tag action runs through run_local_task."""
         kp = MagicMock()
+        mock_item = MagicMock(content="some content", summary="some content", tags={})
+        kp.get.return_value = mock_item
+        kp.list_items.return_value = []  # no tag specs → no mutations
+        kp._get_summarization_provider.return_value = MagicMock()
+
         req = TaskRequest(
             task_type="tag", id="d1", collection="c", content="some content",
-            metadata={"provider": "noop"},
         )
-        with patch("keep.providers.base.get_registry") as mock_reg:
-            mock_provider = MagicMock()
-            mock_provider.tag.return_value = {"topic": "test"}
-            mock_reg.return_value.create_tagging.return_value = mock_provider
-            result = run_local_task(kp, req)
-        assert result.status == "applied"
-        kp.tag.assert_called_once()
+        result = run_local_task(kp, req)
+        # No tag specs → no mutations → skipped
+        assert result.status == "skipped"
 
 
 # ---------------------------------------------------------------------------
-# Individual workflow skip conditions
+# Action run() skip conditions
 # ---------------------------------------------------------------------------
 
 class TestAnalyzeSkipConditions:
-    def test_empty_parts_returns_skipped(self):
-        kp = MagicMock()
-        kp.analyze.return_value = []
-        req = TaskRequest(task_type="analyze", id="d1", collection="c", content="x")
-        result = Analyze().run_task(kp, req)
-        assert result.status == "skipped"
-        assert result.details["reason"] == "content_too_short"
+    def test_empty_content_raises(self):
+        """Analyze raises when item has no content."""
+        from keep.actions.analyze import Analyze
+        ctx = MagicMock()
+        ctx.get.return_value = MagicMock(content="", summary="")
+        with pytest.raises(ValueError, match="content unavailable"):
+            Analyze().run({"item_id": "d1"}, ctx)
+
+    def test_no_parts_returns_empty(self):
+        """Analyze returns empty parts when analyzer produces nothing."""
+        from keep.actions.analyze import Analyze
+        ctx = MagicMock()
+        ctx.get.return_value = MagicMock(content="some text content here", summary="")
+        ctx.resolve_provider.return_value = MagicMock(analyze=MagicMock(return_value=[]))
+        ctx.list_items.return_value = []
+        result = Analyze().run({"item_id": "d1"}, ctx)
+        assert result["parts"] == []
+        assert "mutations" not in result
 
 
 class TestTagSkipConditions:
-    def test_empty_content_returns_skipped(self):
-        kp = MagicMock()
-        req = TaskRequest(task_type="tag", id="d1", collection="c", content="")
-        result = Tag().run_task(kp, req)
-        assert result.status == "skipped"
-        assert result.details["reason"] == "no_content"
+    def test_empty_content_raises(self):
+        """Tag raises when item has no content."""
+        from keep.actions.tag import Tag
+        ctx = MagicMock()
+        ctx.get.return_value = MagicMock(content="", summary="")
+        with pytest.raises(ValueError, match="content unavailable"):
+            Tag().run({"item_id": "d1"}, ctx)
 
-    def test_provider_with_no_tag_method_returns_skipped(self):
-        kp = MagicMock()
-        req = TaskRequest(
-            task_type="tag", id="d1", collection="c", content="hello",
-            metadata={"provider": "fake"},
-        )
-        with patch("keep.providers.base.get_registry") as mock_reg:
-            mock_provider = MagicMock(spec=[])  # no tag method
-            mock_reg.return_value.create_tagging.return_value = mock_provider
-            result = Tag().run_task(kp, req)
-        assert result.status == "skipped"
-        assert result.details["reason"] == "provider_has_no_tag"
-
-    def test_provider_returning_empty_tags_skipped(self):
-        kp = MagicMock()
-        req = TaskRequest(
-            task_type="tag", id="d1", collection="c", content="hello",
-            metadata={"provider": "noop"},
-        )
-        with patch("keep.providers.base.get_registry") as mock_reg:
-            mock_provider = MagicMock()
-            mock_provider.tag.return_value = {}
-            mock_reg.return_value.create_tagging.return_value = mock_provider
-            result = Tag().run_task(kp, req)
-        assert result.status == "skipped"
-        assert result.details["reason"] == "empty_tags"
+    def test_no_tag_specs_returns_no_mutations(self):
+        """Tag with no .tag/* specs returns no mutations."""
+        from keep.actions.tag import Tag
+        ctx = MagicMock()
+        ctx.get.return_value = MagicMock(content="hello world", summary="hello")
+        ctx.list_items.return_value = []  # no tag specs
+        ctx.resolve_provider.return_value = MagicMock()
+        result = Tag().run({"item_id": "d1"}, ctx)
+        assert "mutations" not in result or not result.get("mutations")

@@ -358,78 +358,55 @@ class TestImageOcr:
         kp.close()
 
     def test_ocr_workflow_dispatches_image(self, tmp_path, mock_providers):
-        """Ocr.run_task routes to _ocr_image for image content types."""
-        from keep.api import Keeper
-        from keep.task_workflows import TaskRequest
+        """Ocr.run() calls ocr_image for image content types."""
         from keep.actions.ocr import Ocr
 
-        kp = Keeper(str(tmp_path / "store"))
-
-        # Create a test image
         from PIL import Image
         img = Image.new("RGB", (100, 100), color="white")
         img_path = tmp_path / "receipt.png"
         img.save(img_path)
 
-        # Store a document so the workflow can find it
-        kp.put("placeholder", id=f"file://{img_path}")
-
-        kp._content_extractor = MagicMock()
-        kp._ocr_image = MagicMock(return_value=None)
-
-        req = TaskRequest(
-            task_type="ocr",
-            id=f"file://{img_path}",
-            collection=kp._resolve_doc_collection(),
-            content="",
-            metadata={
-                "uri": f"file://{img_path}",
-                "ocr_pages": [0],
-                "content_type": "image/png",
-            },
+        ctx = MagicMock()
+        ctx.get.return_value = MagicMock(
+            content="placeholder", summary="", tags={},
+            uri=f"file://{img_path}",
         )
+        mock_extractor = MagicMock()
+        ctx.resolve_provider.return_value = mock_extractor
 
-        with patch("keep.actions.ocr.validate_path_within_home"):
-            result = Ocr().run_task(kp, req)
+        with patch("keep.actions.ocr.validate_path_within_home"), \
+             patch("keep.actions.ocr.ocr_image", return_value=None) as mock_ocr:
+            result = Ocr().run(
+                {"item_id": f"file://{img_path}", "content_type": "image/png", "ocr_pages": [0]},
+                ctx,
+            )
 
-        kp._ocr_image.assert_called_once()
-        call_args = kp._ocr_image.call_args[0]
-        assert call_args[1] == "image/png"
-        kp.close()
+        mock_ocr.assert_called_once()
+        assert mock_ocr.call_args[0][1] == "image/png"
 
     def test_ocr_workflow_dispatches_pdf(self, tmp_path, mock_providers):
-        """Ocr.run_task routes to _ocr_pdf for PDFs."""
-        from keep.api import Keeper
-        from keep.task_workflows import TaskRequest
+        """Ocr.run() calls ocr_pdf for PDFs."""
         from keep.actions.ocr import Ocr
-
-        kp = Keeper(str(tmp_path / "store"))
 
         pdf_path = tmp_path / "doc.pdf"
         pdf_path.write_bytes(b"%PDF-1.4")
 
-        kp.put("placeholder", id=f"file://{pdf_path}")
-
-        kp._content_extractor = MagicMock()
-        kp._ocr_pdf = MagicMock(return_value=None)
-
-        req = TaskRequest(
-            task_type="ocr",
-            id=f"file://{pdf_path}",
-            collection=kp._resolve_doc_collection(),
-            content="",
-            metadata={
-                "uri": f"file://{pdf_path}",
-                "ocr_pages": [0, 1],
-                "content_type": "application/pdf",
-            },
+        ctx = MagicMock()
+        ctx.get.return_value = MagicMock(
+            content="placeholder", summary="", tags={},
+            uri=f"file://{pdf_path}",
         )
+        mock_extractor = MagicMock()
+        ctx.resolve_provider.return_value = mock_extractor
 
-        with patch("keep.actions.ocr.validate_path_within_home"):
-            result = Ocr().run_task(kp, req)
+        with patch("keep.actions.ocr.validate_path_within_home"), \
+             patch("keep.actions.ocr.ocr_pdf", return_value=None) as mock_ocr:
+            result = Ocr().run(
+                {"item_id": f"file://{pdf_path}", "ocr_pages": [0, 1], "content_type": "application/pdf"},
+                ctx,
+            )
 
-        kp._ocr_pdf.assert_called_once()
-        kp.close()
+        mock_ocr.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

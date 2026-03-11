@@ -1,18 +1,22 @@
 """Local task workflow dispatch.
 
-Each action that supports background processing implements a ``run_task``
-method.  This module provides the shared ``TaskRequest`` / ``TaskRunResult``
-types and the ``run_local_task`` dispatcher that routes to the right action
-via the action registry.
+Actions implement a single ``run(params, context)`` method.  This module
+provides the ``TaskRequest`` / ``TaskRunResult`` types, a lightweight
+adapter that presents a Keeper as an ``ActionContext``, a generic
+mutation applier, and the ``run_local_task`` dispatcher that ties them
+together.
 """
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .api import Keeper
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -34,15 +38,219 @@ class TaskRunResult:
     details: dict[str, Any] = field(default_factory=dict)
 
 
+# ---------------------------------------------------------------------------
+# Adapter: Keeper → ActionContext
+# ---------------------------------------------------------------------------
+
+class _KeeperActionContext:
+    """Present a Keeper as an ActionContext for background task execution."""
+
+    def __init__(
+        self,
+        keeper: "Keeper",
+        *,
+        collection: str,
+        item_id: str | None = None,
+        item_content: str | None = None,
+    ) -> None:
+        self._keeper = keeper
+        self._collection = collection
+        self.item_id = item_id
+        self.item_content = item_content
+
+    def get(self, id: str) -> Any:
+        return self._keeper.get(id)
+
+    def find(
+        self,
+        query: str | None = None,
+        *,
+        tags: dict[str, Any] | None = None,
+        similar_to: str | None = None,
+        limit: int = 10,
+        since: str | None = None,
+        until: str | None = None,
+        include_hidden: bool = False,
+    ) -> list[Any]:
+        return self._keeper.find(
+            query, tags=tags, similar_to=similar_to, limit=limit,
+            since=since, until=until, include_hidden=include_hidden,
+        )
+
+    def list_items(
+        self,
+        *,
+        prefix: str | None = None,
+        tags: dict[str, Any] | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        order_by: str = "updated",
+        include_hidden: bool = False,
+        limit: int = 10,
+    ) -> list[Any]:
+        return self._keeper.list_items(
+            prefix=prefix, tags=tags, since=since, until=until,
+            order_by=order_by, include_hidden=include_hidden, limit=limit,
+        )
+
+    def get_document(self, id: str) -> Any:
+        return self._keeper._document_store.get(self._collection, id)
+
+    def resolve_meta(self, id: str, limit_per_doc: int = 3) -> dict[str, list[Any]]:
+        return self._keeper.resolve_meta(item_id=id, limit_per_doc=limit_per_doc)
+
+    def resolve_provider(self, kind: str, name: str | None = None) -> Any:
+        _PROVIDER_MAP = {
+            "summarization": self._keeper._get_summarization_provider,
+            "content_extractor": self._keeper._get_content_extractor,
+            "analyzer": self._keeper._get_analyzer,
+            "media": self._keeper._get_media_describer,
+        }
+        method = _PROVIDER_MAP.get(kind)
+        if method is None:
+            raise ValueError(f"unknown provider kind: {kind!r}")
+        return method()
+
+    def resolve_prompt(self, prefix: str, doc_tags: dict[str, Any] | None = None) -> str | None:
+        try:
+            return self._keeper._resolve_prompt_doc(prefix, doc_tags or {})
+        except Exception:
+            return None
+
+    def traverse(self, source_ids: list[str], *, limit: int = 5) -> dict[str, list[Any]]:
+        traverse = getattr(self._keeper, "traverse_related", None)
+        if callable(traverse):
+            return traverse(source_ids, limit_per_source=limit)
+        return {}
+
+
+# ---------------------------------------------------------------------------
+# Generic mutation applier
+# ---------------------------------------------------------------------------
+
+def _resolve_ref(value: Any, output: dict[str, Any]) -> Any:
+    """Resolve ``$output.X`` references to concrete values."""
+    if isinstance(value, str) and value.startswith("$output."):
+        key = value[len("$output."):]
+        return output.get(key, value)
+    return value
+
+
+def _apply_mutations(
+    keeper: "Keeper",
+    collection: str,
+    output: dict[str, Any],
+) -> None:
+    """Process mutations returned by an action's ``run()`` method."""
+    from .types import casefold_tags_for_index
+
+    mutations = output.get("mutations")
+    if not isinstance(mutations, list):
+        return
+
+    for mut in mutations:
+        if not isinstance(mut, dict):
+            continue
+        op = mut.get("op", "")
+
+        if op == "set_summary":
+            target = str(mut["target"])
+            summary = str(_resolve_ref(mut["summary"], output))
+            keeper._document_store.update_summary(collection, target, summary)
+            if mut.get("embed"):
+                chroma_coll = keeper._resolve_chroma_collection()
+                embedding = keeper._get_embedding_provider().embed(summary)
+                existing = keeper._document_store.get(collection, target)
+                tags = {}
+                if existing:
+                    tags = casefold_tags_for_index(existing.tags or {})
+                keeper._store.upsert(
+                    collection=chroma_coll, id=target,
+                    embedding=embedding, summary=summary, tags=tags,
+                )
+            else:
+                keeper._store.update_summary(collection, target, summary)
+
+        elif op == "set_content":
+            target = str(mut["target"])
+            content = str(_resolve_ref(mut["content"], output))
+            content_hash = str(mut.get("content_hash", ""))
+            content_hash_full = str(mut.get("content_hash_full", ""))
+            summary = str(_resolve_ref(mut.get("summary", ""), output))
+            keeper._document_store.update_summary(collection, target, summary)
+            if content_hash:
+                keeper._document_store.update_content_hash(
+                    collection, target,
+                    content_hash=content_hash,
+                    content_hash_full=content_hash_full,
+                )
+            chroma_coll = keeper._resolve_chroma_collection()
+            embedding = keeper._get_embedding_provider().embed(summary)
+            existing = keeper._document_store.get(collection, target)
+            tags = {}
+            if existing:
+                tags = casefold_tags_for_index(existing.tags or {})
+            keeper._store.upsert(
+                collection=chroma_coll, id=target,
+                embedding=embedding, summary=summary, tags=tags,
+            )
+
+        elif op == "put_item":
+            keeper.put(
+                content=str(mut.get("content", "")),
+                id=mut.get("id"),
+                summary=str(mut.get("summary", "")),
+                tags=mut.get("tags"),
+                queue_background_tasks=mut.get("queue_background_tasks", False),
+            )
+
+        elif op == "set_tags":
+            target = str(mut["target"])
+            tags = _resolve_ref(mut["tags"], output)
+            if isinstance(tags, dict):
+                keeper.tag(target, tags=tags)
+
+        elif op == "delete_prefix":
+            prefix = str(mut["prefix"])
+            chroma_coll = keeper._resolve_chroma_collection()
+            keeper._store.delete_parts(chroma_coll, prefix.rstrip("@p"))
+            keeper._document_store.delete_parts(collection, prefix.rstrip("@p"))
+
+        else:
+            logger.warning("Unknown mutation op: %r", op)
+
+
+# ---------------------------------------------------------------------------
+# Dispatcher
+# ---------------------------------------------------------------------------
+
 def run_local_task(keeper: "Keeper", req: TaskRequest) -> TaskRunResult:
-    """Run one local task workflow by looking up the action in the registry."""
+    """Run a background task by calling the action's ``run()`` method."""
     from .actions import get_action
 
     task_type = str(req.task_type or "").strip()
     action = get_action(task_type)
-    run_task = getattr(action, "run_task", None)
-    if not callable(run_task):
-        raise ValueError(
-            f"action {task_type!r} does not support background tasks (no run_task method)"
-        )
-    return run_task(keeper, req)
+
+    ctx = _KeeperActionContext(
+        keeper,
+        collection=req.collection,
+        item_id=req.id,
+        item_content=req.content or None,
+    )
+
+    params: dict[str, Any] = {"item_id": req.id}
+    params.update(req.metadata)
+
+    output = action.run(params, ctx)
+    if not isinstance(output, dict):
+        return TaskRunResult(status="skipped", details={"reason": "no_output"})
+
+    if output.get("skipped"):
+        return TaskRunResult(status="skipped", details=output)
+
+    mutations = output.get("mutations")
+    if not mutations:
+        return TaskRunResult(status="skipped", details=output)
+
+    _apply_mutations(keeper, req.collection, output)
+    return TaskRunResult(status="applied", details=output)

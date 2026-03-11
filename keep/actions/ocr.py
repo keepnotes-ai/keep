@@ -4,17 +4,12 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from ..paths import validate_path_within_home
-from ..processors import ocr_image, ocr_pdf, process_ocr
-from ..types import filter_non_system_tags
+from ..processors import ocr_image, ocr_pdf
 from . import action
 from ._item_scope import resolve_item
-
-if TYPE_CHECKING:
-    from ..api import Keeper
-    from ..task_workflows import TaskRequest, TaskRunResult
 
 logger = logging.getLogger(__name__)
 
@@ -37,132 +32,104 @@ class Ocr:
     """Extract OCR text for URI-backed target items."""
 
     def run(self, params: dict[str, Any], context) -> dict[str, Any]:
-        """Run OCR and return extracted text with an upsert mutation."""
+        """Run OCR and return extracted text with mutations."""
+        import hashlib
+
         item_id, item = resolve_item(params, context)
 
         tags = getattr(item, "tags", None)
         tags = dict(tags) if isinstance(tags, dict) else {}
-        uri = str(getattr(item, "uri", "") or tags.get("_source_uri") or item_id).strip()
+        uri = str(
+            params.get("uri")
+            or getattr(item, "uri", "")
+            or tags.get("_source_uri")
+            or item_id
+        ).strip()
         if not uri:
             raise ValueError("ocr requires uri source")
-        path = validate_path_within_home(Path(uri.removeprefix("file://")))
-        if not path.exists():
-            raise ValueError(f"ocr source does not exist: {path}")
 
-        content_type = str(tags.get("_content_type") or "").strip()
-        pages = _coerce_pages(params.get("pages"))
+        content_type = str(
+            params.get("content_type") or tags.get("_content_type") or ""
+        ).strip()
+        pages = _coerce_pages(params.get("ocr_pages") or params.get("pages"))
         if not pages:
             pages = _coerce_pages(tags.get("_ocr_pages"))
 
-        extractor = context.resolve_provider("content_extractor")
-        if extractor is None:
-            raise ValueError("ocr requires configured content extractor provider")
-
-        is_image = content_type.startswith("image/")
-        if is_image:
-            text = ocr_image(path, content_type, extractor)
-            pages_processed = 1 if text else 0
-        else:
-            if not pages:
-                return {"text": "", "pages_processed": 0}
-            text = ocr_pdf(path, pages, extractor)
-            pages_processed = len(pages)
-
-        extracted = "" if text is None else str(text)
-        out: dict[str, Any] = {
-            "text": extracted,
-            "pages_processed": pages_processed,
-        }
-        if extracted.strip():
-            out["mutations"] = [
-                {
-                    "op": "upsert_item",
-                    "target": item_id,
-                    "content": "$output.text",
-                }
-            ]
-        return out
-
-    def run_task(self, keeper: "Keeper", req: "TaskRequest") -> "TaskRunResult":
-        """Background task workflow for OCR extraction."""
-        from ..task_workflows import TaskRunResult
-
-        uri = req.metadata.get("uri") or req.id
-        ocr_pages = req.metadata.get("ocr_pages", [])
-        content_type = req.metadata.get("content_type", "")
-
-        if not ocr_pages:
-            return TaskRunResult(status="skipped", details={"reason": "no_ocr_pages"})
-
-        max_ocr_pages = 1000
-        if len(ocr_pages) > max_ocr_pages:
-            logger.warning(
-                "OCR page count %d exceeds limit %d for %s — truncating",
-                len(ocr_pages), max_ocr_pages, uri,
-            )
-            ocr_pages = ocr_pages[:max_ocr_pages]
-
-        extractor = keeper._get_content_extractor()
-        if not extractor:
-            raise IOError("No content extractor configured for OCR")
-
-        path = Path(str(uri).removeprefix("file://")).resolve()
+        path = Path(uri.removeprefix("file://")).resolve()
         if not path.exists():
             logger.warning("File no longer exists for OCR: %s", path)
-            return TaskRunResult(status="skipped", details={"reason": "missing_file"})
+            return {"text": "", "skipped": True, "reason": "missing_file"}
 
         try:
             validate_path_within_home(path)
         except ValueError:
             logger.warning("OCR path outside home directory, skipping: %s", path)
-            return TaskRunResult(status="skipped", details={"reason": "path_outside_home"})
+            return {"text": "", "skipped": True, "reason": "path_outside_home"}
 
-        is_image = str(content_type).startswith("image/") if content_type else False
+        extractor = context.resolve_provider("content_extractor")
+        if extractor is None:
+            raise ValueError("ocr requires configured content extractor provider")
+
+        # Detect content type if not provided
+        is_image = content_type.startswith("image/") if content_type else False
         if not content_type:
             from ..providers.documents import FileDocumentProvider
-
             ext = path.suffix.lower()
             detected = FileDocumentProvider.EXTENSION_TYPES.get(ext, "")
             is_image = detected.startswith("image/")
             if is_image:
                 content_type = detected
 
+        if not pages and not is_image:
+            return {"text": "", "pages_processed": 0, "skipped": True, "reason": "no_ocr_pages"}
+
+        # Extract text
         if is_image:
-            full_content = keeper._ocr_image(path, content_type, extractor)
+            text = ocr_image(path, content_type, extractor)
+            pages_processed = 1 if text else 0
         else:
-            full_content = keeper._ocr_pdf(path, ocr_pages, extractor)
+            max_ocr_pages = 1000
+            if len(pages) > max_ocr_pages:
+                logger.warning(
+                    "OCR page count %d exceeds limit %d for %s — truncating",
+                    len(pages), max_ocr_pages, uri,
+                )
+                pages = pages[:max_ocr_pages]
+            text = ocr_pdf(path, pages, extractor)
+            pages_processed = len(pages)
 
-        if not full_content or not full_content.strip():
+        extracted = "" if text is None else str(text)
+        if not extracted.strip():
             logger.info("OCR produced no usable text for %s", uri)
-            return TaskRunResult(status="skipped", details={"reason": "no_usable_text"})
+            return {"text": "", "pages_processed": pages_processed, "skipped": True, "reason": "no_usable_text"}
 
-        existing = keeper._document_store.get(req.collection, req.id)
-        if not existing:
-            return TaskRunResult(status="skipped", details={"reason": "deleted"})
+        # Summarize if text is long
+        max_summary_length = int(params.get("max_summary_length", 2000))
+        if len(extracted) <= max_summary_length:
+            summary = extracted
+        else:
+            try:
+                provider = context.resolve_provider("summarization")
+                summarized = provider.summarize(extracted)
+                summary = str(summarized) if summarized else extracted[:max_summary_length] + "..."
+            except Exception:
+                summary = extracted[:max_summary_length] + "..."
 
-        context = None
-        user_tags = filter_non_system_tags(existing.tags)
-        if user_tags:
-            context = keeper._gather_context(req.id, user_tags)
+        content_hash = hashlib.sha256(extracted.encode("utf-8")).hexdigest()[-10:]
+        content_hash_full = hashlib.sha256(extracted.encode("utf-8")).hexdigest()
 
-        try:
-            result = process_ocr(
-                full_content,
-                max_summary_length=keeper._config.max_summary_length,
-                context=context,
-                summarization_provider=keeper._get_summarization_provider(),
-            )
-        except Exception as e:
-            logger.warning("OCR summarization failed for %s: %s", uri, e)
-            result = process_ocr(
-                full_content,
-                max_summary_length=keeper._config.max_summary_length,
-                context=context,
-                summarization_provider=None,
-            )
-
-        keeper.apply_result(req.id, req.collection, result, existing_tags=existing.tags)
-        return TaskRunResult(
-            status="applied",
-            details={"chars": len(full_content), "content_type": content_type or "pdf"},
-        )
+        return {
+            "text": extracted,
+            "summary": summary,
+            "pages_processed": pages_processed,
+            "mutations": [
+                {
+                    "op": "set_content",
+                    "target": item_id,
+                    "content": extracted,
+                    "summary": summary,
+                    "content_hash": content_hash,
+                    "content_hash_full": content_hash_full,
+                }
+            ],
+        }
