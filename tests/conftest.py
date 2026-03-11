@@ -909,7 +909,9 @@ def mock_providers():
     mock_reg.create_summarization.return_value = mock_summ
 
     with patch("keep.api.get_registry", return_value=mock_reg), \
+         patch("keep._provider_lifecycle.get_registry", return_value=mock_reg), \
          patch("keep.api.CachingEmbeddingProvider", side_effect=lambda p, **kw: p), \
+         patch("keep._provider_lifecycle.CachingEmbeddingProvider", side_effect=lambda p, **kw: p), \
          patch("keep.store.ChromaStore", MockChromaStore), \
          patch("keep.document_store.DocumentStore", MockDocumentStore), \
          patch("keep.pending_summaries.PendingSummaryQueue", MockPendingSummaryQueue), \

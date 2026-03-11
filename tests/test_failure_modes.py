@@ -13,7 +13,8 @@ import time
 
 import pytest
 
-from keep.api import Keeper, MAX_SUMMARY_ATTEMPTS
+from keep.api import Keeper
+from keep._background_processing import MAX_SUMMARY_ATTEMPTS
 from keep.pending_summaries import PendingSummaryQueue
 
 
