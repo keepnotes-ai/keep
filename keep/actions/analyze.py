@@ -7,7 +7,7 @@ from typing import Any
 from ..processors import process_analyze
 from ..providers.base import AnalysisChunk
 from . import action
-from ._item_scope import resolve_item_content
+from ._item_scope import check_content_hash, resolve_item_content
 from ._tagging import classify_parts_with_specs
 
 
@@ -30,6 +30,9 @@ class Analyze:
     def run(self, params: dict[str, Any], context) -> dict[str, Any]:
         """Analyze content, classify parts, and build storage mutations."""
         item_id, _item, content = resolve_item_content(params, context)
+
+        if check_content_hash(params, context, item_id, "_analyzed_hash"):
+            return {"skipped": True, "reason": "content unchanged"}
         guide_context = str(params.get("guide_context") or "")
 
         raw_parts: list[dict[str, Any]]

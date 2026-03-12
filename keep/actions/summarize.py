@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from . import action
-from ._item_scope import resolve_item_content
+from ._item_scope import check_content_hash, resolve_item_content
 
 
 @action(id="summarize", priority=3)
@@ -15,6 +15,9 @@ class Summarize:
     def run(self, params: dict[str, Any], context) -> dict[str, Any]:
         """Summarize item content and emit a `set_summary` mutation."""
         item_id, item, content = resolve_item_content(params, context)
+
+        if check_content_hash(params, context, item_id, "_summarized_hash"):
+            return {"skipped": True, "reason": "content unchanged"}
 
         provider = context.resolve_provider("summarization")
         summarize = getattr(provider, "summarize", None)
@@ -51,13 +54,25 @@ class Summarize:
             except TypeError:
                 summary = summarize(str(content))
         out_summary = "" if summary is None else str(summary)
+        mutations: list[dict[str, Any]] = [
+            {
+                "op": "set_summary",
+                "target": item_id,
+                "summary": out_summary,
+            }
+        ]
+        # Record _summarized_hash so we skip unchanged content next time
+        doc = context.get_document(item_id) if hasattr(context, "get_document") else None
+        content_hash = getattr(doc, "content_hash", None) if doc else None
+        if content_hash:
+            mutations.append(
+                {
+                    "op": "set_tags",
+                    "target": item_id,
+                    "tags": {"_summarized_hash": content_hash},
+                }
+            )
         return {
             "summary": out_summary,
-            "mutations": [
-                {
-                    "op": "set_summary",
-                    "target": item_id,
-                    "summary": out_summary,
-                }
-            ],
+            "mutations": mutations,
         }

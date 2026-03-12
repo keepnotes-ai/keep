@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from . import action
-from ._item_scope import resolve_item_content
+from ._item_scope import check_content_hash, resolve_item_content
 from ._tagging import classify_parts_with_specs
 
 
@@ -30,6 +30,9 @@ class Tag:
         """Run constrained classification and return normalized tags."""
         item_id, _item, content = resolve_item_content(params, context)
 
+        if check_content_hash(params, context, item_id, "_tagged_hash"):
+            return {"skipped": True, "reason": "content unchanged"}
+
         parts = [{"summary": str(content), "tags": {}}]
         classified = classify_parts_with_specs(parts, context)
         row = classified[0] if classified else {}
@@ -47,11 +50,17 @@ class Tag:
             tags[key_str] = normalized
         out: dict[str, Any] = {"tags": tags}
         if tags:
+            # Record _tagged_hash so we skip unchanged content next time
+            doc = context.get_document(item_id) if hasattr(context, "get_document") else None
+            content_hash = getattr(doc, "content_hash", None) if doc else None
+            merged_tags = dict(tags)
+            if content_hash:
+                merged_tags["_tagged_hash"] = content_hash
             out["mutations"] = [
                 {
                     "op": "set_tags",
                     "target": item_id,
-                    "tags": tags,
+                    "tags": merged_tags,
                 }
             ]
         return out

@@ -4076,6 +4076,14 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
             except Exception:
                 pass
 
+        # Log final perf summary before removing ops log handler
+        try:
+            from .perf_stats import perf
+            if perf.summary():
+                perf.log_summary()
+        except Exception:
+            pass
+
         # Remove ops log handler to avoid handler accumulation
         if hasattr(self, '_ops_log_handler') and self._ops_log_handler:
             import logging

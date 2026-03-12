@@ -3266,15 +3266,26 @@ def pending_cmd(
     progress. Ctrl-C detaches without stopping the processor.
     Use --reindex to re-embed all items with the current embedding provider.
     """
-    kp = _get_keeper(store)
-
-    # --stop: send SIGTERM to the daemon
+    # --stop: send SIGTERM to the daemon (lightweight — no Keeper needed)
     if stop:
-        pid_path = kp._processor_pid_path
-        if not kp._is_processor_running():
+        from .model_lock import ModelLock
+        from .paths import get_default_store_path, get_config_dir
+        from .config import load_or_create_config
+        if store is not None:
+            store_path = Path(store).resolve()
+        else:
+            override = _get_store_override()
+            if override is not None:
+                store_path = Path(override).resolve()
+            else:
+                config_dir = get_config_dir()
+                cfg = load_or_create_config(config_dir)
+                store_path = get_default_store_path(cfg)
+        pid_path = store_path / "processor.pid"
+        lock = ModelLock(store_path / ".processor.lock")
+        if not lock.is_locked():
             typer.echo("No processor running.")
             pid_path.unlink(missing_ok=True)
-            kp.close()
             return
         if pid_path.exists():
             try:
@@ -3286,8 +3297,9 @@ def pending_cmd(
                 pid_path.unlink(missing_ok=True)
         else:
             typer.echo("Processor running but no PID file found.", err=True)
-        kp.close()
         return
+
+    kp = _get_keeper(store)
 
     # --daemon: run as the actual background processor
     if daemon:

@@ -34,6 +34,22 @@ logger = logging.getLogger(__name__)
 MAX_SUMMARY_ATTEMPTS = 5
 
 
+def _size_priority_bump(content_len: int) -> int:
+    """Return a priority bump based on content length.
+
+    Larger content takes longer to process, so it gets deprioritized
+    (higher number = lower priority in a min-heap):
+    - > 50KB → +2
+    - > 10KB → +1
+    - otherwise → 0
+    """
+    if content_len > 50_000:
+        return 2
+    if content_len > 10_000:
+        return 1
+    return 0
+
+
 class BackgroundProcessingMixin:
     """Task dispatch, processing pipeline, and processor spawning.
 
@@ -117,7 +133,7 @@ class BackgroundProcessingMixin:
             metadata=metadata, tags=tags,
         )
         from .actions import get_action_priority
-        priority = get_action_priority(task_type)
+        priority = min(get_action_priority(task_type) + _size_priority_bump(len(content)), 9)
         self._get_work_queue().enqueue(
             task_type,
             {

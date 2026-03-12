@@ -30,6 +30,32 @@ def resolve_item(params: dict[str, Any], context: Any) -> tuple[str, Any]:
     return item_id, item
 
 
+def check_content_hash(
+    params: dict[str, Any], context: Any, item_id: str, hash_tag: str
+) -> bool:
+    """Return True if the item's content is unchanged since the last run.
+
+    Compares ``content_hash`` on the document with the stored ``hash_tag``
+    value.  Returns False (do not skip) when:
+    - ``params["force"]`` is truthy
+    - the document or content_hash is unavailable
+    - hashes differ or the tag has never been set
+    """
+    if params.get("force"):
+        return False
+    get_doc = getattr(context, "get_document", None)
+    if get_doc is None:
+        return False
+    doc = get_doc(item_id)
+    if doc is None:
+        return False
+    content_hash = getattr(doc, "content_hash", None)
+    if not content_hash:
+        return False
+    tags = getattr(doc, "tags", None) or {}
+    return tags.get(hash_tag) == content_hash
+
+
 def resolve_item_content(params: dict[str, Any], context: Any) -> tuple[str, Any, str]:
     """Resolve non-empty content text for an item-scoped action."""
     item_id, item = resolve_item(params, context)
