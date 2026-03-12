@@ -31,8 +31,6 @@ from .types import (
 
 logger = logging.getLogger(__name__)
 
-# Maximum attempts before giving up on a pending task
-MAX_SUMMARY_ATTEMPTS = 5
 
 
 def _size_priority_bump(content_len: int) -> int:
@@ -339,7 +337,7 @@ class BackgroundProcessingMixin:
 
             # Skip items that have failed too many times
             # (attempts was already incremented by dequeue, so check >= MAX)
-            if item.attempts >= MAX_SUMMARY_ATTEMPTS:
+            if item.attempts >= self._config.max_task_attempts:
                 # Move to dead letter -- preserved for diagnosis
                 self._pending_queue.abandon(
                     item.id, item.collection, item.task_type,
@@ -814,6 +812,10 @@ class BackgroundProcessingMixin:
         Handles both main docs and versioned entries.
         The item.content contains the summary text to embed.
         """
+        if not item.content or not item.content.strip():
+            logger.info("Skipping reindex for %s: no summary to embed", item.id)
+            return
+
         chroma_coll = self._resolve_chroma_collection()
         meta = item.metadata or {}
         version = meta.get("version")

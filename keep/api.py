@@ -3214,11 +3214,6 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
     # Parts (structural decomposition)
     # -------------------------------------------------------------------------
 
-    # Number of prior (already-analyzed) versions to include as context
-    # in incremental analysis, so the LLM can judge whether new entries
-    # represent genuinely new themes or continuations.
-    INCREMENTAL_CONTEXT = 10
-
     def _gather_analyze_chunks(
         self, id: str, doc_record, *, since_version: int | None = None,
     ) -> list[dict] | dict[str, list[dict]]:
@@ -3261,7 +3256,7 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
                 return {"context": [], "targets": []}
 
             # Take last N context versions as overlap
-            overlap = context_versions[-self.INCREMENTAL_CONTEXT:]
+            overlap = context_versions[-self._config.incremental_context:]
 
             context_chunks: list[dict] = []
             for i, v in enumerate(overlap):

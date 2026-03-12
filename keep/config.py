@@ -169,6 +169,15 @@ class StoreConfig:
     backend: str = "local"
     backend_params: dict[str, Any] = field(default_factory=dict)
 
+    # Maximum files to index in a single `put -r` directory import
+    max_dir_files: int = 1000
+
+    # Maximum retries before a pending task is dead-lettered
+    max_task_attempts: int = 5
+
+    # Number of prior versions included as context in incremental analysis
+    incremental_context: int = 10
+
     # Default tick budget for `keep flow` invocations
     budget_per_flow: int = 5
 
@@ -716,6 +725,9 @@ def load_config(config_dir: Path) -> StoreConfig:
         remote = None
 
     budget_per_flow = int(data.get("store", {}).get("budget_per_flow", 5))
+    max_dir_files = int(data.get("store", {}).get("max_dir_files", 1000))
+    max_task_attempts = int(data.get("store", {}).get("max_task_attempts", 5))
+    incremental_context = int(data.get("store", {}).get("incremental_context", 10))
 
     return StoreConfig(
         path=actual_store,
@@ -743,6 +755,9 @@ def load_config(config_dir: Path) -> StoreConfig:
         backend=backend,
         backend_params=backend_params,
         budget_per_flow=budget_per_flow,
+        max_dir_files=max_dir_files,
+        max_task_attempts=max_task_attempts,
+        incremental_context=incremental_context,
     )
 
 
@@ -801,6 +816,12 @@ def save_config(config: StoreConfig) -> None:
         store_section["backend_params"] = config.backend_params
     if config.budget_per_flow != 5:
         store_section["budget_per_flow"] = config.budget_per_flow
+    if config.max_dir_files != 1000:
+        store_section["max_dir_files"] = config.max_dir_files
+    if config.max_task_attempts != 5:
+        store_section["max_task_attempts"] = config.max_task_attempts
+    if config.incremental_context != 10:
+        store_section["incremental_context"] = config.incremental_context
 
     data: dict[str, Any] = {
         "store": store_section,

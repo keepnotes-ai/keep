@@ -729,14 +729,14 @@ class TestPutDirectory:
 
     def test_put_file_count_cap(self, cli, tmp_path):
         """Directory mode rejects directories with too many files."""
-        from keep.cli import MAX_DIR_FILES
-        # Create MAX_DIR_FILES + 1 files
-        for i in range(MAX_DIR_FILES + 1):
+        max_files = 1000  # default config value
+        # Create max_files + 1 files
+        for i in range(max_files + 1):
             (tmp_path / f"file_{i:04d}.txt").write_text(f"content {i}")
         result = cli("put", str(tmp_path))
         assert result.returncode == 1
-        assert f"{MAX_DIR_FILES + 1} files" in result.stderr
-        assert f"max {MAX_DIR_FILES}" in result.stderr
+        assert f"{max_files + 1} files" in result.stderr
+        assert f"max {max_files}" in result.stderr
 
     def test_put_bare_file_path_help(self, cli):
         """Put help mentions directory and file modes."""

@@ -14,7 +14,7 @@ import time
 import pytest
 
 from keep.api import Keeper
-from keep._background_processing import MAX_SUMMARY_ATTEMPTS
+MAX_SUMMARY_ATTEMPTS = 5  # default; tests use this as the expected value
 from keep.pending_summaries import PendingSummaryQueue
 
 

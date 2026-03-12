@@ -53,8 +53,6 @@ from .types import (
 )
 from .logging_config import configure_quiet_mode, enable_debug_mode
 
-# Maximum number of files to index from a directory at once
-MAX_DIR_FILES = 1000
 
 
 def _is_filesystem_path(source: str) -> Optional[Path]:
@@ -1749,9 +1747,10 @@ def _put_store(
                 hint += "; use -r to recurse into subdirectories"
             typer.echo(f"Hint: {hint}", err=True)
             raise typer.Exit(1)
-        if len(files) > MAX_DIR_FILES:
-            typer.echo(f"Error: directory has {len(files)} files (max {MAX_DIR_FILES})", err=True)
-            typer.echo("Hint: use a smaller directory or index files individually", err=True)
+        max_files = kp.config.max_dir_files
+        if len(files) > max_files:
+            typer.echo(f"Error: directory has {len(files)} files (max {max_files})", err=True)
+            typer.echo("Hint: increase max_dir_files in keep.toml or index files individually", err=True)
             raise typer.Exit(1)
         results: list[Item] = []
         errors: list[str] = []
@@ -3429,6 +3428,7 @@ def pending_cmd(
                     # Check for outstanding delegated tasks before exiting
                     delegated_remaining = kp._pending_queue.count_delegated() if hasattr(kp._pending_queue, "count_delegated") else 0
                     flow_remaining = kp.pending_work_count() if hasattr(kp, "pending_work_count") else 0
+                    pending_remaining = kp._pending_queue.count()
                     if delegated_remaining > 0:
                         _daemon_logger.info("Waiting for %d delegated tasks", delegated_remaining)
                         time.sleep(5)
@@ -3436,6 +3436,10 @@ def pending_cmd(
                     if flow_remaining > 0:
                         _daemon_logger.info("Waiting for %d flow work items", flow_remaining)
                         time.sleep(1)
+                        continue
+                    if pending_remaining > 0:
+                        _daemon_logger.info("Waiting for %d pending items (retry backoff)", pending_remaining)
+                        time.sleep(5)
                         continue
 
                     # Items may have been enqueued after our last dequeue
