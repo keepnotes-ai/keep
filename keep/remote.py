@@ -63,9 +63,12 @@ class RemoteKeeper:
                     "Use HTTPS to protect API credentials, or use localhost for local development."
                 )
 
+        from .types import user_agent
+
         headers: dict[str, str] = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
+            "User-Agent": user_agent(),
         }
         if self.project:
             headers["X-Project"] = self.project

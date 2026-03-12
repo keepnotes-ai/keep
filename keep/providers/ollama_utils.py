@@ -33,7 +33,8 @@ def ollama_ensure_model(base_url: str, model: str) -> None:
 
     # Check installed models
     try:
-        resp = requests.get(f"{base_url}/api/tags", timeout=5)
+        from keep.types import user_agent
+        resp = requests.get(f"{base_url}/api/tags", timeout=5, headers={"User-Agent": user_agent()})
         resp.raise_for_status()
     except requests.RequestException as e:
         raise RuntimeError(

@@ -199,7 +199,11 @@ def _detect_ollama() -> dict | None:
         base_url = f"http://{base_url}"
 
     try:
-        req = urllib.request.Request(f"{base_url}/api/tags")
+        from .types import user_agent
+        req = urllib.request.Request(
+            f"{base_url}/api/tags",
+            headers={"User-Agent": user_agent()},
+        )
         with urllib.request.urlopen(req, timeout=0.5) as resp:
             data = json.loads(resp.read())
             models = [m["name"] for m in data.get("models", [])]
@@ -234,9 +238,10 @@ def ollama_pull(model: str, base_url: str | None = None,
 
     try:
         data = json.dumps({"name": model, "stream": True}).encode()
+        from .types import user_agent
         req = urllib.request.Request(
             f"{url}/api/pull", data=data,
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", "User-Agent": user_agent()},
         )
         with urllib.request.urlopen(req, timeout=600) as resp:
             buf = b""

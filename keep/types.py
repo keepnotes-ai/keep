@@ -25,6 +25,16 @@ INTERNAL_TAGS = frozenset({
 })
 
 
+def user_agent() -> str:
+    """Return the User-Agent string for outbound HTTP requests."""
+    try:
+        from importlib.metadata import version
+        ver = version("keep-skill")
+    except Exception:
+        ver = "dev"
+    return f"keepnotes-ai/keep {ver}"
+
+
 def utc_now() -> str:
     """Current UTC timestamp in canonical format: YYYY-MM-DDTHH:MM:SS.
 

@@ -918,7 +918,7 @@ class HttpDocumentProvider:
         except ImportError:
             raise RuntimeError("HTTP document fetching requires 'requests' library")
 
-        from keep import __version__
+        from keep.types import user_agent
 
         # Follow redirects manually so each hop is validated against SSRF
         target = uri
@@ -926,7 +926,7 @@ class HttpDocumentProvider:
             resp = requests.get(
                 target,
                 timeout=self.timeout,
-                headers={"User-Agent": f"keep/{__version__}"},
+                headers={"User-Agent": user_agent()},
                 stream=True,
                 allow_redirects=False,
             )
