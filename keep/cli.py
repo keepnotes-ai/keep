@@ -14,6 +14,7 @@ import platform
 import re
 import select
 import shutil
+import subprocess
 import signal
 import sys
 import tempfile
@@ -73,12 +74,59 @@ def _is_filesystem_path(source: str) -> Optional[Path]:
     return None
 
 
+def _git_visible_files(directory: Path, recurse: bool) -> list[Path] | None:
+    """Return files visible to git (tracked + untracked, excluding ignored).
+
+    Returns None if the directory is not inside a git repository or git
+    is not available, signalling the caller to fall back to plain walk.
+    """
+    try:
+        # Tracked files + untracked-but-not-ignored files
+        result = subprocess.run(
+            ["git", "ls-files", "-co", "--exclude-standard", "-z"],
+            cwd=directory, capture_output=True, timeout=10,
+        )
+        if result.returncode != 0:
+            return None
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+
+    raw = result.stdout.decode("utf-8", errors="replace")
+    if not raw:
+        return []
+
+    files = []
+    for relpath in raw.split("\0"):
+        if not relpath:
+            continue
+        entry = (directory / relpath).resolve()
+        # Scope to directory
+        if not str(entry).startswith(str(directory.resolve())):
+            continue
+        # Apply recurse constraint: without -r, only top-level files
+        if not recurse and entry.parent.resolve() != directory.resolve():
+            continue
+        if entry.name.startswith("."):
+            continue
+        if entry.is_symlink() or not entry.is_file():
+            continue
+        files.append(entry)
+    return sorted(files)
+
+
 def _list_directory_files(directory: Path, *, recurse: bool = False) -> list[Path]:
     """List regular files in a directory, sorted by name.
 
+    Respects .gitignore when the directory is inside a git repository.
     Skips symlinks, hidden files/dirs (names starting with '.').
     When recurse=True, walks subdirectories.
     """
+    # Try git-aware listing first
+    git_files = _git_visible_files(directory, recurse)
+    if git_files is not None:
+        return git_files
+
+    # Fallback: plain walk (non-git directories)
     files = []
     if recurse:
         for root, dirs, filenames in os.walk(directory, followlinks=False):

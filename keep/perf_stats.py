@@ -34,22 +34,24 @@ _MAX_SAMPLES = 500
 class _TimingSeries:
     """Collects wall-clock durations for a single key."""
 
-    __slots__ = ("count", "total", "min", "max", "_samples")
+    __slots__ = ("count", "total", "min", "max", "max_id", "_samples")
 
     def __init__(self) -> None:
         self.count: int = 0
         self.total: float = 0.0
         self.min: float = float("inf")
         self.max: float = 0.0
+        self.max_id: str | None = None
         self._samples: deque[float] = deque(maxlen=_MAX_SAMPLES)
 
-    def record(self, duration: float) -> None:
+    def record(self, duration: float, context_id: str | None = None) -> None:
         self.count += 1
         self.total += duration
         if duration < self.min:
             self.min = duration
         if duration > self.max:
             self.max = duration
+            self.max_id = context_id
         self._samples.append(duration)
 
     def percentile(self, p: float) -> float:
@@ -65,13 +67,14 @@ class _TimingSeries:
     def summary_line(self) -> str:
         if not self.count:
             return "n=0"
+        max_suffix = f" ({self.max_id})" if self.max_id else ""
         return (
             f"n={self.count} "
             f"total={self.total:.2f}s "
             f"mean={self.mean() * 1000:.0f}ms "
             f"p50={self.percentile(50) * 1000:.0f}ms "
             f"p95={self.percentile(95) * 1000:.0f}ms "
-            f"max={self.max * 1000:.0f}ms"
+            f"max={self.max * 1000:.0f}ms{max_suffix}"
         )
 
     def summary_dict(self) -> dict[str, Any]:
@@ -94,28 +97,28 @@ class PerfStats:
         self._ops_since_log = 0
         self._auto_log_interval = auto_log_interval
 
-    def record(self, category: str, key: str, duration: float) -> None:
-        """Record a timing sample."""
+    def record(self, category: str, key: str, duration: float, context_id: str | None = None) -> None:
+        """Record a timing sample, optionally tagging it with a context ID."""
         label = f"{category}:{key}"
         with self._lock:
             ts = self._series.get(label)
             if ts is None:
                 ts = _TimingSeries()
                 self._series[label] = ts
-            ts.record(duration)
+            ts.record(duration, context_id)
             self._ops_since_log += 1
             if self._ops_since_log >= self._auto_log_interval:
                 self._log_unlocked()
                 self._ops_since_log = 0
 
     @contextmanager
-    def timer(self, category: str, key: str) -> Generator[None, None, None]:
+    def timer(self, category: str, key: str, context_id: str | None = None) -> Generator[None, None, None]:
         """Context manager that records elapsed wall-clock time."""
         t0 = time.monotonic()
         try:
             yield
         finally:
-            self.record(category, key, time.monotonic() - t0)
+            self.record(category, key, time.monotonic() - t0, context_id)
 
     def log_summary(self) -> None:
         """Log current stats summary."""

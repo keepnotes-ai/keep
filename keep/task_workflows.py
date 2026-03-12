@@ -300,7 +300,7 @@ def run_local_task(keeper: "Keeper", req: TaskRequest) -> TaskRunResult:
     params: dict[str, Any] = {"item_id": req.id}
     params.update(req.metadata)
 
-    with perf.timer("action", task_type):
+    with perf.timer("action", task_type, context_id=req.id):
         output = action.run(params, ctx)
 
     if not isinstance(output, dict):
