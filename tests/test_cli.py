@@ -782,3 +782,81 @@ class TestCommandAliases:
         result = cli("del", "--help")
         assert result.returncode == 0
         assert "Delete" in result.stdout or "delete" in result.stdout.lower()
+
+
+# -----------------------------------------------------------------------------
+# Stdin JSON Template Expansion
+# -----------------------------------------------------------------------------
+
+class TestStdinJsonTemplates:
+    """Tests for ${.field} and ${.field:N} expansion from stdin JSON."""
+
+    def test_expand_template_basic(self):
+        from keep.cli import _expand_template
+        data = {"session_id": "abc123", "prompt": "hello world"}
+        assert _expand_template("session=${.session_id}", data) == "session=abc123"
+
+    def test_expand_template_truncation(self):
+        from keep.cli import _expand_template
+        data = {"message": "a" * 2000}
+        assert _expand_template("${.message:10}", data) == "a" * 10
+
+    def test_expand_template_missing_field(self):
+        from keep.cli import _expand_template
+        assert _expand_template("val=${.missing}", {}) == "val="
+
+    def test_expand_template_multiple(self):
+        from keep.cli import _expand_template
+        data = {"a": "X", "b": "Y"}
+        assert _expand_template("${.a}-${.b}", data) == "X-Y"
+
+    def test_expand_template_no_templates(self):
+        from keep.cli import _expand_template
+        assert _expand_template("plain text", {}) == "plain text"
+
+    def test_has_templates(self):
+        from keep.cli import _has_templates
+        assert _has_templates("${.field}") is True
+        assert _has_templates("no templates") is False
+        assert _has_templates(None) is False
+
+    def test_expand_stdin_templates_passthrough(self):
+        from keep.cli import _expand_stdin_templates
+        result = _expand_stdin_templates("no templates", "also plain")
+        assert result == ("no templates", "also plain")
+
+    def test_expand_stdin_tag_list_none(self):
+        from keep.cli import _expand_stdin_tag_list
+        assert _expand_stdin_tag_list(None) is None
+
+    def test_expand_stdin_tag_list_no_templates(self):
+        from keep.cli import _expand_stdin_tag_list
+        tags = ["key=value", "other=thing"]
+        assert _expand_stdin_tag_list(tags) is tags  # same object, not copied
+
+    def test_expand_stdin_tag_list_with_data(self):
+        from keep.cli import _expand_stdin_tag_list
+        tags = ["session=${.session_id}", "plain=value"]
+        result = _expand_stdin_tag_list(tags, data={"session_id": "s123"})
+        assert result == ["session=s123", "plain=value"]
+
+    def test_now_with_stdin_json_templates(self, cli):
+        """keep now expands ${.field} from stdin JSON."""
+        stdin_json = json.dumps({
+            "session_id": "test-sess-1",
+            "prompt": "hello from hook"
+        })
+        result = cli(
+            "now", "User prompt: ${.prompt:10}",
+            "-t", "session=${.session_id}",
+            input=stdin_json,
+        )
+        assert result.returncode == 0
+        # Content should contain the truncated prompt
+        assert "hello from" in result.stdout
+
+    def test_template_regex_rejects_invalid(self):
+        from keep.cli import _expand_template
+        # Only top-level alphanumeric/underscore field names
+        assert _expand_template("${.foo.bar}", {}) == "${.foo.bar}"
+        assert _expand_template("${.}", {}) == "${.}"

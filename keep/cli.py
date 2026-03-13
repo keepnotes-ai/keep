@@ -197,6 +197,84 @@ def _has_stdin_data() -> bool:
         return False
 
 
+# ---------------------------------------------------------------------------
+# Stdin JSON template expansion
+# ---------------------------------------------------------------------------
+# Hooks (e.g. Claude Code) pipe JSON on stdin.  Instead of requiring jq,
+# keep can expand ${.field} and ${.field:N} (truncate to N chars) directly.
+
+_STDIN_JSON_SENTINEL = object()
+_stdin_json_cache: Any = _STDIN_JSON_SENTINEL
+
+_TEMPLATE_RE = re.compile(r'\$\{\.([A-Za-z_][A-Za-z0-9_]*)(?::(\d+))?\}')
+
+
+def _read_stdin_json() -> dict:
+    """Read and cache JSON object from stdin.  Returns {} on failure."""
+    global _stdin_json_cache
+    if _stdin_json_cache is not _STDIN_JSON_SENTINEL:
+        return _stdin_json_cache  # type: ignore[return-value]
+    _stdin_json_cache = {}
+    if _has_stdin_data():
+        try:
+            raw = sys.stdin.read()
+            obj = json.loads(raw)
+            if isinstance(obj, dict):
+                _stdin_json_cache = obj
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            pass
+    return _stdin_json_cache
+
+
+def _has_templates(s: str | None) -> bool:
+    return s is not None and '${.' in s
+
+
+def _expand_template(s: str, data: dict) -> str:
+    """Expand ${.field} and ${.field:N} in *s* from *data*."""
+    def _replace(m: re.Match) -> str:
+        key, limit = m.group(1), m.group(2)
+        val = data.get(key)
+        if val is None:
+            return ''
+        result = str(val)
+        if limit:
+            result = result[:int(limit)]
+        return result
+    return _TEMPLATE_RE.sub(_replace, s)
+
+
+def _expand_stdin_templates(
+    *strings: str | None,
+) -> tuple[str | None, ...]:
+    """Expand ${.field} templates in one or more strings from stdin JSON.
+
+    Only reads stdin when at least one string contains a template.
+    Returns the strings unchanged when no templates are present.
+    """
+    if not any(_has_templates(s) for s in strings):
+        return strings
+    data = _read_stdin_json()
+    return tuple(
+        _expand_template(s, data) if _has_templates(s) else s
+        for s in strings
+    )
+
+
+def _expand_stdin_tag_list(
+    tags: list[str] | None,
+    data: dict | None = None,
+) -> list[str] | None:
+    """Expand templates in a tag list.  Returns None if input is None."""
+    if not tags:
+        return tags
+    if not any(_has_templates(t) for t in tags):
+        return tags
+    if data is None:
+        data = _read_stdin_json()
+    return [_expand_template(t, data) if _has_templates(t) else t for t in tags]
+
+
 def _parse_json_arg(source: str) -> dict:
     """Parse JSON from inline string, @file, or stdin (-)."""
     if source == "-":
@@ -2017,6 +2095,12 @@ def now(
     """
     from .api import NOWDOC_ID
 
+    # Expand ${.field} templates from stdin JSON (hooks support)
+    has_tpl = _has_templates(content) or (tags and any(_has_templates(t) for t in tags))
+    if has_tpl:
+        (content,) = _expand_stdin_templates(content)
+        tags = _expand_stdin_tag_list(tags)
+
     kp = _get_keeper(store)
     doc_id = f"now:{scope}" if scope else NOWDOC_ID
 
@@ -2256,6 +2340,9 @@ def prompt(
         keep prompt reflect --since P7D           # Recent context only
         keep prompt reflect --tag project=myapp   # Scoped to project
     """
+    # Expand ${.field} templates from stdin JSON (hooks support)
+    tag = _expand_stdin_tag_list(tag)
+
     kp = _get_keeper(store)
 
     if list_prompts or not name:
@@ -2347,6 +2434,10 @@ def move(
     With --only, just the current version is moved.
     With --from, extract from a specific item instead of now.
     """
+    # Expand ${.field} templates from stdin JSON (hooks support)
+    (name,) = _expand_stdin_templates(name)
+    tags = _expand_stdin_tag_list(tags)
+
     if not tags and not only:
         typer.echo(
             "Error: use -t to filter by tags, or --only to move just the current version",

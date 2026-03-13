@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "keep prompt session-start </dev/null 2>/dev/null || true",
+            "command": "keep prompt session-start -t 'session=${.session_id}' 2>/dev/null || true",
             "statusMessage": "Reflecting..."
           }
         ]
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "jq -r '\"User prompt: \" + .prompt[:500]' 2>/dev/null | keep now 2>/dev/null || true",
+            "command": "keep now 'User prompt: ${.prompt:500}' -t 'session=${.session_id}' 2>/dev/null || true",
             "statusMessage": "Reflecting..."
           }
         ]
@@ -27,8 +27,30 @@
         "hooks": [
           {
             "type": "command",
-            "command": "keep prompt subagent-start </dev/null 2>/dev/null || true",
+            "command": "keep prompt subagent-start -t 'session=${.session_id}' 2>/dev/null || true",
             "statusMessage": "Loading context..."
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "keep now 'Assistant response: ${.last_assistant_message:1000}' -t 'session=${.session_id}' 2>/dev/null || true",
+            "statusMessage": "Reflecting..."
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "keep now 'Subagent response: ${.last_assistant_message:500}' -t 'session=${.session_id}' 2>/dev/null || true",
+            "statusMessage": "Reflecting..."
           }
         ]
       }
@@ -38,7 +60,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "jq -r '.session_id // empty' 2>/dev/null | xargs -I{} keep move session-{} -t session={} 2>/dev/null || true"
+            "command": "keep move 'session-${.session_id}' -t 'session=${.session_id}' 2>/dev/null || true"
           }
         ]
       }
