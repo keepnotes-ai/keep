@@ -4,6 +4,12 @@
 * claude-desktop mcpb (no local components at all, only remote MCP)
     - just ship this as a pre-built thing
 
+* mcpb submission to Claude Desktop directory
+    - privacy policy (URL + manifest `privacy_policies` field + README section)
+    - 3+ structured examples (prompt → behavior → output) in README
+    - support contact in README
+    - Windows wrapper (.cmd) or document limitation
+
 * keep ui
     - search, navigate edges & tags
     - use the flows, luke
