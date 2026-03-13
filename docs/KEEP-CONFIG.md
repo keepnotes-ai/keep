@@ -49,11 +49,11 @@ version = 2
 max_summary_length = 1000
 
 [embedding]
-name = "ollama"                        # or "voyage", "openai", "mistral", "mlx", "sentence-transformers"
+name = "ollama"                        # or "voyage", "openai", "gemini", "mistral", "mlx", "sentence-transformers"
 model = "nomic-embed-text"
 
 [summarization]
-name = "ollama"                        # or "anthropic", "openai", "mistral", "mlx"
+name = "ollama"                        # or "anthropic", "openai", "gemini", "mistral", "mlx"
 model = "gemma3:1b"
 
 [media]

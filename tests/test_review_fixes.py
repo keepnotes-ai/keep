@@ -549,25 +549,34 @@ class TestTagMutations:
         now = utc_now()
 
         # Constrained tag setup: only status=open is valid.
+        # _requires=act means constraint only applies when act tag is present.
         kp._document_store.upsert(
             doc_coll, ".tag/status", summary="status",
-            tags={"_constrained": "true", "_created": now, "_updated": now, "_source": "inline"},
+            tags={"_constrained": "true", "_requires": "act",
+                  "_created": now, "_updated": now, "_source": "inline"},
         )
         kp._document_store.upsert(
             doc_coll, ".tag/status/open", summary="open",
             tags={"_created": now, "_updated": now, "_source": "inline"},
         )
 
-        kp.put("item", id="doc:tag:4", tags={"status": "open"})
+        # With act tag, constraint is enforced.
+        kp.put("item", id="doc:tag:4", tags={"act": "commitment", "status": "open"})
 
         # Removing a value should not require the removed token to be a valid constrained value.
         result = kp.tag("doc:tag:4", remove_values={"status": "closed"})
         assert result is not None
         assert tag_values(result.tags, "status") == ["open"]
 
-        # Adding an invalid constrained value should still fail.
+        # Adding an invalid constrained value should still fail (act is on the item).
         with pytest.raises(ValueError, match="Invalid value for constrained tag"):
             kp.tag("doc:tag:4", tags={"status": "closed"})
+
+        # Without act tag, constraint is NOT enforced — any status value is fine.
+        kp.put("blog post", id="doc:tag:5", tags={"status": "published"})
+        result = kp.get("doc:tag:5")
+        assert result is not None
+        assert tag_values(result.tags, "status") == ["published"]
 
 
 class TestVersionContextNavigation:

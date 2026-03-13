@@ -1092,12 +1092,17 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
         """
         return self._validate_tag_map(tags, source="Tags", check_constraints=True)
 
-    def _validate_constrained_tags(self, tags: dict) -> None:
+    def _validate_constrained_tags(
+        self, tags: dict, existing_tags: dict | None = None,
+    ) -> None:
         """Check constrained tag values against sub-doc existence.
 
         For each user tag, looks up `.tag/KEY`. If that doc exists and has
         `_constrained=true`, checks that `.tag/KEY/VALUE` exists. Raises
         ValueError with valid values listed if not.
+
+        If the tag doc has ``_requires``, the constraint only applies when
+        the required tag is present in either *tags* or *existing_tags*.
         """
         doc_coll = self._resolve_doc_collection()
         for key in tags:
@@ -1112,6 +1117,13 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
                 continue  # no tag doc → unconstrained
             if parent.tags.get("_constrained") != "true":
                 continue  # tag doc exists but not constrained
+            # _requires: only enforce constraint when the required tag is present
+            requires = parent.tags.get("_requires")
+            if requires:
+                in_new = requires in tags
+                in_existing = bool(existing_tags and requires in existing_tags)
+                if not in_new and not in_existing:
+                    continue
             for value in values:
                 if value == "":
                     continue  # deletion, no validation needed
@@ -3105,7 +3117,7 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
 
         # Apply tag changes (filter out system tags from input)
         if add_changes:
-            self._validate_constrained_tags(add_changes)
+            self._validate_constrained_tags(add_changes, existing_tags=current_tags)
             singular_keys = self._get_singular_keys(add_changes)
             if singular_keys:
                 self._validate_singular_tags(add_changes, singular_keys)
@@ -3189,7 +3201,7 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
                 if not k.startswith(SYSTEM_TAG_PREFIX)
             }
         if add_changes:
-            self._validate_constrained_tags(add_changes)
+            self._validate_constrained_tags(add_changes, existing_tags=merged)
             singular_keys = self._get_singular_keys(add_changes)
             if singular_keys:
                 self._validate_singular_tags(add_changes, singular_keys)

@@ -1,4 +1,11 @@
 
+* "duplicate-of"
+
+* claude-code marketplace/plugin
+
+* mcpb for keep (local)
+
+
 * keep ui
     - search, navigate edges & tags
     - use the flows, luke
@@ -12,18 +19,7 @@
 * budget by tokens, not just by ticks?
 
 * chatgpt import
-
-* obsidian mode (for markdown files)
-    - follow & index & make edges, for internal & external links
-    - internal links: need to resolve paths (because our ids don't really have paths)
-    - external links: just URLs
-    - two styles: wiki-style, and markdown-style
-        - keep these separate? or just assume you want both??
-        - do NOT want just "URLs in content", at least right now
-    - action? where the links get parsed out and handed to the state processor?
-    - state doc defines if/they get applied as tags?
-    - then just add `informs` edge-tags to the thing they came from
-      or would "references/referenced-by" be a better expression (um, probably)
+    unzip -> jq -> keep data import
 
 * code mode
 
@@ -289,3 +285,4 @@ x check for CLI compatibility with windows (WLS should work but no plan to valid
 . recurse option for CLI put
 . state-doc fragments and assembly
 . obsidian, markdown-links and wikilinks
+. keep help

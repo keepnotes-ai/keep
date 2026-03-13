@@ -40,7 +40,7 @@ What makes this more than a vector store: when you view your current context (`k
 - **Edge tags** — Turn tags into navigable relationships with automatic inverse links
 - **Parts** — `analyze` decomposes documents into searchable sections, each with its own embedding and tags
 - **Strings** — Every note is a string of versions; reorganize history by meaning with `keep move`
-- **Works offline** — Local models (MLX, Ollama), or API providers (OpenAI, Gemini, Voyage, Anthropic, Mistral)
+- **Works offline** — Local models (MLX, Ollama), or API providers (Voyage, OpenAI, Gemini, Anthropic, Mistral)
 
 Backed by ChromaDB for vectors, SQLite for metadata and versions.
 

@@ -2889,6 +2889,7 @@ def _get_config_value(cfg, store_path: Path, path: str):
         file - config file location
         tool - package directory (SKILL.md location)
         openclaw-plugin - OpenClaw plugin directory
+        mcpb - generate .mcpb bundle for Claude Desktop
         store - store path
 
     Dotted paths into config:
@@ -2905,8 +2906,17 @@ def _get_config_value(cfg, store_path: Path, path: str):
     if path == "tool":
         return str(get_tool_directory())
     if path == "openclaw-plugin":
-
         return str(Path(str(importlib.resources.files("keep"))) / "data" / "openclaw-plugin")
+    if path == "mcpb":
+        from .mcpb import generate_mcpb
+        out = generate_mcpb()
+        if platform.system() == "Darwin":
+            subprocess.Popen(["open", str(out)])
+        elif platform.system() == "Windows":
+            os.startfile(str(out))
+        else:
+            subprocess.Popen(["xdg-open", str(out)])
+        return 'To get started, ask Claude: "Please read all the keep_help documentation, and then use keep_now"'
     if path == "docs":
         return str(get_tool_directory() / "docs")
     if path == "store":
@@ -3174,6 +3184,7 @@ def config(
         keep config tool         # Package directory (SKILL.md location)
         keep config docs         # Documentation directory
         keep config openclaw-plugin  # OpenClaw plugin directory
+        keep config mcpb         # Generate .mcpb for Claude Desktop
         keep config store        # Store path
         keep config providers    # All provider config
         keep config providers.embedding  # Embedding provider name
@@ -3282,6 +3293,25 @@ def config(
         typer.echo(json.dumps(result, indent=2))
     else:
         typer.echo(_format_config_with_defaults(cfg, store_path))
+
+
+@app.command("help")
+def help_cmd(
+    topic: Annotated[Optional[str], typer.Argument(
+        help="Documentation topic (e.g. 'quickstart', 'keep-put', 'tagging'). Omit for index."
+    )] = None,
+):
+    """Browse keep documentation.
+
+    \b
+    Examples:
+        keep help              # Documentation index
+        keep help quickstart   # CLI Quick Start guide
+        keep help keep-put     # keep put reference
+        keep help tagging      # Tagging guide
+    """
+    from .help import get_help_topic
+    typer.echo(get_help_topic(topic or "index", link_style="cli"))
 
 
 @app.command("pending")

@@ -3,6 +3,7 @@ tags:
   category: system
   context: tag-description
   _constrained: "true"
+  _requires: "act"
   _singular: "true"
 ---
 # Tag: `status` — Lifecycle State

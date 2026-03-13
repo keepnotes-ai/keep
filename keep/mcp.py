@@ -440,6 +440,28 @@ async def keep_flow(
 
 
 # ---------------------------------------------------------------------------
+# Help / documentation
+# ---------------------------------------------------------------------------
+
+@mcp.tool(
+    description=(
+        "Browse keep documentation. Returns the full text of a guide. "
+        "Call with no arguments (or topic=\"index\") to see the documentation index with all available topics. "
+        "Each topic in the index links to a detailed guide you can retrieve by name."
+    ),
+    annotations=_READ_ONLY,
+)
+async def keep_help(
+    topic: Annotated[str, Field(
+        description='Documentation topic, e.g. "index", "quickstart", "keep-put", "tagging". '
+                    'Use "index" to see all available topics.',
+    )] = "index",
+) -> str:
+    from .help import get_help_topic
+    return get_help_topic(topic, link_style="mcp")
+
+
+# ---------------------------------------------------------------------------
 # Startup hints
 # ---------------------------------------------------------------------------
 
