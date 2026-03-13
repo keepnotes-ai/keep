@@ -10,11 +10,9 @@ This generates and opens a `.mcpb` bundle that registers keep's MCP server with 
 
 ## Getting started
 
-Once the extension is installed, ask Claude:
+Once the extension is installed, just say to Claude:
 
-> "Please read all the `keep_help` documentation, and then use `keep_now`."
-
-This gives Claude the full context of how keep works, and starts your first reflective memory session.
+> Please read all the `keep_help` documentation, and then use `keep_prompt(name="reflect")`
 
 ## More information
 
