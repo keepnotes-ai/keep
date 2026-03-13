@@ -1539,9 +1539,16 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
             # as the summary — they are authored content, not items to summarize.
             final_summary = content
         elif content_unchanged and tags_changed:
-            logger.debug("Tags changed, queueing re-summarization for %s", id)
+            logger.debug("Tags changed for %s", id)
             final_summary = existing_doc.summary
-            if queue_summarize and len(content) > max_len:
+            # Only queue re-summarization if the summary is NOT the full
+            # original content (i.e. it was already truncated/summarized).
+            # If content_hash == hash(summary), the summary IS the content
+            # and must never be overwritten by an LLM summary.
+            summary_is_content = (
+                existing_doc.content_hash == _content_hash(existing_doc.summary)
+            )
+            if queue_summarize and len(content) > max_len and not summary_is_content:
                 self._enqueue_task_background(
                     task_type="summarize",
                     id=id,
@@ -1551,6 +1558,9 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
                 )
         elif len(content) <= max_len:
             final_summary = content
+            # Content IS the summary — mark as already summarized so no
+            # future summarize task can overwrite the original content.
+            merged_tags["_summarized_hash"] = new_hash
         else:
             final_summary = content[:max_len] + "..."
             if queue_summarize:
@@ -1867,6 +1877,16 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
             return result
         else:
             # Inline mode: store content directly
+            # Enforce inline length limit at the API level so all paths
+            # (CLI, MCP, direct API) are bounded identically.
+            is_system = id and id.startswith(".")
+            if not is_system and len(content) > self._config.max_inline_length:
+                raise ValueError(
+                    f"Inline content too long ({len(content)} chars, "
+                    f"max {self._config.max_inline_length}). "
+                    "Use a file URI instead: keep put file:///path/to/file"
+                )
+
             if id is None:
                 # Match CLI/MCP behavior: default inline IDs are content-addressed.
                 id = _text_content_id(content)

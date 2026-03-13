@@ -80,6 +80,8 @@ When you add `_inverse` to an existing tagdoc, keep automatically backfills edge
 |-----|-----------|---------|---------|
 | `speaker` | `said` | `speaker: Deborah` on a turn | `get Deborah` → `said:` entries in `tags:` |
 | `informs` | `informed_by` | `informs: auth-decision` on a URL | `get auth-decision` → `informed_by:` entries in `tags:` |
+| `references` | `referenced_by` | `references: other-note` via link extraction | `get other-note` → `referenced_by:` entries in `tags:` |
+| `duplicates` | `duplicates` | `duplicates: notes-v1` on a duplicate | Symmetric: both sides show `duplicates:` entries |
 
 ## Rules
 

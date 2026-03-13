@@ -320,7 +320,7 @@ class TestExitCodes:
         long_text = "x" * 3000
         result = cli("put", long_text)
         assert result.returncode == 1
-        assert "too long to store" in result.stderr
+        assert "too long" in result.stderr.lower()
         assert "file" in result.stderr.lower()  # Hint mentions file
 
 

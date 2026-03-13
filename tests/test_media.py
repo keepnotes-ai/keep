@@ -170,9 +170,11 @@ class TestAfterWriteStateDoc:
         return [a["action"] for a in result.actions]
 
     def test_inline_text_fires_analyze_and_tag(self, after_write_doc):
-        """Short inline text → analyze + tag only."""
+        """Short inline text → analyze + tag + find_duplicates."""
         actions = self._eval(after_write_doc)
-        assert actions == ["analyze", "tag"]
+        assert "analyze" in actions
+        assert "tag" in actions
+        assert "find_duplicates" in actions
 
     def test_long_content_fires_summarize(self, after_write_doc):
         """Content exceeding max_summary_length fires summarize."""
@@ -180,10 +182,11 @@ class TestAfterWriteStateDoc:
         assert "summarize" in actions
 
     def test_system_note_skips_analyze_and_tag(self, after_write_doc):
-        """System notes (dot-prefix IDs) skip analyze and tag."""
+        """System notes (dot-prefix IDs) skip analyze, tag, and find_duplicates."""
         actions = self._eval(after_write_doc, is_system_note=True)
         assert "analyze" not in actions
         assert "tag" not in actions
+        assert "find_duplicates" not in actions
 
     def test_image_uri_fires_describe(self, after_write_doc):
         """URI-backed image content fires describe."""

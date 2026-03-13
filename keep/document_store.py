@@ -1987,37 +1987,43 @@ class DocumentStore:
         *,
         content_hash_full: str = "",
         exclude_id: str = "",
-    ) -> Optional[DocumentRecord]:
-        """Find a document with matching content hash (for embedding dedup).
+        limit: int = 1,
+    ) -> Optional[DocumentRecord] | list[DocumentRecord]:
+        """Find documents with matching content hash.
 
         Uses short hash for indexed lookup, then verifies via full hash
         to avoid 40-bit collision false positives.
+
+        When limit=1 (default), returns a single DocumentRecord or None
+        for backwards compatibility.  When limit>1, returns a list.
         """
         cursor = self._execute("""
             SELECT id, collection, summary, tags_json, created_at,
                    updated_at, content_hash, content_hash_full, accessed_at
             FROM documents
             WHERE collection = ? AND content_hash = ? AND id != ?
-            LIMIT 1
-        """, (collection, content_hash, exclude_id))
-        row = cursor.fetchone()
-        if row is None:
-            return None
-        # Verify full hash if both sides have one (guards against 40-bit collisions)
-        if content_hash_full and row["content_hash_full"]:
-            if content_hash_full != row["content_hash_full"]:
-                return None
-        return DocumentRecord(
-            id=row["id"],
-            collection=row["collection"],
-            summary=row["summary"],
-            tags=json.loads(row["tags_json"]),
-            created_at=row["created_at"],
-            updated_at=row["updated_at"],
-            content_hash=row["content_hash"],
-            content_hash_full=row["content_hash_full"],
-            accessed_at=row["accessed_at"],
-        )
+            LIMIT ?
+        """, (collection, content_hash, exclude_id, limit))
+        results: list[DocumentRecord] = []
+        for row in cursor.fetchall():
+            # Verify full hash if both sides have one
+            if content_hash_full and row["content_hash_full"]:
+                if content_hash_full != row["content_hash_full"]:
+                    continue
+            results.append(DocumentRecord(
+                id=row["id"],
+                collection=row["collection"],
+                summary=row["summary"],
+                tags=json.loads(row["tags_json"]),
+                created_at=row["created_at"],
+                updated_at=row["updated_at"],
+                content_hash=row["content_hash"],
+                content_hash_full=row["content_hash_full"],
+                accessed_at=row["accessed_at"],
+            ))
+        if limit == 1:
+            return results[0] if results else None
+        return results
 
     def list_ids(
         self,

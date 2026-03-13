@@ -192,5 +192,13 @@ rules:
     id: resolve_stubs
     do: resolve_stubs
 """,
+        "duplicates": """\
+rules:
+  - when: "!item.is_system_note && item.has_content"
+    id: find-duplicates
+    do: find_duplicates
+    with:
+      tag: duplicates
+""",
     },
 }

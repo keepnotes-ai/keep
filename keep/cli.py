@@ -1744,12 +1744,6 @@ def _put_store(
             typer.echo("Error: --summary cannot be used with stdin input (original content would be lost)", err=True)
             typer.echo("Hint: write to a file first, then: keep put file:///path/to/file --summary '...'", err=True)
             raise typer.Exit(1)
-        max_len = kp.config.max_inline_length
-        is_system_doc = id and id.startswith(".")
-        if not is_system_doc and len(content) > max_len:
-            typer.echo(f"Error: stdin content too long to store inline ({len(content)} chars, max {max_len})", err=True)
-            typer.echo("Hint: write to a file first, then: keep put file:///path/to/file", err=True)
-            raise typer.Exit(1)
         # Use content-addressed ID for stdin text (enables versioning)
         doc_id = id or _text_content_id(content)
         return kp.put(content, id=doc_id, tags=parsed_tags or None, force=force)
@@ -1829,12 +1823,6 @@ def _put_store(
         if summary is not None:
             typer.echo("Error: --summary cannot be used with inline text (original content would be lost)", err=True)
             typer.echo("Hint: write to a file first, then: keep put file:///path/to/file --summary '...'", err=True)
-            raise typer.Exit(1)
-        max_len = kp.config.max_inline_length
-        is_system_doc = id and id.startswith(".")
-        if not is_system_doc and len(source) > max_len:
-            typer.echo(f"Error: inline text too long to store ({len(source)} chars, max {max_len})", err=True)
-            typer.echo("Hint: write to a file first, then: keep put file:///path/to/file", err=True)
             raise typer.Exit(1)
         # Use content-addressed ID for text (enables versioning)
         doc_id = id or _text_content_id(source)
@@ -2765,12 +2753,15 @@ def del_cmd(
                 had_errors = True
                 continue
             # Delete a specific archived version (offset or oldest-ordinal selector)
+            # Fetch the version before deleting so we can show what was removed
+            version_item = kp.get_version(actual_id, version_offset)
             deleted = kp.delete_version(actual_id, version_offset)
             if not deleted:
                 typer.echo(f"Version not found: {one_id}", err=True)
                 had_errors = True
-            else:
-                typer.echo(f"Deleted {one_id}")
+            elif version_item:
+                from .types import ItemContext
+                typer.echo(render_context(ItemContext(item=version_item), as_json=_get_json_output()))
         else:
             # Original behavior: revert current (or delete if no history)
             item = kp.get(actual_id)
@@ -2779,17 +2770,17 @@ def del_cmd(
                 had_errors = True
                 continue
 
+            # Show the deleted version (fetched above before deletion)
+            ctx = kp.get_context(
+                actual_id, include_meta=False, include_parts=False,
+                include_similar=False,
+            )
             restored = kp.revert(actual_id)
 
-            if restored is None:
-                # Fully deleted
-                typer.echo(_format_summary_line(item))
-            else:
-                # Reverted — show the restored version with similar items
-                ctx = kp.get_context(
-                    restored.id, include_meta=False, include_parts=False,
-                )
+            if ctx:
                 typer.echo(render_context(ctx, as_json=_get_json_output()))
+            else:
+                typer.echo(_format_summary_line(item))
 
     if had_errors:
         raise typer.Exit(1)

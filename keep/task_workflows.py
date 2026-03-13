@@ -121,6 +121,20 @@ class _KeeperActionContext:
             for rec in docs.values()
         ]
 
+    def find_by_content_hash(
+        self, content_hash: str, *, content_hash_full: str = "",
+        exclude_id: str = "", limit: int = 10,
+    ) -> list[Any]:
+        """Find documents with matching content hash."""
+        results = self._keeper._document_store.find_by_content_hash(
+            self._collection, content_hash,
+            content_hash_full=content_hash_full,
+            exclude_id=exclude_id, limit=limit,
+        )
+        if isinstance(results, list):
+            return results
+        return [results] if results else []
+
     def resolve_meta(self, id: str, limit_per_doc: int = 3) -> dict[str, list[Any]]:
         return self._keeper.resolve_meta(item_id=id, limit_per_doc=limit_per_doc)
 
