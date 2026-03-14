@@ -470,6 +470,89 @@ def render_context(ctx: ItemContext, as_json: bool = False) -> str:
     return _render_frontmatter(ctx)
 
 
+def _dicts_to_items(raw: list) -> "list[Item]":
+    """Convert find-action result dicts to Item objects for rendering."""
+    from .types import Item
+
+    items = []
+    for r in raw:
+        if not isinstance(r, dict):
+            continue
+        score = r.get("score")
+        items.append(Item(
+            id=str(r.get("id", "")),
+            summary=str(r.get("summary", "")),
+            tags=dict(r.get("tags", {})),
+            score=float(score) if isinstance(score, (int, float)) else None,
+        ))
+    return items
+
+
+def render_flow_response(
+    result: "FlowResult",
+    token_budget: int = 4000,
+    keeper=None,
+) -> str:
+    """Render a FlowResult as token-budgeted text for LLM consumption.
+
+    Reuses render_find_context() for search result lists found in the
+    flow's return data.
+    """
+    def _tok(text: str) -> int:
+        return len(text) // 4
+
+    lines: list[str] = []
+    remaining = token_budget
+
+    # Header
+    header = f"flow: {result.status} ({result.ticks} ticks)"
+    if result.history:
+        header += f" via {' > '.join(result.history)}"
+    lines.append(header)
+    remaining -= _tok(header)
+
+    # Render search results from return data (token-budgeted)
+    _RESULT_KEYS = ("results", "pivot_results", "bridge_results")
+    if result.data and remaining > 0:
+        for key in _RESULT_KEYS:
+            raw = result.data.get(key)
+            if not isinstance(raw, list) or not raw:
+                continue
+            items = _dicts_to_items(raw)
+            if not items:
+                continue
+            section_budget = min(remaining, token_budget // 2)
+            rendered = render_find_context(
+                items, keeper=keeper, token_budget=section_budget,
+            )
+            label = key.replace("_", " ")
+            section = f"\n{label}:\n{rendered}"
+            lines.append(section)
+            remaining -= _tok(section)
+
+        # Scalar signals (margin, entropy, reason, etc.)
+        for key, val in result.data.items():
+            if key in _RESULT_KEYS or val is None:
+                continue
+            if remaining <= 0:
+                break
+            line = f"{key}: {val}"
+            lines.append(line)
+            remaining -= _tok(line)
+
+    # Tried queries (for stopped flows)
+    if result.tried_queries and remaining > 0:
+        line = f"queries tried: {', '.join(repr(q) for q in result.tried_queries)}"
+        lines.append(line)
+        remaining -= _tok(line)
+
+    # Cursor for stopped flows
+    if result.cursor:
+        lines.append(f"\ncursor: {result.cursor}")
+
+    return "\n".join(lines)
+
+
 def render_find_context(
     items: "list[Item]",
     keeper=None,

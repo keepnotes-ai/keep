@@ -4170,9 +4170,26 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
         # Decode cursor if resuming
         cursor = decode_cursor(cursor_token) if cursor_token else None
 
+        # Inject defaults for query flow params
+        merged_params: dict[str, Any] = {
+            "limit": 10,
+            "margin_high": 0.15,
+            "margin_low": 0.03,
+            "entropy_high": 0.8,
+            "entropy_low": 0.3,
+            "lineage_strong": 0.5,
+            "explore_limit": 10,
+            "explore_limit_wide": 15,
+            "pivot_limit": 5,
+            "bridge_limit": 5,
+            "deep_limit": 10,
+            "max_summary_length": 200,
+        }
+        merged_params.update(params or {})
+
         return run_flow(
             state,
-            params or {},
+            merged_params,
             budget=budget,
             load_state_doc=_loader,
             run_action=runner,

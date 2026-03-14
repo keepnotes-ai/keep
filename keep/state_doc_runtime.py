@@ -45,6 +45,7 @@ class FlowResult:
     ticks: int = 0
     history: list[str] = field(default_factory=list)  # state names visited
     cursor: Optional[str] = None  # resumable cursor (set when stopped)
+    tried_queries: list[str] = field(default_factory=list)  # queries attempted
 
 
 @dataclass
@@ -54,11 +55,19 @@ class FlowCursor:
     state: str  # state doc name to resume at
     ticks: int  # ticks consumed in previous invocations
     bindings: dict[str, dict[str, Any]]  # accumulated results
+    tried_queries: list[str] = field(default_factory=list)  # queries attempted
 
 
-def encode_cursor(state: str, ticks: int, bindings: dict) -> str:
+def encode_cursor(
+    state: str,
+    ticks: int,
+    bindings: dict,
+    tried_queries: list[str] | None = None,
+) -> str:
     """Encode a flow checkpoint as a self-contained cursor token."""
-    payload = {"s": state, "t": ticks, "b": bindings}
+    payload: dict[str, Any] = {"s": state, "t": ticks, "b": bindings}
+    if tried_queries:
+        payload["q"] = tried_queries
     raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return base64.urlsafe_b64encode(raw.encode("utf-8")).decode("ascii").rstrip("=")
 
@@ -79,6 +88,7 @@ def decode_cursor(token: str) -> Optional[FlowCursor]:
             state=state,
             ticks=int(payload.get("t", 0)),
             bindings=payload.get("b") or {},
+            tried_queries=payload.get("q") or [],
         )
     except Exception:
         return None
@@ -125,11 +135,13 @@ def run_flow(
         current_state = cursor.state
         prior_ticks = cursor.ticks
         accumulated_bindings: dict[str, dict[str, Any]] = dict(cursor.bindings)
+        tried_queries: list[str] = list(cursor.tried_queries)
         logger.info("flow: resume %s (prior ticks: %d)", current_state, prior_ticks)
     else:
         current_state = initial_state
         prior_ticks = 0
         accumulated_bindings = {}
+        tried_queries = []
         logger.info("flow: start %s", initial_state)
 
     current_params = dict(params)
@@ -145,6 +157,9 @@ def run_flow(
             output = run_action(action_name, action_params)
         if action_name == "find" and isinstance(output, dict):
             output = enrich_find_output(output)
+            q = action_params.get("query")
+            if isinstance(q, str) and q and q not in tried_queries:
+                tried_queries.append(q)
         return output
 
     while ticks < budget:
@@ -191,6 +206,7 @@ def run_flow(
                 data=result.terminal_data,
                 ticks=prior_ticks + ticks,
                 history=history,
+                tried_queries=tried_queries,
             )
 
         # Transition
@@ -220,20 +236,32 @@ def run_flow(
             bindings=accumulated_bindings,
             ticks=prior_ticks + ticks,
             history=history,
+            tried_queries=tried_queries,
         )
 
     # Budget exhausted — return cursor for resumption
     total_ticks = prior_ticks + ticks
-    cursor_token = encode_cursor(current_state, total_ticks, accumulated_bindings)
+    cursor_token = encode_cursor(current_state, total_ticks, accumulated_bindings, tried_queries)
     logger.info("flow: %s -> stopped (budget, %d ticks)", current_state, total_ticks)
     _record_flow()
+    # Surface latest search results and signals in stopped data
+    stopped_data: dict[str, Any] = {"reason": "budget"}
+    for key in ("search", "pivot1", "bridge"):
+        binding = accumulated_bindings.get(key)
+        if isinstance(binding, dict) and "results" in binding:
+            stopped_data["results"] = binding["results"]
+            for sig in ("margin", "entropy"):
+                if sig in binding:
+                    stopped_data[sig] = binding[sig]
+            break  # use the first available search binding
     return FlowResult(
         status="stopped",
         bindings=accumulated_bindings,
-        data={"reason": "budget"},
+        data=stopped_data,
         ticks=total_ticks,
         history=history,
         cursor=cursor_token,
+        tried_queries=tried_queries,
     )
 
 

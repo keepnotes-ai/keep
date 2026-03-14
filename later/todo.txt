@@ -1,6 +1,4 @@
 
-* claude-code plugin
-
 * claude-desktop mcpb (no local components at all, only remote MCP)
     - just ship this as a pre-built thing
 
@@ -50,7 +48,7 @@
 
 * strengthen the practice: write a file with your findings; then store it.
 
-* Content-based dedup, for summarization?
+* remove "now" / hide it - just duplicates "put"/"get"?
 
 x Codex hooks
     https://developers.openai.com/codex/config-advanced/#notifications
@@ -288,4 +286,5 @@ x check for CLI compatibility with windows (WLS should work but no plan to valid
 x expose flows as MCP tasks (SEP-1686)? (no good clients yet tho)
 x acp
 . `keep del` return the thing that was deleted, not the thing that survived it
-. "duplicates" edge-tag
+. "duplicates" edge-tag, content-based duplicate linking
+. claude-code plugin rebuild

@@ -24,7 +24,12 @@ rules:
     id: described
     do: describe
 post:
-  - return: done
+  - return:
+      status: done
+      with:
+        item_id: "{params.id}"
+        summary: "{summary}"
+        described: "{described}"
 """,
 
     # -----------------------------------------------------------------
@@ -64,7 +69,12 @@ rules:
       query: "{params.query}"
       limit: "{params.limit}"
   - when: "search.margin > params.margin_high"
-    return: done
+    return:
+      status: done
+      with:
+        results: "{search.results}"
+        margin: "{search.margin}"
+        entropy: "{search.entropy}"
   - when: "search.lineage_strong > params.lineage_strong"
     do: find
     with:
@@ -101,13 +111,23 @@ rules:
       limit: "{params.bridge_limit}"
 post:
   - when: "pivot1.margin > params.margin_high || bridge.margin > params.margin_high"
-    return: done
+    return:
+      status: done
+      with:
+        results: "{pivot1.results}"
+        bridge_results: "{bridge.results}"
+        margin: "{pivot1.margin}"
+        bridge_margin: "{bridge.margin}"
   - when: "budget.remaining > 0"
     then: query-resolve
   - return:
       status: stopped
       with:
         reason: "ambiguous"
+        results: "{pivot1.results}"
+        bridge_results: "{bridge.results}"
+        margin: "{pivot1.margin}"
+        bridge_margin: "{bridge.margin}"
 """,
 
     "query-explore": """\
@@ -119,7 +139,12 @@ rules:
       query: "{params.query}"
       limit: "{params.explore_limit}"
   - when: "search.margin > params.margin_high"
-    return: done
+    return:
+      status: done
+      with:
+        results: "{search.results}"
+        margin: "{search.margin}"
+        entropy: "{search.entropy}"
   - when: "budget.remaining > 0"
     do: find
     with:
@@ -130,6 +155,9 @@ rules:
       status: stopped
       with:
         reason: "budget"
+        results: "{search.results}"
+        margin: "{search.margin}"
+        entropy: "{search.entropy}"
 """,
 
     # -----------------------------------------------------------------
@@ -144,13 +172,22 @@ rules:
       query: "{params.query}"
       limit: "{params.limit}"
   - when: "search.count == 0"
-    return: done
+    return:
+      status: done
+      with:
+        results: "{search.results}"
+        count: "{search.count}"
   - id: related
     do: traverse
     with:
       items: "{search.results}"
       limit: "{params.deep_limit}"
-  - return: done
+  - return:
+      status: done
+      with:
+        results: "{search.results}"
+        count: "{search.count}"
+        related: "{related}"
 """,
 }
 

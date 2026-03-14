@@ -191,7 +191,7 @@ rules:
                          load_state_doc=loader, run_action=runner)
         assert result.status == "stopped"
         assert result.ticks == 3
-        assert result.data == {"reason": "budget"}
+        assert result.data["reason"] == "budget"
         assert len(result.history) == 3
 
     def test_budget_one_allows_single_tick(self):

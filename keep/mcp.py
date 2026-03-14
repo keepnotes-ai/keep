@@ -438,6 +438,9 @@ async def keep_flow(
     state_doc_yaml: Annotated[Optional[str], Field(
         description="Inline YAML state doc (instead of loading from store).",
     )] = None,
+    token_budget: Annotated[Optional[int], Field(
+        description="Token budget for rendering results (default: raw JSON).",
+    )] = None,
 ) -> str:
     """Run a state-doc flow."""
     async with _lock:
@@ -452,6 +455,9 @@ async def keep_flow(
             )
         except (ValueError, OSError) as e:
             return f"Error: {e}"
+    if token_budget and token_budget > 0:
+        from .cli import render_flow_response
+        return render_flow_response(result, token_budget=token_budget, keeper=_get_keeper())
     output: dict[str, Any] = {
         "status": result.status,
         "ticks": result.ticks,
@@ -464,6 +470,8 @@ async def keep_flow(
         output["history"] = result.history
     if result.cursor:
         output["cursor"] = result.cursor
+    if result.tried_queries:
+        output["tried_queries"] = result.tried_queries
     return json.dumps(output, indent=2)
 
 
