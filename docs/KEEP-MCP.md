@@ -22,8 +22,8 @@ Generates a `.mcpb` bundle and opens it with Claude Desktop. You will be prompte
 ### Claude Code
 
 ```
-/plugin marketplace https://github.com/keepnotes-ai/keep.git
-/plugin install keepnotes-ai/keep
+/plugin marketplace add https://github.com/keepnotes-ai/keep.git
+/plugin install keep@keepnotes-ai
 ```
 
 The first command registers the marketplace, the second installs the plugin (MCP tools, skill instructions, and session hooks).
