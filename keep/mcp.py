@@ -417,7 +417,8 @@ async def keep_prompt(
     description=(
         "Run a state-doc flow synchronously. Flows evaluate state doc rules, "
         "execute actions (find, get, tag, summarize, etc.), and follow transitions. "
-        "Returns when done, on error, or when budget is exhausted (with a resumable cursor)."
+        "Returns when done, on error, or when budget is exhausted (with a resumable cursor). "
+        "See: keep_help(topic='keep-flow') for usage."
     ),
     annotations=_IDEMPOTENT,
 )
