@@ -216,7 +216,7 @@ On first use, `keep` detects coding tools and installs hooks into their configur
 
 | Tool | What happens |
 |------|-------------|
-| **Claude Code** | Plugin: `/plugin marketplace keepnotes-ai/keep` (includes MCP, skill, hooks) |
+| **Claude Code** | Plugin: `/plugin marketplace https://github.com/keepnotes-ai/keep.git` then `/plugin install keepnotes-ai/keep` |
 | **VS Code Copilot** | MCP: `code --add-mcp '{"name":"keep","command":"keep","args":["mcp"]}'` |
 | **Kiro** | Practice prompt + agent hooks. MCP: `kiro-cli mcp add --name keep --scope global -- keep mcp` |
 | **OpenAI Codex** | Practice prompt in `AGENTS.md`. MCP: `codex mcp add keep -- keep mcp` |
