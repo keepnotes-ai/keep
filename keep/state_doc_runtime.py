@@ -58,6 +58,30 @@ class FlowCursor:
     tried_queries: list[str] = field(default_factory=list)  # queries attempted
 
 
+def _slim_bindings(bindings: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Strip large fields from bindings before cursor storage.
+
+    Keeps IDs, scores, and computed stats (margin, entropy, lineage,
+    facets).  Drops summaries and full tag dicts from result items.
+    """
+    slimmed: dict[str, dict[str, Any]] = {}
+    for key, binding in bindings.items():
+        if not isinstance(binding, dict):
+            slimmed[key] = binding
+            continue
+        slim = {}
+        for field, value in binding.items():
+            if field == "results" and isinstance(value, list):
+                slim[field] = [
+                    {"id": r.get("id"), "score": r.get("score")}
+                    for r in value if isinstance(r, dict)
+                ]
+            else:
+                slim[field] = value
+        slimmed[key] = slim
+    return slimmed
+
+
 def encode_cursor(
     state: str,
     ticks: int,
@@ -65,7 +89,11 @@ def encode_cursor(
     tried_queries: list[str] | None = None,
 ) -> str:
     """Encode a flow checkpoint as a self-contained cursor token."""
-    payload: dict[str, Any] = {"s": state, "t": ticks, "b": bindings}
+    payload: dict[str, Any] = {
+        "s": state,
+        "t": ticks,
+        "b": _slim_bindings(bindings),
+    }
     if tried_queries:
         payload["q"] = tried_queries
     raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))

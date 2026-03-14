@@ -54,7 +54,13 @@ rules:
       item_id: "{params.item_id}"
       limit: "{params.meta_limit}"
 post:
-  - return: done
+  - return:
+      status: done
+      with:
+        item_id: "{params.item_id}"
+        similar: "{similar}"
+        parts: "{parts}"
+        meta: "{meta}"
 """,
 
     # -----------------------------------------------------------------

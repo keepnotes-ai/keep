@@ -470,8 +470,11 @@ def render_context(ctx: ItemContext, as_json: bool = False) -> str:
     return _render_frontmatter(ctx)
 
 
-def _dicts_to_items(raw: list) -> "list[Item]":
-    """Convert find-action result dicts to Item objects for rendering."""
+def _dicts_to_items(raw: list, summary_limit: int = 200) -> "list[Item]":
+    """Convert find-action result dicts to Item objects for rendering.
+
+    Truncates summaries to *summary_limit* chars to keep output bounded.
+    """
     from .types import Item
 
     items = []
@@ -479,9 +482,12 @@ def _dicts_to_items(raw: list) -> "list[Item]":
         if not isinstance(r, dict):
             continue
         score = r.get("score")
+        summary = str(r.get("summary", ""))
+        if len(summary) > summary_limit:
+            summary = summary[:summary_limit] + "..."
         items.append(Item(
             id=str(r.get("id", "")),
-            summary=str(r.get("summary", "")),
+            summary=summary,
             tags=dict(r.get("tags", {})),
             score=float(score) if isinstance(score, (int, float)) else None,
         ))
@@ -511,34 +517,44 @@ def render_flow_response(
     lines.append(header)
     remaining -= _tok(header)
 
-    # Render search results from return data (token-budgeted)
-    _RESULT_KEYS = ("results", "pivot_results", "bridge_results")
-    if result.data and remaining > 0:
-        for key in _RESULT_KEYS:
-            raw = result.data.get(key)
-            if not isinstance(raw, list) or not raw:
-                continue
-            items = _dicts_to_items(raw)
-            if not items:
-                continue
-            section_budget = min(remaining, token_budget // 2)
-            rendered = render_find_context(
-                items, keeper=keeper, token_budget=section_budget,
-            )
-            label = key.replace("_", " ")
-            section = f"\n{label}:\n{rendered}"
-            lines.append(section)
-            remaining -= _tok(section)
+    # Render data fields — auto-detect result lists, meta sections, scalars
+    def _render_result_list(label: str, raw: list) -> None:
+        nonlocal remaining
+        items = _dicts_to_items(raw)
+        if not items or remaining <= 0:
+            return
+        section_budget = min(remaining, token_budget // 3)
+        rendered = render_find_context(
+            items, keeper=keeper, token_budget=section_budget,
+        )
+        section = f"\n{label}:\n{rendered}"
+        lines.append(section)
+        remaining -= _tok(section)
 
-        # Scalar signals (margin, entropy, reason, etc.)
+    if result.data and remaining > 0:
         for key, val in result.data.items():
-            if key in _RESULT_KEYS or val is None:
-                continue
             if remaining <= 0:
                 break
-            line = f"{key}: {val}"
-            lines.append(line)
-            remaining -= _tok(line)
+            if val is None:
+                continue
+            # Direct result list (e.g., data.results)
+            if isinstance(val, list) and val and isinstance(val[0], dict):
+                _render_result_list(key, val)
+            # Action binding with results (e.g., data.similar = {results: [...]})
+            elif isinstance(val, dict) and "results" in val:
+                raw_results = val["results"]
+                if isinstance(raw_results, list) and raw_results:
+                    _render_result_list(key, raw_results)
+            # Meta sections (e.g., data.meta = {sections: {learnings: [...], todo: [...]}})
+            elif isinstance(val, dict) and "sections" in val:
+                for section_name, section_items in val["sections"].items():
+                    if isinstance(section_items, list) and section_items and remaining > 0:
+                        _render_result_list(f"meta/{section_name}", section_items)
+            # Scalar (margin, entropy, reason, item_id, etc.)
+            elif not isinstance(val, (dict, list)):
+                line = f"{key}: {val}"
+                lines.append(line)
+                remaining -= _tok(line)
 
     # Tried queries (for stopped flows)
     if result.tried_queries and remaining > 0:

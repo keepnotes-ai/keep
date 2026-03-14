@@ -4168,7 +4168,13 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
             _loader = make_state_doc_loader(env)
 
         # Decode cursor if resuming
-        cursor = decode_cursor(cursor_token) if cursor_token else None
+        cursor = None
+        if cursor_token:
+            # Try server-side cursor first (short ID)
+            cursor = self._load_cursor(cursor_token)
+            if cursor is None:
+                # Fall back to self-contained base64 cursor (backward compat)
+                cursor = decode_cursor(cursor_token)
 
         # Inject defaults for query flow params
         merged_params: dict[str, Any] = {
@@ -4187,7 +4193,7 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
         }
         merged_params.update(params or {})
 
-        return run_flow(
+        result = run_flow(
             state,
             merged_params,
             budget=budget,
@@ -4195,6 +4201,37 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
             run_action=runner,
             cursor=cursor,
         )
+
+        # Store cursor server-side, replace with short ID
+        if result.cursor:
+            cursor_id = self._store_cursor(result.cursor)
+            result.cursor = cursor_id
+
+        return result
+
+    def _store_cursor(self, cursor_token: str) -> str:
+        """Store a self-contained cursor as a system note, return short ID."""
+        import hashlib
+        cursor_id = hashlib.sha256(cursor_token.encode()).hexdigest()[:12]
+        note_id = f".cursor/{cursor_id}"
+        self.put(cursor_token, id=note_id)
+        return cursor_id
+
+    def _load_cursor(self, cursor_id: str) -> "Optional[FlowCursor]":
+        """Load a server-side cursor by short ID, delete after loading."""
+        from .state_doc_runtime import decode_cursor
+        note_id = f".cursor/{cursor_id}"
+        item = self.get(note_id)
+        if item is None:
+            return None
+        try:
+            self.delete(note_id)
+        except Exception:
+            pass
+        content = getattr(item, "content", None) or getattr(item, "summary", None)
+        if not content:
+            return None
+        return decode_cursor(str(content))
 
     # -- Spawn/processor methods are in BackgroundProcessingMixin --
 
