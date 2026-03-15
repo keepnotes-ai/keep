@@ -14,5 +14,6 @@ rules:
       with:
         total: "{profile.total}"
         tags: "{profile.tags}"
+        all_tags: "{profile.all_tags}"
         dates: "{profile.dates}"
         structure: "{profile.structure}"
