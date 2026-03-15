@@ -570,6 +570,21 @@ class PendingSummaryQueue:
         """)
         return {row[0]: row[1] for row in cursor.fetchall()}
 
+    def list_pending(self, limit: int = 50) -> list[dict]:
+        """List pending work items."""
+        cursor = self._conn.execute("""
+            SELECT id, task_type, queued_at
+            FROM pending_summaries
+            WHERE status IN ('pending', 'processing')
+            ORDER BY queued_at ASC
+            LIMIT ?
+        """, (limit,))
+        return [
+            {"work_id": row[0], "task_type": row[1], "supersede_key": row[0],
+             "created_at": row[2], "retry_after": None}
+            for row in cursor.fetchall()
+        ]
+
     def list_failed(self) -> list[dict]:
         """List items in failed (dead letter) status.
 

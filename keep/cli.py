@@ -3531,6 +3531,10 @@ def pending_cmd(
         "--retry",
         help="Reset failed items back to pending for retry"
     )] = False,
+    list_items: Annotated[bool, typer.Option(
+        "--list", "-l",
+        help="List pending work items"
+    )] = False,
     purge: Annotated[bool, typer.Option(
         "--purge",
         help="Delete all pending work items from the queue"
@@ -3751,6 +3755,25 @@ def pending_cmd(
             f"Enqueued {stats['enqueued']} items + {stats['versions']} versions",
             err=True,
         )
+
+    # --list: show pending items and exit
+    if list_items:
+        items = kp._pending_queue.list_pending()
+        failed = kp._pending_queue.list_failed()
+        if not items and not failed:
+            typer.echo("Nothing pending.")
+        else:
+            if items:
+                for item in items:
+                    retry = f" (retry after {item['retry_after']})" if item.get("retry_after") else ""
+                    typer.echo(f"  {item['task_type']:15s} {item['supersede_key'] or item['work_id']}{retry}")
+            if failed:
+                typer.echo(f"\nFailed ({len(failed)}):")
+                for item in failed[:10]:
+                    error = item.get("last_error", "unknown")
+                    typer.echo(f"  {item['task_type']:15s} {item['id']}: {error}")
+        kp.close()
+        return
 
     # Interactive mode: show status, ensure daemon running, tail log
     pending_count = kp.pending_count()

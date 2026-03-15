@@ -366,6 +366,20 @@ class WorkQueue:
             ).fetchone()
         return int(row["c"]) if row is not None else 0
 
+    def list_pending(self, limit: int = 50) -> list[dict]:
+        """List pending work items with their type and target."""
+        rows = self._conn.execute(
+            """
+            SELECT work_id, task_type, supersede_key, created_at, retry_after
+            FROM continue_work
+            WHERE status = 'requested'
+            ORDER BY created_at ASC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
     def has_superseding(
         self, work_id: str, supersede_key: str, created_at: str,
     ) -> bool:

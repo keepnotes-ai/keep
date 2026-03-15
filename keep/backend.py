@@ -67,6 +67,9 @@ class NullPendingQueue:
     def stats_by_type(self) -> dict[str, int]:
         return {}
 
+    def list_pending(self, limit: int = 50) -> list[dict]:
+        return []
+
     def list_failed(self) -> list[dict]:
         return []
 
