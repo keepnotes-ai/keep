@@ -44,9 +44,9 @@ rules:
       similar_to: "{params.item_id}"
       limit: "{params.similar_limit}"
   - id: parts
-    do: find
+    do: list_parts
     with:
-      prefix: "{params.item_id}@p"
+      id: "{params.item_id}"
       limit: "{params.parts_limit}"
   - id: meta
     do: resolve_meta
