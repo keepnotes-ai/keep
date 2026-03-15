@@ -190,6 +190,33 @@ class LocalFlowEnvironment:
             limit=limit,
         )
 
+    def list_versions(self, id: str, *, limit: int = 3) -> list[Any]:
+        return self._keeper.list_versions(id, limit=limit)
+
+    def resolve_edges(self, id: str, *, limit: int = 5) -> dict[str, Any]:
+        """Resolve forward and inverse edges for an item."""
+        from .types import EdgeRef
+
+        item = self._keeper.get(id)
+        if item is None:
+            return {"edges": {}, "count": 0}
+        edge_refs = self._keeper._resolve_edge_refs(item, id)
+        result: dict[str, list[dict]] = {}
+        total = 0
+        for key, refs in edge_refs.items():
+            entries = []
+            for ref in refs[:limit]:
+                entries.append({
+                    "id": ref.source_id,
+                    "summary": ref.summary or "",
+                    "predicate": ref.predicate or "",
+                    "date": ref.date or "",
+                })
+                total += 1
+            if entries:
+                result[key] = entries
+        return {"edges": result, "count": total}
+
     def resolve_meta(self, id: str, *, limit_per_doc: int = 3) -> dict[str, list[Any]]:
         return self._keeper.resolve_meta(id, limit_per_doc=limit_per_doc)
 

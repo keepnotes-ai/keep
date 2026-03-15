@@ -53,6 +53,16 @@ rules:
     with:
       item_id: "{params.item_id}"
       limit: "{params.meta_limit}"
+  - id: versions
+    do: list_versions
+    with:
+      id: "{params.item_id}"
+      limit: "{params.versions_limit}"
+  - id: edges
+    do: resolve_edges
+    with:
+      id: "{params.item_id}"
+      limit: "{params.edges_limit}"
 post:
   - return:
       status: done
@@ -61,6 +71,8 @@ post:
         similar: "{similar}"
         parts: "{parts}"
         meta: "{meta}"
+        versions: "{versions}"
+        edges: "{edges}"
 """,
 
     # -----------------------------------------------------------------

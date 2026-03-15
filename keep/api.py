@@ -4199,6 +4199,11 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
             "bridge_limit": 5,
             "deep_limit": 10,
             "max_summary_length": 200,
+            "similar_limit": 3,
+            "meta_limit": 3,
+            "parts_limit": 5,
+            "versions_limit": 3,
+            "edges_limit": 5,
         }
         merged_params.update(params or {})
 

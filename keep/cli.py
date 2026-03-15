@@ -550,6 +550,32 @@ def render_flow_response(
                 for section_name, section_items in val["sections"].items():
                     if isinstance(section_items, list) and section_items and remaining > 0:
                         _render_result_list(f"meta/{section_name}", section_items)
+            # Versions (e.g., data.versions = {versions: [{offset, summary, date}], count})
+            elif isinstance(val, dict) and "versions" in val:
+                vers = val["versions"]
+                if isinstance(vers, list) and vers and remaining > 0:
+                    lines.append(f"\n{key}:")
+                    for v in vers:
+                        if remaining <= 0:
+                            break
+                        line = f"  - @V{{{v.get('offset', '?')}}}  [{v.get('date', '')[:10]}]  {str(v.get('summary', ''))[:150]}"
+                        lines.append(line)
+                        remaining -= _tok(line)
+            # Edges (e.g., data.edges = {edges: {predicate: [{id, summary, ...}]}, count})
+            elif isinstance(val, dict) and "edges" in val:
+                edge_groups = val["edges"]
+                if isinstance(edge_groups, dict) and edge_groups and remaining > 0:
+                    lines.append(f"\n{key}:")
+                    for predicate, refs in edge_groups.items():
+                        if remaining <= 0:
+                            break
+                        if isinstance(refs, list):
+                            for ref in refs:
+                                if remaining <= 0:
+                                    break
+                                line = f"  - [{predicate}] {ref.get('id', '')}  {str(ref.get('summary', ''))[:100]}"
+                                lines.append(line)
+                                remaining -= _tok(line)
             # Scalar (margin, entropy, reason, item_id, etc.)
             elif not isinstance(val, (dict, list)):
                 line = f"{key}: {val}"

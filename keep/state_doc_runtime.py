@@ -478,6 +478,12 @@ class _EnvActionContext:
             return fn(stem, vault=vault)
         return None
 
+    def list_versions(self, id: str, *, limit: int = 3) -> list[Any]:
+        return self._env.list_versions(id, limit=limit)
+
+    def resolve_edges(self, id: str, *, limit: int = 5) -> dict[str, Any]:
+        return self._env.resolve_edges(id, limit=limit)
+
     def resolve_meta(self, id: str, limit_per_doc: int = 3) -> dict[str, list[Any]]:
         return self._env.resolve_meta(id, limit_per_doc=limit_per_doc)
 
