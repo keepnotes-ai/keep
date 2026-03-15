@@ -348,6 +348,99 @@ Raw LLM prompt — the escape hatch for custom processing.
 
 **Output:** `{"text": "..."}` — with parsed fields merged in when `format: json`.
 
+### ocr
+
+Extract text from images or scanned PDF pages.
+
+```yaml
+- do: ocr
+  with:
+    item_id: "{params.item_id}"
+```
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `item_id` | str | required | Item to OCR |
+| `pages` | list | — | Zero-indexed page numbers (PDF only) |
+
+**Output:** `{"text": "extracted...", "pages_processed": N}`
+**Mutations:** `[{"op": "upsert_item", "content": "..."}]`
+
+### resolve_stubs
+
+Resolve auto-vivified stub items by fetching content from their URI.
+
+```yaml
+- do: resolve_stubs
+```
+
+Runs during after-write for URI-backed items that were auto-created as stubs.
+
+## Store profiling
+
+### stats
+
+Compute store profile statistics for query planning. Returns tag distributions, date histograms, structural counts, and edge fan-in/fan-out.
+
+```yaml
+- id: profile
+  do: stats
+  with:
+    top_k: 10
+```
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `top_k` | int | 10 | Number of top tags to detail, and top values per tag |
+
+**Output:**
+
+```python
+{
+    "total": 2672,
+    "tags": {                           # Detailed stats for top_k tag keys
+        "project": {
+            "count": 248, "distinct": 9, "unique": 4,
+            "coverage": 0.09, "categorical": true, "edge": false,
+            "top": {"keep": 226, "superpowers": 6}
+        },
+        "references": {
+            "count": 161, "distinct": 1017, "unique": 947,
+            "coverage": 0.06, "categorical": false, "edge": true,
+            "fan_out": {"avg": 7.4, "max": 35},
+            "fan_in": {"avg": 1.2, "max": 17},
+            "top": {"REFERENCE.md": 17, "TAGGING.md": 11}
+        },
+    },
+    "all_tags": ["topic", "type", "project", "act", ...],  # All tag key names
+    "dates": {
+        "created": {"min": "2024-05-06", "max": "2026-03-15",
+                     "annual": {"2026": 2099}, "monthly": {"2026-03": 1796},
+                     "daily": {"2026-03-12": 1284}},
+        "updated": {...},
+        "accessed": {...},
+    },
+    "structure": {
+        "sources": {"inline": 1579, "uri": 824},
+        "with_versions": 65,
+        "versions_len": {"1": 44, "2": 9, "3": 2},
+        "with_parts": 0,
+        "parts_len": {},
+        "edges": {
+            "forward": {"references": 1184, "informs": 12},
+            "inverse": {"referenced_by": 1184, "informed_by": 12},
+            "distinct_sources": 173, "distinct_targets": 1020
+        }
+    }
+}
+```
+
+Key per-tag-key fields:
+- **categorical**: few distinct values relative to count — good for filtering
+- **edge**: tag has `_inverse` — navigable relationship
+- **unique**: values appearing exactly once — high unique means identifier-like, not useful for filtering
+- **fan_out/fan_in**: edge cardinality both directions
+
 ## Result statistics
 
 When the `find` action runs in search mode, the runtime computes statistics from the result set:

@@ -1,6 +1,6 @@
 # Built-in State Docs
 
-State docs are YAML documents stored as `.state/*` notes that drive keep's processing flows. Six ship by default. Each is loaded from disk on first use and can be edited in the store.
+State docs are YAML documents stored as `.state/*` notes that drive keep's processing flows. Eleven ship by default: five simple operation wrappers (`put`, `tag`, `delete`, `move`, `stats`) and six processing/query flows. Each is loaded from disk on first use and can be edited in the store.
 
 To view the current state docs: `keep list .state --all`
 To reset to defaults: `keep config --reset-system-docs`
@@ -186,6 +186,44 @@ keep config --reset-system-docs      # Restore all defaults
 ```
 
 Changes take effect on the next flow invocation. The built-in versions are compiled into keep as a fallback — if a state doc is missing from the store, the bundled version is used automatically.
+
+---
+
+## Simple operation wrappers
+
+These are thin state docs that wrap a single action, providing named flow access to every store operation.
+
+### .state/put
+
+**Params:** `content`, `uri`, `id`, `tags`, `summary`
+**Action:** `put` — stores content or indexes a URI.
+**Output:** `{"id": "..."}`
+
+### .state/tag
+
+**Params:** `id` (single item) or `items` (list from search results), `tags`
+**Action:** `tag` — applies explicit tags to one or more items.
+**Output:** `{"count": N, "ids": [...]}`
+
+### .state/delete
+
+**Params:** `id`
+**Action:** `delete` — permanently removes an item.
+**Output:** `{"deleted": "id"}`
+
+### .state/move
+
+**Params:** `name` (target ID), `source` (default: "now"), `tags` (filter), `only_current`
+**Action:** `move` — extracts matching versions from source into target.
+**Output:** `{"id": "...", "summary": "..."}`
+
+### .state/stats
+
+**Params:** `top_k` (default: 10)
+**Action:** `stats` — computes store profile for query planning.
+**Output:** `{"total": N, "tags": {...}, "all_tags": [...], "dates": {...}, "structure": {...}}`
+
+See [FLOW-ACTIONS.md](use keep_help with topic="flow-actions") for detailed output shapes.
 
 ## See also
 

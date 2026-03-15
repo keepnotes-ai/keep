@@ -111,15 +111,20 @@ RESULT=$(keep flow query-resolve -p query="auth" --budget 3 --json)
 # Flow stopped — check what it found
 echo "$RESULT" | jq .status
 # → "stopped"
-echo "$RESULT" | jq '.bindings.search.results[:3]'
 
-# Results are too scattered — tighten the margin and resume
+# Results are too scattered — suppress noisy items with bias and resume
 CURSOR=$(echo "$RESULT" | jq -r .cursor)
-keep flow --cursor "$CURSOR" -p margin_high=0.10 --budget 5
+keep flow --cursor "$CURSOR" -p query="auth" -p 'bias={"now": 0}' --budget 5
+
+# Or refine the query with tag filter and time range
+keep flow query-resolve -p query="auth" -p 'tags={"project": "myapp"}' -p since=P7D
 
 # Or refine the query entirely
 keep flow --cursor "$CURSOR" -p query="OAuth2 token refresh" --budget 5
 ```
+
+**Bias** controls per-item score weighting: `0`=exclude, `1`=neutral, `>1`=boost.
+Common pattern: `bias={"now": 0}` suppresses the working context from results.
 
 Each resume gets a fresh budget. The cursor's tick count is historical
 (for diagnostics), not a remaining balance — `--budget 5` always means
@@ -203,25 +208,27 @@ Output is a JSON object:
 |-------|---------|-------------|
 | `status` | Always | `done`, `error`, or `stopped` |
 | `ticks` | Always | Number of ticks consumed |
-| `data` | When flow returns data | Payload from `return.with` |
-| `bindings` | When actions produced output | Accumulated results keyed by action ID |
-| `history` | When multiple states visited | State names in order |
-| `cursor` | When `stopped` | Opaque token to resume the flow |
+| `data` | When flow returns data | Payload from `return.with` (or all bindings if `with:` omitted) |
+| `cursor` | When `stopped` | Short ID to resume the flow (stored server-side) |
+| `tried_queries` | When searches were run | Queries attempted across all ticks |
 
 ### MCP: `keep_flow`
 
 ```python
 keep_flow(
     state="query-resolve",
-    params={"query": "auth patterns", "limit": 10},
+    params={"query": "auth patterns", "bias": {"now": 0}, "since": "P7D"},
     budget=5,
-    cursor=None,           # or a cursor token from a previous call
+    token_budget=2000,     # token-budgeted text rendering (omit for raw JSON)
+    cursor=None,           # or a cursor ID from a previous call
     state_doc_yaml=None,   # or inline YAML string
 )
 ```
 
-Same JSON structure as the CLI. The `state_doc_yaml` parameter is the
-MCP equivalent of `--file` — pass inline YAML instead of a state name.
+When `token_budget` is set, the response is rendered as token-budgeted
+text (using the same algorithm as search result rendering). When omitted,
+the response is raw JSON. The `state_doc_yaml` parameter is the MCP
+equivalent of `--file` — pass inline YAML instead of a state name.
 
 ## See also
 
