@@ -12,7 +12,73 @@ from __future__ import annotations
 
 BUILTIN_STATE_DOCS: dict[str, str] = {
     # -----------------------------------------------------------------
-    # Write path
+    # Simple operations (thin wrappers for flow-based access)
+    # -----------------------------------------------------------------
+    "put": """\
+match: sequence
+rules:
+  - id: stored
+    do: put
+    with:
+      content: "{params.content}"
+      uri: "{params.uri}"
+      id: "{params.id}"
+      tags: "{params.tags}"
+      summary: "{params.summary}"
+  - return:
+      status: done
+      with:
+        id: "{stored.id}"
+""",
+
+    "tag": """\
+match: sequence
+rules:
+  - id: tagged
+    do: tag
+    with:
+      id: "{params.id}"
+      items: "{params.items}"
+      tags: "{params.tags}"
+  - return:
+      status: done
+      with:
+        count: "{tagged.count}"
+        ids: "{tagged.ids}"
+""",
+
+    "delete": """\
+match: sequence
+rules:
+  - id: result
+    do: delete
+    with:
+      id: "{params.id}"
+  - return:
+      status: done
+      with:
+        deleted: "{result.deleted}"
+""",
+
+    "move": """\
+match: sequence
+rules:
+  - id: moved
+    do: move
+    with:
+      name: "{params.name}"
+      source: "{params.source}"
+      tags: "{params.tags}"
+      only_current: "{params.only_current}"
+  - return:
+      status: done
+      with:
+        id: "{moved.id}"
+        summary: "{moved.summary}"
+""",
+
+    # -----------------------------------------------------------------
+    # Write path: post-processing
     # -----------------------------------------------------------------
     "after-write": """\
 match: all
