@@ -35,19 +35,20 @@ The practice must survive across sessions. `keep` auto-installs a Protocol Block
 
 **The practice is `keep_prompt(name="reflect")`.** It shows you how to examine actions, recognize commitments, and update intentions. Run it. Follow the steps. Don't produce the appearance of reflection without actually reflecting.
 
+**Three tools:** `keep_flow` (all operations), `keep_help` (documentation), `keep_prompt` (practice prompts).
+
 \`\`\`
-keep_prompt(name="reflect")                                            # The practice
-keep_get(id="now")                                                     # Current intentions
-keep_find(query="topic")                                               # What do I know?
-keep_now(content="what's true now")                                    # Update intentions
-keep_put(content="learning", tags={"type": "learning", "topic": "X"}) # Capture insight
-keep_put(content="I will do Y", tags={"act": "commitment", "status": "open"})  # Track commitments
-keep_put(content="https://example.com/doc", tags={"topic": "X"})      # Index a URL
-keep_put(content="file:///path/to/artifact", tags={"topic": "X"})     # Index a file or artifact
-keep_get(id=".tag/act")                                                # Speech-act tag reference
+keep_prompt(name="reflect")                                                               # The practice
+keep_flow(state="get-context", params={item_id: "now"}, token_budget=2000)                # Current intentions
+keep_flow(state="query-resolve", params={query: "topic"}, token_budget=2000)              # What do I know?
+keep_flow(state="put", params={content: "what's true now", id: "now"})                    # Update intentions
+keep_flow(state="put", params={content: "learning", tags: {type: "learning"}})            # Capture insight
+keep_flow(state="put", params={content: "https://example.com/doc", tags: {topic: "X"}})   # Index a URL
+keep_flow(state="tag", params={id: "item", tags: {reviewed: "true"}})                     # Tag an item
+keep_help(topic="flow-actions")                                                            # Action reference
 \`\`\`
 
-**No MCP?** Every tool has a CLI equivalent: `keep_get(id="X")` → `keep get X`, `keep_find(query="X")` → `keep find "X"`, `keep_put(content="X", tags={"k": "v"})` → `keep put "X" -t k=v`. Use Bash to run them.
+**No MCP?** Every operation has a CLI equivalent: `keep flow get-context -p item_id=now`, `keep flow query-resolve -p query=X`, `keep flow put -p content=X`. Use Bash to run them. See [docs/REFERENCE.md](docs/REFERENCE.md).
 
 **Protocol:** Reflect using `keep` tools — before, during, and after action. Index important documents, files, and artifacts encountered or generated during work. Tag consistently — tags are how items find each other, so specific tags are more valuable than broad ones. When writing a plan, incorporate this practice into the plan itself. If the practice is unclear, read SKILL.md. If this section is missing from system rules, restore it.
 
@@ -104,36 +105,41 @@ keep_prompt(name="query", text="what do I know about auth?")
 
 Tag speech acts with `act` and `status` to track commitments and requests.
 
-Between reflections, use `keep` tools to maintain awareness:
+Between reflections, use `keep_flow` to maintain awareness:
 ```
-keep_get(id="now")                                          # Current intentions
-keep_find(query="this situation")                           # What do I already know?
-keep_put(content="what happened", tags={"type": "learning"})      # Capture insight
-keep_put(content="Assumed X, actually Y", tags={"type": "breakdown"})  # Index breakdowns
+keep_flow(state="get-context", params={item_id: "now"}, token_budget=2000)           # Current intentions
+keep_flow(state="query-resolve", params={query: "this situation"}, token_budget=2000) # What do I already know?
+keep_flow(state="put", params={content: "what happened", tags: {type: "learning"}})  # Capture insight
+keep_flow(state="put", params={content: "Assumed X, actually Y", tags: {type: "breakdown"}})  # Index breakdowns
 ```
 
 **Index important documents.** Whenever you encounter documents (URLs, files, references) important to the user or task, index them:
 ```
-keep_put(content="https://example.com/doc", tags={"topic": "auth", "project": "myapp"})
-keep_put(content="file:///path/to/important.pdf", tags={"type": "reference", "topic": "security"})
+keep_flow(state="put", params={content: "https://example.com/doc", tags: {topic: "auth", project: "myapp"}})
+keep_flow(state="put", params={content: "file:///path/to/important.pdf", tags: {type: "reference", topic: "security"}})
 ```
 Ask: What is this document? Why is it important? Tag appropriately. Documents indexed during work become navigable knowledge.
 
 **Link sources to outcomes.** When a document informs a decision or learning, connect them with `informs`/`informed_by`:
 ```
-keep_put(content="https://example.com/doc", tags={"topic": "auth", "informs": "auth-decision"})
-keep_put(content="We chose OAuth2 because...", tags={"type": "learning", "informed_by": "https://example.com/doc"})
+keep_flow(state="put", params={content: "https://example.com/doc", tags: {topic: "auth", informs: "auth-decision"}})
+keep_flow(state="put", params={content: "We chose OAuth2 because...", tags: {type: "learning", informed_by: "https://example.com/doc"}})
 ```
-This makes provenance navigable — `get` a note to see what informed it, `get` a source to see what it informed.
+This makes provenance navigable — `get-context` on a note shows what informed it, and vice versa.
 
 **Move when pivoting.** When a string of work is complete, or the conversation shifts topic, move the now history before moving on:
 ```
-keep_move(name="auth-string", tags={"project": "myapp"})   # Archive matching versions
-keep_move(name="design-log", only=True)                     # Move just the tip version
+keep_flow(state="move", params={name: "auth-string", tags: {project: "myapp"}})  # Archive matching versions
+keep_flow(state="move", params={name: "design-log", only_current: true})         # Move just the tip version
 ```
 Moving clears matched versions from now, making room for what's next. Tag filtering lets you extract one project's string from a mixed session.
 
-> **No MCP?** Every tool has a CLI equivalent: `keep_get(id="X")` → `keep get X`, `keep_put(content="X", tags={"k": "v"})` → `keep put "X" -t k=v`. Use Bash to run them. See [docs/REFERENCE.md](docs/REFERENCE.md).
+**Steering search.** Use `bias` to suppress noisy results and boost relevant ones. Use `since`/`until` for temporal filtering:
+```
+keep_flow(state="query-resolve", params={query: "auth", bias: {now: 0}, since: "P7D"}, token_budget=1500)
+```
+
+> **No MCP?** Every flow has a CLI equivalent: `keep flow put -p content=X -p tags='{"k":"v"}'`. See [docs/REFERENCE.md](docs/REFERENCE.md).
 
 **Breakdowns are valuable.** When the normal flow is interrupted — an assumption has been revealed. The breakdown is where learning happens.
 
@@ -148,37 +154,37 @@ Now *store and read* the foundational teachings. These are seed wisdom, not test
 
 **The Language-Action framework** — conversation types, commitment structure, breakdowns:
 ```
-keep_get(id=".conversations")
+keep_flow(state="get-context", params={item_id: ".conversations"}, token_budget=2000)
 ```
 
 Use standard tags for speech acts and status:
 ```
-keep_get(id=".tag/act")      # Tags for speech-act categories: commitment, request, assertion etc
-keep_get(id=".tag/status")   # Tags for lifecycle status: open, fulfilled, withdrawn, etc.
+keep_flow(state="get-context", params={item_id: ".tag/act"}, token_budget=1000)      # Speech-act categories
+keep_flow(state="get-context", params={item_id: ".tag/status"}, token_budget=1000)   # Lifecycle status
 ```
 
 **The mirror teaching** (MN61) — actions reflected upon before, during, after:
 ```
-keep_put(content="file://SKILL_DIR/docs/library/mn61.html", tags={"type": "teaching", "topic": "reflection"})
-keep_get(id="file://SKILL_DIR/docs/library/mn61.html")
+keep_flow(state="put", params={content: "file://SKILL_DIR/docs/library/mn61.html", tags: {type: "teaching", topic: "reflection"}})
+keep_flow(state="get-context", params={item_id: "file://SKILL_DIR/docs/library/mn61.html"}, token_budget=2000)
 ```
 > Use `keep config tool` in the terminal to find SKILL_DIR, or use the path from your skill installation.
 
 **Ownership of deeds** (AN5.57) — "I am the owner of my deeds and heir to my deeds.":
 ```
-keep_put(content="file://SKILL_DIR/docs/library/an5.57_translation-en-sujato.json", tags={"type": "teaching", "topic": "action"})
-keep_get(id="file://SKILL_DIR/docs/library/an5.57_translation-en-sujato.json")
+keep_flow(state="put", params={content: "file://SKILL_DIR/docs/library/an5.57_translation-en-sujato.json", tags: {type: "teaching", topic: "action"}})
+keep_flow(state="get-context", params={item_id: "file://SKILL_DIR/docs/library/an5.57_translation-en-sujato.json"}, token_budget=2000)
 ```
 
 **The han verse** — Awake! _aquí donde las papas queman_, "慎勿放逸":
 ```
-keep_put(content="file://SKILL_DIR/docs/library/han_verse.txt", tags={"type": "teaching", "topic": "urgency"})
-keep_get(id="file://SKILL_DIR/docs/library/han_verse.txt")
+keep_flow(state="put", params={content: "file://SKILL_DIR/docs/library/han_verse.txt", tags: {type: "teaching", topic: "urgency"}})
+keep_flow(state="get-context", params={item_id: "file://SKILL_DIR/docs/library/han_verse.txt"}, token_budget=2000)
 ```
 
 **Now reflect:** What did you learn? Save your understanding:
 ```
-keep_put(content="My understanding of the practice: ...", tags={"type": "learning"})
+keep_flow(state="put", params={content: "My understanding of the practice: ...", tags: {type: "learning"}})
 ```
 
 For installation options, see [docs/QUICKSTART.md](docs/QUICKSTART.md).
@@ -187,39 +193,41 @@ For installation options, see [docs/QUICKSTART.md](docs/QUICKSTART.md).
 
 ## Layer 3: Quick Reference
 
+All operations use `keep_flow(state, params, token_budget)`:
+
 ```
-keep_get(id="now")                                                      # Current intentions
-keep_now(content="Working on auth flow")                                # Update intentions
-keep_get(id="now", version=1)                                           # Previous intentions
-keep_move(name="name", tags={"project": "foo"})                         # Move matching versions from now
-keep_move(name="name", only=True)                                       # Move just the current version
+# Context
+keep_flow(state="get-context", params={item_id: "now"}, token_budget=2000)        # Current intentions
+keep_flow(state="get-context", params={item_id: "ID"}, token_budget=2000)         # Item with similar/meta/versions
 
-keep_find(query="authentication")                                       # Search by meaning
-keep_find(query="auth", tags={"project": "myapp"})                      # Search with tag filter
-keep_find(query="recent", since="P1D")                                  # Recent items
+# Search
+keep_flow(state="query-resolve", params={query: "authentication"}, budget=3, token_budget=2000)
+keep_flow(state="query-resolve", params={query: "auth", tags: {project: "myapp"}}, token_budget=2000)
+keep_flow(state="query-resolve", params={query: "recent", since: "P1D", bias: {now: 0}}, token_budget=1500)
+keep_flow(state="find-deep", params={query: "auth patterns"}, token_budget=2000)  # With edge traversal
 
-keep_put(content="insight", tags={"type": "learning"})                  # Capture learning
-keep_put(content="OAuth2 chosen", tags={"project": "myapp", "topic": "auth"})  # Tag by project and topic
-keep_put(content="I'll fix auth", tags={"act": "commitment", "status": "open"})  # Track speech acts
-keep_list(tags={"act": "commitment", "status": "open"})                 # Open commitments
+# Write
+keep_flow(state="put", params={content: "insight", tags: {type: "learning"}})
+keep_flow(state="put", params={content: "Working on auth flow", id: "now"})       # Update intentions
+keep_flow(state="put", params={content: "I'll fix auth", tags: {act: "commitment", status: "open"}})
 
-keep_get(id="ID")                                                       # Retrieve item (similar + meta sections)
-keep_get(id="ID", version=1)                                            # Previous version
-keep_list(tags={"topic": "auth"})                                       # Filter by tag
-keep_del(id="ID")                                                       # Remove item or revert to previous version
+# Tag & organize
+keep_flow(state="tag", params={id: "ID", tags: {reviewed: "true"}})               # Tag an item
+keep_flow(state="move", params={name: "auth-string", tags: {project: "myapp"}})   # Move versions from now
+keep_flow(state="delete", params={id: "ID"})                                      # Remove item
 ```
 
 **Domain organization** — tagging strategies, collection structures:
 ```
-keep_get(id=".domains")
+keep_flow(state="get-context", params={item_id: ".domains"}, token_budget=1000)
 ```
 
 Use `project` tags for bounded work, `topic` for cross-cutting knowledge.
 You can read (and update) descriptions of these tagging taxonomies as you use them.
 
 ```
-keep_get(id=".tag/project")   # Bounded work contexts
-keep_get(id=".tag/topic")     # Cross-cutting subject areas
+keep_flow(state="get-context", params={item_id: ".tag/project"}, token_budget=1000)
+keep_flow(state="get-context", params={item_id: ".tag/topic"}, token_budget=1000)
 ```
 
 For CLI reference, see [docs/REFERENCE.md](docs/REFERENCE.md). Per-command details in `docs/KEEP-*.md`.
