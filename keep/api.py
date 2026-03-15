@@ -1516,9 +1516,18 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
             and _user_tags_changed(existing_doc.tags, merged_tags)
         )
 
-        # Early return: nothing to do
+        # Early return: content and tags unchanged.
+        # Still dispatch after-write flow — it will no-op if processing
+        # is already complete, but re-enqueues if a prior purge dropped
+        # unfinished work.
         if content_unchanged and not tags_changed and summary is None and not force:
-            logger.debug("Content and tags unchanged, skipping for %s", id)
+            logger.debug("Content and tags unchanged for %s", id)
+            if queue_summarize and not id.startswith("."):
+                self._dispatch_after_write_flow(
+                    item_id=id,
+                    content=content,
+                    tags=dict(existing_doc.tags),
+                )
             return _record_to_item(existing_doc, changed=False)
 
         # Determine summary
