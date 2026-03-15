@@ -18,6 +18,10 @@ class Find:
         order_by = str(params.get("order_by") or "updated")
         limit = int(params.get("limit", 10))
         limit = max(limit, 1)
+        exclude = params.get("exclude")
+        if isinstance(exclude, str):
+            exclude = [exclude]
+        exclude_set = set(exclude) if isinstance(exclude, list) else set()
 
         has_selector = any([
             bool(query),
@@ -31,12 +35,14 @@ class Find:
         if query and similar_to:
             raise ValueError("find.query and find.similar_to are mutually exclusive")
 
+        fetch_limit = limit + len(exclude_set) if exclude_set else limit
+
         if query or similar_to:
             rows = context.find(
                 str(query) if query is not None else None,
                 tags=tags,
                 similar_to=str(similar_to) if similar_to is not None else None,
-                limit=limit,
+                limit=fetch_limit,
                 since=str(since) if since is not None else None,
                 until=str(until) if until is not None else None,
                 include_hidden=include_hidden,
@@ -49,8 +55,11 @@ class Find:
                 until=str(until) if until is not None else None,
                 order_by=order_by,
                 include_hidden=include_hidden,
-                limit=limit,
+                limit=fetch_limit,
             )
+
+        if exclude_set:
+            rows = [r for r in rows if getattr(r, "id", None) not in exclude_set][:limit]
 
         results = [item_to_result(row) for row in rows]
         return {
