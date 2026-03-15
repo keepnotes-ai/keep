@@ -464,8 +464,6 @@ async def keep_flow(
     }
     if result.data:
         output["data"] = result.data
-    if result.bindings:
-        output["bindings"] = result.bindings
     if result.history:
         output["history"] = result.history
     if result.cursor:

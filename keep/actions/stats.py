@@ -147,9 +147,9 @@ class Stats:
             return {
                 "min": min_date,
                 "max": max_date,
-                "annual": [[r[0], r[1]] for r in annual],
-                "monthly": [[r[0], r[1]] for r in monthly],
-                "daily": [[r[0], r[1]] for r in daily],
+                "annual": {r[0]: r[1] for r in annual},
+                "monthly": {r[0]: r[1] for r in monthly},
+                "daily": {r[0]: r[1] for r in daily},
             }
 
         dates_out = {
@@ -177,7 +177,7 @@ class Stats:
         structure_out = {
             "sources": dict(source_counts.most_common()),
             "with_versions": len(version_rows),
-            "version_histogram": [[k, version_hist[k]] for k in sorted(version_hist)],
+            "version_histogram": {str(k): version_hist[k] for k in sorted(version_hist)},
             "with_parts": parts_count,
         }
 
