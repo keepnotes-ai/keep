@@ -172,6 +172,47 @@ Resolve forward and inverse edges for an item.
 
 **Output:** `{"edges": {"references": [{id, summary, predicate, date}, ...], ...}, "count": N}`
 
+## Mutation actions
+
+### move
+
+Move versions from a source item into a named target.
+
+```yaml
+- id: moved
+  do: move
+  with:
+    name: "project-notes"
+    source: "now"
+    tags: { project: "myapp" }
+    only_current: false
+```
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `name` | str | required | Target item ID (created if new) |
+| `source` | str | `now` | Source item to extract from |
+| `tags` | dict | — | Only extract versions matching these tags |
+| `only_current` | bool | false | Only move the current version, not history |
+
+**Output:** `{"id": "project-notes", "summary": "..."}`
+
+### delete
+
+Permanently delete an item and its version history.
+
+```yaml
+- do: delete
+  with:
+    id: "old-item"
+```
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `id` | str | required | Item to delete |
+
+**Output:** `{"deleted": "old-item"}`
+
 ## Processing actions
 
 These run during `after-write` flows to enrich newly stored items.

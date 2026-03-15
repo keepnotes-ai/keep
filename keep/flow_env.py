@@ -217,6 +217,13 @@ class LocalFlowEnvironment:
                 result[key] = entries
         return {"edges": result, "count": total}
 
+    def move(self, name: str, *, source_id: str = "now",
+             tags: dict | None = None, only_current: bool = False) -> Any:
+        return self._keeper.move(name, source_id=source_id, tags=tags, only_current=only_current)
+
+    def delete(self, id: str) -> None:
+        self._keeper.delete(id)
+
     def resolve_meta(self, id: str, *, limit_per_doc: int = 3) -> dict[str, list[Any]]:
         return self._keeper.resolve_meta(id, limit_per_doc=limit_per_doc)
 

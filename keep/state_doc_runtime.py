@@ -490,6 +490,17 @@ class _EnvActionContext:
     def traverse(self, source_ids: list[str], *, limit: int = 5) -> dict[str, list[Any]]:
         return self._env.traverse_related(source_ids, limit_per_source=limit)
 
+    def move(self, name: str, *, source_id: str = "now",
+             tags: dict | None = None, only_current: bool = False) -> Any:
+        if not self._writable:
+            raise NotImplementedError("move not available in read-only flow context")
+        return self._env.move(name, source_id=source_id, tags=tags, only_current=only_current)
+
+    def delete(self, id: str) -> None:
+        if not self._writable:
+            raise NotImplementedError("delete not available in read-only flow context")
+        self._env.delete(id)
+
     def resolve_prompt(self, prefix: str, doc_tags: dict[str, Any] | None = None) -> str | None:
         """Resolve a prompt doc matching tags (e.g. .prompt/summarize/*)."""
         resolve = getattr(self._env, "resolve_prompt", None)
