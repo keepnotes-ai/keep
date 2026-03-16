@@ -883,12 +883,22 @@ class FileDocumentProvider:
         # (common in Enron corpus where MIME structure is flattened to text/plain)
         content = _strip_base64_blocks(content)
 
-        # Extract attachments from multipart messages
+        # Extract attachments from multipart messages.
+        # Walk all parts and collect non-text content (both "attachment"
+        # and "inline" dispositions — inline images are common in HTML email).
         attachments: list[dict] = []
         if msg.is_multipart():
             att_dir = None
-            for part in msg.iter_attachments():
+            for part in msg.walk():
+                # Skip multipart containers
+                if part.is_multipart():
+                    continue
                 ct = part.get_content_type()
+                disp = part.get_content_disposition()
+                # Skip text body parts (no disposition or inline without filename),
+                # but keep text files that are explicit attachments
+                if ct in ('text/plain', 'text/html') and disp != 'attachment':
+                    continue
                 filename = part.get_filename() or f"attachment-{len(attachments) + 1}"
                 try:
                     payload_bytes = part.get_payload(decode=True)
