@@ -8,6 +8,29 @@ from . import action
 from ._item_scope import check_content_hash, resolve_item_content
 
 
+def _enrich_content_type(item_id: str, tags: dict) -> dict:
+    """Infer _content_type from a URI-style item ID if not already set.
+
+    Allows prompt matching on content type for items stored before
+    _content_type was tracked as a system tag.
+    """
+    from keep.providers.documents import FileDocumentProvider
+
+    # Extract suffix from URI or path
+    clean_id = item_id.split("#")[0].split("?")[0]
+    if "/" in clean_id:
+        suffix_part = clean_id.rsplit("/", 1)[-1]
+    else:
+        suffix_part = clean_id
+    if "." in suffix_part:
+        ext = "." + suffix_part.rsplit(".", 1)[-1].lower()
+        ct = FileDocumentProvider.EXTENSION_TYPES.get(ext)
+        if ct:
+            tags = dict(tags)
+            tags["_content_type"] = ct
+    return tags
+
+
 @action(id="summarize", priority=3)
 class Summarize:
     """Generate and return a summary for the target item."""
@@ -30,7 +53,10 @@ class Summarize:
         # Resolve prompt doc (.prompt/summarize/*) matching item tags
         prompt_text = params.get("system_prompt")
         if prompt_text is None:
-            item_tags = getattr(item, "tags", None) or {}
+            item_tags = dict(getattr(item, "tags", None) or {})
+            # Infer _content_type from URI-style ID if not already set
+            if "_content_type" not in item_tags and item_id:
+                item_tags = _enrich_content_type(item_id, item_tags)
             resolve_prompt = getattr(context, "resolve_prompt", None)
             if resolve_prompt is not None:
                 try:
