@@ -12,7 +12,7 @@ This generates and opens a `.mcpb` bundle that registers keep's MCP server with 
 
 Once the extension is installed, just say to Claude:
 
-> Please read all the `keep_help` documentation, and then use `keep_prompt(name="reflect")`
+> Please read all the `keep_help` documentation, and then use `keep_prompt(name="reflect")` to save some notes about what you learn.
 
 ## More information
 

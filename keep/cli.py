@@ -3147,7 +3147,7 @@ def _get_config_value(cfg, store_path: Path, path: str):
             subprocess.Popen(["xdg-open", str(out)])
         return (
             'After installation, just say to Claude:\n'
-            'Please read all the keep_help documentation, and then use keep_prompt(name="reflect")'
+            'Please read all the keep_help documentation, and then use keep_prompt(name="reflect") to save some notes about what you learn.'
         )
     if path == "docs":
         return str(get_tool_directory() / "docs")
