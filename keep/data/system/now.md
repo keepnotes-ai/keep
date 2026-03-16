@@ -20,11 +20,11 @@ keep pending
 Now read and understand each one:
 
 ```
-keep_get(id=".conversations")
-keep_get(id=".tag/act")
-keep_get(id="file://SKILL_DIR/docs/library/mn61.html")
-keep_get(id="file://SKILL_DIR/docs/library/an5.57_translation-en-sujato.json")
-keep_get(id="file://SKILL_DIR/docs/library/han_verse.txt")
+keep_flow(state="get-context", params={item_id: ".conversations"}, token_budget=2000)
+keep_flow(state="get-context", params={item_id: ".tag/act"}, token_budget=1000)
+keep_flow(state="get-context", params={item_id: "file://SKILL_DIR/docs/library/mn61.html"}, token_budget=2000)
+keep_flow(state="get-context", params={item_id: "file://SKILL_DIR/docs/library/an5.57_translation-en-sujato.json"}, token_budget=2000)
+keep_flow(state="get-context", params={item_id: "file://SKILL_DIR/docs/library/han_verse.txt"}, token_budget=2000)
 ```
 
 **Now reflect.** What did you learn?

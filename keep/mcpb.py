@@ -42,16 +42,8 @@ def _get_version() -> str:
 # reports its own tools at runtime, but listing them here lets Claude
 # Desktop show what's available before connecting).
 TOOLS = [
-    {"name": "keep_put", "description": "Store a fact, preference, decision, URL, or document in long-term memory."},
-    {"name": "keep_find", "description": "Search long-term memory by natural language query."},
-    {"name": "keep_get", "description": "Retrieve a specific item by ID with full context."},
-    {"name": "keep_now", "description": "Update the current working context with new state, goals, or decisions."},
-    {"name": "keep_tag", "description": "Add, update, or remove tags on an existing item."},
-    {"name": "keep_delete", "description": "Permanently delete an item from memory."},
-    {"name": "keep_list", "description": "List recent items, optionally filtered by prefix, tags, or date range."},
-    {"name": "keep_move", "description": "Move versions from one item to another."},
+    {"name": "keep_flow", "description": "Run a state-doc flow: search, put, get, tag, delete, move, stats — all operations."},
     {"name": "keep_prompt", "description": "Render an agent prompt with context injected from memory."},
-    {"name": "keep_flow", "description": "Run a state-doc flow synchronously."},
     {"name": "keep_help", "description": "Browse keep documentation."},
 ]
 
