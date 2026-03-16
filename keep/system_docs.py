@@ -287,6 +287,8 @@ def migrate_system_documents(keeper: "Keeper", progress=None) -> dict:
             existing_doc = keeper._document_store.get(doc_coll, new_id)
             if existing_doc:
                 prev_hash = existing_doc.tags.get("bundled_hash")
+                if isinstance(prev_hash, list):
+                    prev_hash = prev_hash[0] if prev_hash else None
                 if prev_hash == bundled_hash:
                     # Content unchanged — skip to avoid creating spurious versions
                     continue
