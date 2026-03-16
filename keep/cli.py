@@ -3808,16 +3808,11 @@ def pending_cmd(
             if flow_items:
                 if items:
                     typer.echo()
-                # Group by kind for readability
-                by_kind: dict[str, int] = {}
-                for item in flow_items:
-                    kind = item.get("kind", "?")
-                    by_kind[kind] = by_kind.get(kind, 0) + 1
+                # Full breakdown by kind (counts all items, not just first page)
+                wq = kp._get_work_queue()
+                by_kind = wq.count_by_kind()
                 for kind, count in sorted(by_kind.items(), key=lambda x: -x[1]):
                     typer.echo(f"  {kind:20s} {count}")
-                total_flow = kp.pending_work_count() if hasattr(kp, "pending_work_count") else len(flow_items)
-                if total_flow > len(flow_items):
-                    typer.echo(f"  ... and {total_flow - len(flow_items)} more")
             if failed:
                 typer.echo(f"\nFailed ({len(failed)}):")
                 for item in failed[:10]:
