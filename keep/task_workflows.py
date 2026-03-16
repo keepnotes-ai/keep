@@ -195,6 +195,9 @@ def _apply_mutations(
         if op == "set_summary":
             target = str(mut["target"])
             summary = str(_resolve_ref(mut["summary"], output))
+            # Strip LLM preambles ("Here is a summary...") as a safety net
+            from keep.providers.base import strip_summary_preamble
+            summary = strip_summary_preamble(summary)
             keeper._document_store.update_summary(collection, target, summary)
             if mut.get("embed"):
                 chroma_coll = keeper._resolve_chroma_collection()
