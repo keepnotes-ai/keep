@@ -1,8 +1,8 @@
 # Keep API Schema Reference
 
-Concise reference for the keep memory API. Covers the data model, all 9 tools, parameter types, and return formats.
+Concise reference for the keep memory API. Covers the data model, tools, parameter types, and return formats.
 
-Interface: MCP tools (prefixed `keep_`), CLI (`keep <cmd>`), or Python (`Keeper`).
+Interface: MCP (`keep_flow`, `keep_prompt`, `keep_help`), CLI (`keep <cmd>`), or Python (`Keeper`).
 
 ---
 
@@ -24,7 +24,7 @@ Items also carry system-managed timestamps in tags: `_created`, `_updated`, `_ac
 ### Versions
 
 New archived versions are created when `put` updates an existing item's content.
-Tag-only updates (`keep_tag`) and unchanged writes update in place.
+Tag-only updates (`tag`) and unchanged writes update in place.
 
 | Selector | Meaning |
 |----------|---------|
@@ -44,7 +44,7 @@ Append the selector to any ID: `%a1b2c3@V{1}`
 | `@P{1}` | First part (1-indexed) |
 | `@P{N}` | Nth part |
 
-Parts appear independently in search results. Retrieve with: `keep_get(id="DOC_ID@P{1}")`
+Parts appear independently in search results. Retrieve with: `keep_flow(state="get-context", params={item_id:"DOC_ID@P{1}")`
 
 ---
 
@@ -69,9 +69,9 @@ Key-value pairs on every item. Keys are alphanumeric (plus `_`, `-`). Values are
 ### Setting and removing
 
 ```
-keep_tag(id="ID", tags={"topic": "auth"})           # set
-keep_tag(id="ID", tags={"old-tag": ""})              # remove (empty string)
-keep_put(content="text", tags={"project": "myapp"})  # set on create
+keep_flow(state="tag", params={id:"ID", tags={"topic": "auth"})           # set
+keep_flow(state="tag", params={id:"ID", tags={"old-tag": ""})              # remove (empty string)
+keep_flow(state="put", params={content:"text", tags={"project": "myapp"})  # set on create
 ```
 
 ### Filtering
@@ -79,8 +79,8 @@ keep_put(content="text", tags={"project": "myapp"})  # set on create
 Tags on `find` and `list` are **pre-filters** — the search only considers matching items.
 
 ```
-keep_find(query="auth", tags={"project": "myapp"})
-keep_list(tags={"status": "open"})
+keep_flow(state="query-resolve", params={query:"auth", tags={"project": "myapp"})
+keep_flow(state="query-resolve", params={tags:{"status": "open"})
 ```
 
 Multiple tags use AND logic: all must match.
@@ -124,7 +124,7 @@ Both `since` and `until` accept two formats:
 
 ## Tools
 
-### keep_put
+### put (state doc)
 
 Store text, a URL, or a document.
 For inline text without an explicit `id`, keep uses a content-addressed ID.
@@ -141,15 +141,15 @@ For inline text without an explicit `id`, keep uses a content-addressed ID.
 
 **Examples:**
 ```
-keep_put(content="OAuth2 uses PKCE for public clients", tags={"topic": "auth"})
-keep_put(content="https://docs.example.com/api", tags={"type": "reference"})
-keep_put(content="Long document...", analyze=true)
-keep_put(content="My design notes", id="design-notes", summary="Architecture decisions")
+keep_flow(state="put", params={content:"OAuth2 uses PKCE for public clients", tags={"topic": "auth"})
+keep_flow(state="put", params={content:"https://docs.example.com/api", tags={"type": "reference"})
+keep_flow(state="put", params={content:"Long document...", analyze=true)
+keep_flow(state="put", params={content:"My design notes", id="design-notes", summary="Architecture decisions")
 ```
 
 ---
 
-### keep_find
+### query-resolve (state doc)
 
 Search memory by meaning. Returns items ranked by semantic similarity with recency weighting.
 
@@ -170,14 +170,14 @@ Search memory by meaning. Returns items ranked by semantic similarity with recen
 
 **Examples:**
 ```
-keep_find(query="authentication patterns")
-keep_find(query="open tasks", tags={"project": "myapp"}, since="P7D")
-keep_find(query="architecture decisions", deep=true, token_budget=8000)
+keep_flow(state="query-resolve", params={query:"authentication patterns")
+keep_flow(state="query-resolve", params={query:"open tasks", tags={"project": "myapp"}, since="P7D")
+keep_flow(state="query-resolve", params={query:"architecture decisions", deep=true, token_budget=8000)
 ```
 
 ---
 
-### keep_get
+### get-context (state doc)
 
 Retrieve one item with full context: similar items, meta sections, structural parts, and version history.
 
@@ -207,16 +207,16 @@ Item summary or content here
 
 **Examples:**
 ```
-keep_get(id="now")              # current working context
-keep_get(id="%a1b2c3")          # specific item
-keep_get(id="%a1b2c3@V{1}")    # previous version
-keep_get(id="%a1b2c3@P{1}")    # first structural part
-keep_get(id=".tag/act")         # tag description doc
+keep_flow(state="get-context", params={item_id:"now")              # current working context
+keep_flow(state="get-context", params={item_id:"%a1b2c3")          # specific item
+keep_flow(state="get-context", params={item_id:"%a1b2c3@V{1}")    # previous version
+keep_flow(state="get-context", params={item_id:"%a1b2c3@P{1}")    # first structural part
+keep_flow(state="get-context", params={item_id:".tag/act")         # tag description doc
 ```
 
 ---
 
-### keep_now
+### Updating now (via put)
 
 Update the current working context. Persists across sessions.
 Implemented via `put(id="now", ...)`, so it creates a version when content changes.
@@ -228,17 +228,17 @@ Implemented via `put(id="now", ...)`, so it creates a version when content chang
 
 **Returns:** `"Context updated: now"`
 
-To **read** current context, use `keep_get(id="now")`.
+To **read** current context, use `keep_flow(state="get-context", params={item_id:"now")`.
 
 **Examples:**
 ```
-keep_now(content="Investigating flaky auth test. Suspect timing issue.")
-keep_now(content="Fixed the bug. Next: add regression test.", tags={"project": "myapp"})
+keep_flow(state="put", params={content:"Investigating flaky auth test. Suspect timing issue.")
+keep_flow(state="put", params={content:"Fixed the bug. Next: add regression test.", tags={"project": "myapp"})
 ```
 
 ---
 
-### keep_tag
+### tag (state doc)
 
 Add, update, or remove tags on an existing item. Does not re-process content.
 
@@ -251,13 +251,13 @@ Add, update, or remove tags on an existing item. Does not re-process content.
 
 **Examples:**
 ```
-keep_tag(id="%a1b2c3", tags={"status": "fulfilled"})
-keep_tag(id="%a1b2c3", tags={"topic": "auth", "obsolete": ""})
+keep_flow(state="tag", params={id:"%a1b2c3", tags={"status": "fulfilled"})
+keep_flow(state="tag", params={id:"%a1b2c3", tags={"topic": "auth", "obsolete": ""})
 ```
 
 ---
 
-### keep_delete
+### delete (state doc)
 
 Permanently delete an item and all its versions.
 
@@ -269,7 +269,7 @@ Permanently delete an item and all its versions.
 
 ---
 
-### keep_list
+### Listing items (via query-resolve)
 
 List recent items. Supports filtering by ID prefix, tags, and time range.
 
@@ -288,15 +288,15 @@ List recent items. Supports filtering by ID prefix, tags, and time range.
 
 **Examples:**
 ```
-keep_list()                                              # recent items
-keep_list(tags={"act": "commitment", "status": "open"})  # open commitments
-keep_list(prefix=".tag/*")                               # all tag docs
-keep_list(since="P7D", limit=20)                         # last week, up to 20
+keep_flow(state="query-resolve", params={)                                              # recent items
+keep_flow(state="query-resolve", params={tags:{"act": "commitment", "status": "open"})  # open commitments
+keep_flow(state="query-resolve", params={prefix=".tag/*")                               # all tag docs
+keep_flow(state="query-resolve", params={since="P7D", limit=20)                         # last week, up to 20
 ```
 
 ---
 
-### keep_move
+### move (state doc)
 
 Move versions from a source item into a named target. Used to archive working context or reorganize notes.
 
@@ -311,9 +311,9 @@ Move versions from a source item into a named target. Used to archive working co
 
 **Examples:**
 ```
-keep_move(name="auth-work", tags={"project": "myapp"})     # archive matching versions from now
-keep_move(name="design-log", only_current=true)             # snapshot current context
-keep_move(name="topic-notes", source_id="old-doc", tags={"topic": "auth"})
+keep_flow(state="move", params={name="auth-work", tags={"project": "myapp"})     # archive matching versions from now
+keep_flow(state="move", params={name="design-log", only_current=true)             # snapshot current context
+keep_flow(state="move", params={name="topic-notes", source_id="old-doc", tags={"topic": "auth"})
 ```
 
 ---
@@ -361,36 +361,36 @@ keep_prompt(name="reflect", text="deployment", since="P3D")
 ### Session lifecycle
 ```
 keep_prompt(name="session-start")                      # 1. orient
-keep_get(id="now")                                     # 2. check intentions
+keep_flow(state="get-context", params={item_id:"now")                                     # 2. check intentions
 # ... do work ...
-keep_now(content="Completed X. Next: Y.")              # 3. update context
+keep_flow(state="put", params={content:"Completed X. Next: Y.")              # 3. update context
 keep_prompt(name="reflect")                            # 4. reflect
 ```
 
 ### Store and retrieve
 ```
-keep_put(content="insight text", tags={"type": "learning", "topic": "auth"})
-keep_find(query="authentication insights")
-keep_get(id="%returned_id")
+keep_flow(state="put", params={content:"insight text", tags={"type": "learning", "topic": "auth"})
+keep_flow(state="query-resolve", params={query:"authentication insights")
+keep_flow(state="get-context", params={item_id:"%returned_id")
 ```
 
 ### Track commitments
 ```
-keep_put(content="Will fix bug by Friday", tags={"act": "commitment", "status": "open"})
-keep_list(tags={"act": "commitment", "status": "open"})   # check open work
-keep_tag(id="ID", tags={"status": "fulfilled"})            # close the loop
+keep_flow(state="put", params={content:"Will fix bug by Friday", tags={"act": "commitment", "status": "open"})
+keep_flow(state="query-resolve", params={tags:{"act": "commitment", "status": "open"})   # check open work
+keep_flow(state="tag", params={id:"ID", tags={"status": "fulfilled"})            # close the loop
 ```
 
 ### Index a document
 ```
-keep_put(content="https://docs.example.com/api", tags={"type": "reference", "topic": "api"})
-keep_find(query="API documentation")
+keep_flow(state="put", params={content:"https://docs.example.com/api", tags={"type": "reference", "topic": "api"})
+keep_flow(state="query-resolve", params={query:"API documentation")
 ```
 
 ### Archive and pivot
 ```
-keep_move(name="auth-work", tags={"project": "myapp"})     # archive
-keep_now(content="Starting on database migration")          # fresh context
+keep_flow(state="move", params={name="auth-work", tags={"project": "myapp"})     # archive
+keep_flow(state="put", params={content:"Starting on database migration")          # fresh context
 ```
 
 ---

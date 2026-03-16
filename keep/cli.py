@@ -615,7 +615,7 @@ def render_find_context(
     is skipped — this gives maximum budget to deep-discovered evidence,
     useful for multi-hop queries.
 
-    Used by expand_prompt() for {find} expansion and MCP keep_find.
+    Used by expand_prompt() for {find} expansion and MCP keep_flow.
     """
     from .types import SYSTEM_TAG_PREFIX
 

@@ -56,97 +56,39 @@ The server respects the `KEEP_STORE_PATH` environment variable for store locatio
 
 ## Tools
 
-11 tools, all prefixed `keep_` to avoid collision with other MCP servers:
+Three tools:
 
 | Tool | Description | Annotations |
 |------|-------------|-------------|
-| `keep_put` | Store text, URL, or document in memory | idempotent |
-| `keep_find` | Search by natural language query | read-only |
-| `keep_get` | Retrieve item with full context (similar items, parts, versions) | read-only |
-| `keep_now` | Update current working context | idempotent |
-| `keep_tag` | Add, update, or remove tags on an item | idempotent |
-| `keep_delete` | Permanently delete an item | destructive |
-| `keep_list` | List recent items with optional filters | read-only |
-| `keep_move` | Move versions between items | — |
+| `keep_flow` | Run any operation as a state-doc flow | idempotent |
 | `keep_prompt` | Render an agent prompt with context injected | read-only |
-| `keep_flow` | Run a state-doc flow synchronously | — |
 | `keep_help` | Browse keep documentation | read-only |
 
-All tools return human-readable strings. Errors are returned as strings (never raised to the protocol layer).
+All operations (search, put, get, tag, delete, move, stats) go through `keep_flow` with named state docs. See [FLOW-ACTIONS.md](use keep_help with topic="flow-actions") for the full action reference.
 
-### keep_put
-
-```
-content:  "Text to store" or "https://example.com/doc"
-id:       optional custom ID
-summary:  optional (skips auto-summarization)
-tags:     {"topic": "auth", "project": "myapp"}
-analyze:  true to decompose into searchable parts
-```
-
-URIs (`http://`, `https://`, `file://`) are fetched and indexed automatically.
-
-### keep_find
+### keep_flow
 
 ```
-query:        "natural language search"
-tags:         {"project": "myapp"}       # filter (all must match)
-since:        "P3D" or "2026-01-15"     # time filter
-until:        "P1D" or "2026-02-01"
-deep:         true                       # follow tags/edges to discover related items
-show_tags:    true                       # show non-system tags for each result
-token_budget: 4000                       # token budget for results context
+state:          "query-resolve"                    # state doc name
+params:         {query: "auth", bias: {now: 0}}    # flow parameters
+budget:         3                                   # max ticks
+token_budget:   2000                                # token-budgeted rendering
+cursor:         "abc123"                            # resume a stopped flow
+state_doc_yaml: "..."                               # inline YAML (custom flows)
 ```
 
-### keep_get
+Common state docs:
 
-```
-id:  "now"         # current working context
-id:  "%a1b2c3"    # specific item
-```
-
-Returns YAML frontmatter with similar items, meta sections, parts manifest, and version history.
-
-### keep_now
-
-```
-content:  "Current state, goals, decisions"
-tags:     {"project": "myapp"}
-```
-
-To read current context, use `keep_get` with `id="now"`.
-
-### keep_tag
-
-```
-id:    "%a1b2c3"
-tags:  {"topic": "new-value", "old-tag": ""}   # empty string deletes
-```
-
-### keep_delete
-
-```
-id:  "%a1b2c3"
-```
-
-### keep_list
-
-```
-prefix:  ".tag/*"                  # ID prefix or glob
-tags:    {"project": "myapp"}
-since:   "P7D"
-until:   "2026-02-01"
-limit:   10
-```
-
-### keep_move
-
-```
-name:          "my-topic"          # target (created if new)
-source_id:     "now"               # default
-tags:          {"topic": "auth"}   # filter which versions to move
-only_current:  true                # just the tip, not history
-```
+| State | Purpose | Key params |
+|-------|---------|------------|
+| `query-resolve` | Search with multi-step refinement | `query`, `tags`, `bias`, `since`, `until` |
+| `get-context` | Retrieve item with similar/meta/versions/edges | `item_id` |
+| `find-deep` | Search with edge traversal | `query` |
+| `put` | Store content or index a URI | `content` or `uri`, `tags`, `id` |
+| `tag` | Apply tags to one or more items | `id` or `items`, `tags` |
+| `delete` | Remove an item | `id` |
+| `move` | Move versions between items | `name`, `source`, `tags` |
+| `stats` | Store profiling for query planning | `top_k` |
 
 ### keep_prompt
 
@@ -156,34 +98,33 @@ text:   "auth flow"                # optional search context
 id:     "now"                      # item for context injection
 tags:   {"project": "myapp"}       # filter search results
 since:  "P7D"
-until:  "2026-02-01"
-limit:  5
 ```
 
-Returns the rendered prompt with `{get}` and `{find}` placeholders expanded with live context. See [KEEP-PROMPT.md](KEEP-PROMPT.md) for prompt details and template syntax.
+Returns the rendered prompt with `{get}` and `{find}` placeholders expanded with live context. See [KEEP-PROMPT.md](use keep_help with topic="keep-prompt") for prompt details.
+
+### keep_help
+
+```
+topic:  "index"                    # documentation topic (default: index)
+```
 
 ## Agent Workflow
 
-An MCP agent's session looks like this:
-
-1. **Start:** `keep_prompt("session-start")` — get current context and open commitments
-2. **Work:** Use `keep_find`, `keep_get`, `keep_put`, `keep_now`, `keep_tag` as needed
-3. **Reflect:** `keep_prompt("reflect")` — structured review of actions and outcomes
-4. **Update:** `keep_now` with new intentions, `keep_put` for learnings, `keep_move` to organize
-
-The prompt tools provide the *when* and *why*; the other tools provide the *how*.
+```
+keep_prompt(name="session-start")                                              # 1. Start
+keep_flow(state="query-resolve", params={query: "topic"}, token_budget=2000)   # 2. Search
+keep_flow(state="put", params={content: "insight", tags: {type: "learning"}})  # 3. Capture
+keep_prompt(name="reflect")                                                     # 4. Reflect
+keep_flow(state="put", params={content: "next steps", id: "now"})              # 5. Update
+```
 
 ## Concurrency
 
 All Keeper calls are serialized through a single `asyncio.Lock`. This is safe for the local SQLite + ChromaDB stores. Cross-process safety (multiple agents sharing a store) is handled at the store layer.
 
-## Local vs Hosted
-
-If you use [keepnotes.ai](https://keepnotes.ai), the hosted service provides the same 9 tools over streamable-http. **Use one or the other, not both** — the tools share the same names (`keep_put`, `keep_find`, etc.), so installing both MCP servers would give the agent duplicate tools and unpredictable routing.
-
 ## See Also
 
-- [KEEP-PROMPT.md](KEEP-PROMPT.md) — Agent prompts with context injection
-- [AGENT-GUIDE.md](AGENT-GUIDE.md) — Working session patterns
-- [REFERENCE.md](REFERENCE.md) — CLI quick reference
-- [LANGCHAIN-INTEGRATION.md](LANGCHAIN-INTEGRATION.md) — LangChain/LangGraph integration
+- [FLOW-ACTIONS.md](use keep_help with topic="flow-actions") — Action reference for all operations
+- [KEEP-FLOW.md](use keep_help with topic="keep-flow") — Running, resuming, and steering flows
+- [KEEP-PROMPT.md](use keep_help with topic="keep-prompt") — Agent prompts with context injection
+- [AGENT-GUIDE.md](use keep_help with topic="agent-guide") — Working session patterns
