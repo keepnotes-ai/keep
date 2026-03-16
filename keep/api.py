@@ -550,6 +550,9 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
                 continue
             inverse = td.tags.get("_inverse")
             if inverse:
+                # Coerce to str in case stored as list (defensive)
+                if isinstance(inverse, list):
+                    inverse = inverse[0]
                 self._check_edge_backfill(td.id[5:], inverse, doc_coll)
                 self._ensure_inverse_tagdoc(td.id[5:], inverse, doc_coll)
 
@@ -1227,6 +1230,8 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
             inverse = td_tags.get("_inverse")
             if not inverse:
                 continue
+            if isinstance(inverse, list):
+                inverse = inverse[0]
 
             current_values = set(tag_values(merged_tags, key))
             previous_values = set(tag_values(existing_tags, key))
@@ -1632,11 +1637,11 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
                         doc_coll, chroma_coll, new_hash, id, content,
                     )
                 if embedding is None:
-                    embedding = self._get_embedding_provider().embed(content)
+                    embedding = self._get_embedding_provider().embed(final_summary)
             else:
                 embedding = self._try_dedup_embedding(doc_coll, chroma_coll, new_hash, id, content)
                 if embedding is None:
-                    embedding = self._get_embedding_provider().embed(content)
+                    embedding = self._get_embedding_provider().embed(final_summary)
 
         # Detect _inverse changes on tagdocs BEFORE storage overwrites old state
         if id.startswith(".tag/"):
@@ -1883,6 +1888,18 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
                     summary=summary,
                     ocr_pages=ocr_pages,
                 )
+
+            # Process email attachments as child items with edges
+            attachments = (doc.metadata or {}).get("_attachments")
+            if attachments:
+                self._put_email_attachments(
+                    parent_id=result.id,
+                    attachments=attachments,
+                    parent_tags=merged_tags,
+                    created_at=created_at,
+                    queue_background_tasks=queue_background_tasks,
+                )
+
             return result
         else:
             # Inline mode: store content directly
@@ -1931,6 +1948,73 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
                     summary=summary,
                 )
             return result
+
+    def _put_email_attachments(
+        self,
+        parent_id: str,
+        attachments: list[dict],
+        parent_tags: dict,
+        created_at: Optional[str] = None,
+        queue_background_tasks: bool = True,
+    ) -> list[Item]:
+        """Store email attachments as child items with edges to the parent.
+
+        Each attachment is put via the normal URI path (so it gets text
+        extraction, OCR, etc.) with an ``attachment`` edge-tag pointing
+        to the parent email.  The child ID uses a fragment suffix:
+        ``{parent_id}#att-{N}``.
+
+        Temp files created by _extract_email are cleaned up after processing.
+        """
+        import shutil
+
+        results = []
+        dirs_to_clean: set[str] = set()
+
+        for i, att in enumerate(attachments, 1):
+            att_path = att.get("path")
+            if not att_path:
+                continue
+            dirs_to_clean.add(str(Path(att_path).parent))
+
+            child_id = f"{parent_id}#att-{i}"
+            filename = att.get("filename", f"attachment-{i}")
+
+            # Inherit key context tags from the parent email
+            child_tags: dict = {}
+            for key in ("from", "to", "cc", "bcc", "date", "subject"):
+                if key in parent_tags:
+                    child_tags[key] = parent_tags[key]
+            child_tags["attachment"] = parent_id
+            child_tags["filename"] = filename
+
+            try:
+                result = self._put_direct(
+                    uri=att_path,
+                    id=child_id,
+                    tags=child_tags,
+                    created_at=created_at,
+                    queue_background_tasks=queue_background_tasks,
+                )
+                results.append(result)
+                logger.info(
+                    "Stored email attachment %s (%s, %s)",
+                    child_id, filename, att.get("content_type", ""),
+                )
+            except Exception as e:
+                logger.warning(
+                    "Failed to store email attachment %s (%s): %s",
+                    child_id, filename, e,
+                )
+
+        # Clean up temp directories
+        for d in dirs_to_clean:
+            try:
+                shutil.rmtree(d, ignore_errors=True)
+            except Exception:
+                pass
+
+        return results
 
     def put(
         self,

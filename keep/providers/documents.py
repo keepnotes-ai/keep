@@ -1,11 +1,45 @@
 """Document providers for fetching content from various URI schemes."""
 
+import re
 import tempfile
 from pathlib import Path
 
 import requests
 
 from .base import Document, DocumentProvider, get_registry
+
+
+# RFC 822 email header detection — matches common email headers at line start
+_EMAIL_HEADER_RE = re.compile(
+    r'^(From|To|Subject|Date|Message-ID|Cc|Bcc|Reply-To|Received'
+    r'|MIME-Version|Content-Type|Return-Path|Delivered-To):\s',
+    re.IGNORECASE | re.MULTILINE,
+)
+
+# Base64 block: 4+ consecutive lines of 60+ chars with only base64 alphabet
+_BASE64_BLOCK_RE = re.compile(
+    r'(?:^[A-Za-z0-9+/=]{60,}\n){4,}',
+    re.MULTILINE,
+)
+
+
+def _strip_base64_blocks(text: str) -> str:
+    """Remove base64-encoded blocks from text content.
+
+    Emails with embedded MIME attachments (especially in corpora where
+    multipart structure is flattened to text/plain) contain large blocks
+    of base64. These are noise for summarization and embedding.
+    """
+    stripped = _BASE64_BLOCK_RE.sub('[base64 data removed]\n', text)
+    return stripped
+
+
+# Headers to skip — transport/encoding headers that aren't useful as tags
+_EMAIL_SKIP_HEADERS = frozenset({
+    'mime-version', 'content-type', 'content-transfer-encoding',
+    'content-disposition', 'received', 'return-path', 'delivered-to',
+    'x-mailer', 'x-originating-ip',
+})
 
 
 def extract_html_text(html_content: str) -> str:
@@ -65,6 +99,8 @@ class FileDocumentProvider:
         ".yml": "text/yaml",
         ".html": "text/html",
         ".htm": "text/html",
+        ".eml": "message/rfc822",
+        ".mbox": "message/rfc822",
         ".css": "text/css",
         ".xml": "text/xml",
         ".rst": "text/x-rst",
@@ -153,6 +189,7 @@ class FileDocumentProvider:
         # so that directory puts don't fail on one bad file.
         extracted_tags: dict[str, str] | None = None
         ocr_pages: list[int] | None = None
+        email_attachments: list[dict] | None = None
         try:
             if suffix == ".pdf":
                 content, ocr_pages = self._extract_pdf_text(path)
@@ -178,12 +215,18 @@ class FileDocumentProvider:
                 content, extracted_tags = self._extract_image_metadata(path)
                 # Signal that this image should be OCR'd in background
                 ocr_pages = [0]
+            elif content_type == "message/rfc822":
+                content, extracted_tags, email_attachments = self._extract_email(path)
             elif content_type and not content_type.startswith("text/"):
                 # Binary file without a dedicated extractor — use filename only
                 content = f"[{path.name}]"
             else:
                 # Read as plain text
                 content = path.read_text(encoding="utf-8")
+                # Sniff for email format in extensionless files
+                if self._detect_email(content):
+                    content, extracted_tags, email_attachments = self._extract_email(path)
+                    content_type = "message/rfc822"
         except Exception as e:
             import logging
             logging.getLogger(__name__).warning(
@@ -209,6 +252,10 @@ class FileDocumentProvider:
         # Signal pages needing OCR to the caller (for background processing)
         if ocr_pages:
             metadata["_ocr_pages"] = ocr_pages
+
+        # Signal email attachments to the caller (for child item creation)
+        if email_attachments:
+            metadata["_attachments"] = email_attachments
 
         return Document(
             uri=f"file://{path.resolve()}",  # Normalize to absolute
@@ -778,6 +825,157 @@ class FileDocumentProvider:
             )
         except Exception as e:
             raise IOError(f"Failed to extract text from HTML {path}: {e}")
+
+    @staticmethod
+    def _detect_email(content: str) -> bool:
+        """Check if text content looks like an RFC 822 email message.
+
+        Requires at least 2 recognized email headers before the first blank
+        line, to avoid false positives on random text files.
+        """
+        # Must have a blank line separating headers from body
+        if '\n\n' not in content and '\r\n\r\n' not in content:
+            return False
+        header_block = content.split('\n\n', 1)[0]
+        matches = _EMAIL_HEADER_RE.findall(header_block)
+        return len(matches) >= 2
+
+    def _extract_email(self, path: Path) -> tuple[str, dict, list[dict] | None]:
+        """Extract body text, header tags, and attachments from an RFC 822 email.
+
+        Returns:
+            Tuple of (body_text, tags_dict, attachments).
+            Tags include from, to, cc, subject, date, message-id.
+            Multi-recipient To/Cc headers produce list-valued tags.
+            Attachments is a list of dicts with keys: path, filename,
+            content_type, size. Each path is a temp file that the caller
+            should clean up after processing. None if no attachments.
+        """
+        import email
+        import email.policy
+        import email.utils
+
+        raw = path.read_bytes()
+        msg = email.message_from_bytes(raw, policy=email.policy.default)
+
+        # Extract body text
+        content = ""
+        body = msg.get_body(preferencelist=('plain', 'html'))
+        if body is not None:
+            try:
+                payload = body.get_content()
+                if body.get_content_type() == 'text/html':
+                    payload = extract_html_text(payload)
+                content = payload
+            except Exception:
+                pass
+        if not content:
+            # Fallback: try to decode as text
+            if msg.get_content_type().startswith('text/'):
+                try:
+                    content = msg.get_content()
+                except Exception:
+                    pass
+        if not content:
+            content = f"[Email: {path.name}]"
+
+        # Strip base64-encoded blocks that may be embedded inline
+        # (common in Enron corpus where MIME structure is flattened to text/plain)
+        content = _strip_base64_blocks(content)
+
+        # Extract attachments from multipart messages
+        attachments: list[dict] = []
+        if msg.is_multipart():
+            att_dir = None
+            for part in msg.iter_attachments():
+                ct = part.get_content_type()
+                filename = part.get_filename() or f"attachment-{len(attachments) + 1}"
+                try:
+                    payload_bytes = part.get_payload(decode=True)
+                except Exception:
+                    payload_bytes = None
+                if not payload_bytes:
+                    continue
+                # Save to temp file inside home dir (FileDocumentProvider
+                # blocks paths outside home for safety).
+                if att_dir is None:
+                    cache_dir = Path.home() / ".cache" / "keep" / "email-att"
+                    cache_dir.mkdir(parents=True, exist_ok=True)
+                    att_dir = Path(tempfile.mkdtemp(prefix="keep_", dir=cache_dir))
+                # Sanitize filename for filesystem safety
+                safe_name = Path(filename).name  # strip directory components
+                att_path = att_dir / safe_name
+                att_path.write_bytes(payload_bytes)
+                attachments.append({
+                    "path": str(att_path),
+                    "filename": filename,
+                    "content_type": ct,
+                    "size": len(payload_bytes),
+                })
+
+        # Extract headers as tags
+        tags: dict = {}
+
+        # From (edge-tag)
+        from_header = msg.get('From', '')
+        if from_header:
+            addrs = email.utils.getaddresses([from_header])
+            from_values = [addr[1].lower() for addr in addrs if addr[1]]
+            if len(from_values) == 1:
+                tags['from'] = from_values[0]
+            elif from_values:
+                tags['from'] = from_values
+
+        # To (edge-tag, multi-value)
+        to_headers = msg.get_all('To', [])
+        if to_headers:
+            addrs = email.utils.getaddresses(to_headers)
+            to_values = [addr[1].lower() for addr in addrs if addr[1]]
+            if len(to_values) == 1:
+                tags['to'] = to_values[0]
+            elif to_values:
+                tags['to'] = to_values
+
+        # Cc (edge-tag, multi-value)
+        cc_headers = msg.get_all('Cc', [])
+        if cc_headers:
+            addrs = email.utils.getaddresses(cc_headers)
+            cc_values = [addr[1].lower() for addr in addrs if addr[1]]
+            if len(cc_values) == 1:
+                tags['cc'] = cc_values[0]
+            elif cc_values:
+                tags['cc'] = cc_values
+
+        # Bcc (edge-tag, multi-value)
+        bcc_headers = msg.get_all('Bcc', [])
+        if bcc_headers:
+            addrs = email.utils.getaddresses(bcc_headers)
+            bcc_values = [addr[1].lower() for addr in addrs if addr[1]]
+            if len(bcc_values) == 1:
+                tags['bcc'] = bcc_values[0]
+            elif bcc_values:
+                tags['bcc'] = bcc_values
+
+        # Subject
+        subject = msg.get('Subject', '')
+        if subject:
+            tags['subject'] = subject
+
+        # Date — parse to ISO 8601
+        date_header = msg.get('Date', '')
+        if date_header:
+            try:
+                parsed_date = email.utils.parsedate_to_datetime(date_header)
+                tags['date'] = parsed_date.isoformat()
+            except (ValueError, TypeError):
+                tags['date'] = date_header  # preserve raw if unparseable
+
+        # Message-ID
+        msg_id = msg.get('Message-ID', '')
+        if msg_id:
+            tags['message-id'] = msg_id.strip()
+
+        return content, tags or None, attachments or None
 
 
 def _is_binary_content_type(content_type: str) -> bool:

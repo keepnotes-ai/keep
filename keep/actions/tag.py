@@ -14,7 +14,9 @@ class Tag:
     def run(self, params: dict[str, Any], context) -> dict[str, Any]:
         tags = params.get("tags")
         if not isinstance(tags, dict) or not tags:
-            raise ValueError("tag requires tags dict")
+            # When called as a background task without explicit tags,
+            # skip gracefully instead of failing repeatedly.
+            return {"skipped": True, "reason": "no tags provided"}
 
         # Accept a single item ID or a list of result dicts
         items = params.get("items")

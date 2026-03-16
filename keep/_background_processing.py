@@ -868,6 +868,8 @@ class BackgroundProcessingMixin:
             inverse = td.tags.get("_inverse")
             if not inverse:
                 continue
+            if isinstance(inverse, list):
+                inverse = inverse[0]
             predicate = td.id[5:]  # strip ".tag/"
             if "/" in predicate:
                 continue  # sub-tags like .tag/act/commitment
