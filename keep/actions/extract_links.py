@@ -25,38 +25,54 @@ _MD_LINK_RE = re.compile(r'(?<!!)\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)')
 # ![alt](src) or ![alt](src "title")
 _MD_IMAGE_RE = re.compile(r'!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)')
 
+# Bare URLs (http/https) — used for non-markdown content
+_URL_RE = re.compile(r'https?://[^\s<>\"\')]+')
+
 # Directories that mark a vault root
 _VAULT_MARKERS = (".obsidian", ".logseq", ".git")
 
 
-def _parse_links(content: str) -> list[dict[str, str]]:
-    """Extract links from markdown content.
+def _parse_links(content: str, *, content_type: str = "text/markdown") -> list[dict[str, str]]:
+    """Extract links from content.
+
+    For markdown: extracts wiki-links, markdown links, and images.
+    For other types (HTML, email, etc.): extracts bare URLs.
 
     Returns a list of dicts with 'target' and 'style' keys.
     """
     links: list[dict[str, str]] = []
     seen: set[str] = set()
 
-    for m in _WIKI_LINK_RE.finditer(content):
-        target = m.group(1).strip()
-        if target and target not in seen:
-            seen.add(target)
-            links.append({"target": target, "style": "wiki"})
+    is_markdown = content_type in ("text/markdown", "text/x-markdown")
 
-    for m in _MD_IMAGE_RE.finditer(content):
-        target = m.group(2).strip()
-        if target and target not in seen:
-            seen.add(target)
-            links.append({"target": target, "style": "markdown"})
+    if is_markdown:
+        for m in _WIKI_LINK_RE.finditer(content):
+            target = m.group(1).strip()
+            if target and target not in seen:
+                seen.add(target)
+                links.append({"target": target, "style": "wiki"})
 
-    for m in _MD_LINK_RE.finditer(content):
-        target = m.group(2).strip()
-        # Skip anchors, mailto, and empty
-        if not target or target.startswith("#") or target.startswith("mailto:"):
-            continue
-        if target not in seen:
-            seen.add(target)
-            links.append({"target": target, "style": "markdown"})
+        for m in _MD_IMAGE_RE.finditer(content):
+            target = m.group(2).strip()
+            if target and target not in seen:
+                seen.add(target)
+                links.append({"target": target, "style": "markdown"})
+
+        for m in _MD_LINK_RE.finditer(content):
+            target = m.group(2).strip()
+            # Skip anchors, mailto, and empty
+            if not target or target.startswith("#") or target.startswith("mailto:"):
+                continue
+            if target not in seen:
+                seen.add(target)
+                links.append({"target": target, "style": "markdown"})
+    else:
+        # Non-markdown: extract bare URLs
+        for m in _URL_RE.finditer(content):
+            target = m.group(0).rstrip(".,;:!?)")
+            if target and target not in seen:
+                seen.add(target)
+                links.append({"target": target, "style": "url"})
 
     return links
 
@@ -187,7 +203,11 @@ def _resolve_internal_link(
 
 @action(id="extract_links", priority=1)
 class ExtractLinks:
-    """Extract links from markdown content and create reference edges."""
+    """Extract links from content and create reference edges.
+
+    For markdown: wiki-links, markdown links, and images.
+    For HTML/email/other: bare URLs (http/https).
+    """
 
     def run(self, params: dict[str, Any], context: Any) -> dict[str, Any]:
         item_id, item, content = resolve_item_content(params, context)
@@ -195,7 +215,11 @@ class ExtractLinks:
         tag_key = str(params.get("tag", "references"))
         create_targets = str(params.get("create_targets", "true")).lower() == "true"
 
-        links = _parse_links(content)
+        # Determine content type for link parsing strategy
+        item_tags = getattr(item, "tags", {}) or {}
+        ct = item_tags.get("_content_type", "text/markdown")
+
+        links = _parse_links(content, content_type=ct)
         if not links:
             return {"skipped": True}
 
