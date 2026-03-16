@@ -1521,6 +1521,15 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
             and _user_tags_changed(existing_doc.tags, merged_tags)
         )
 
+        # Backfill _content_type for items stored before it was tracked
+        if (existing_doc is not None
+                and "_content_type" in merged_tags
+                and "_content_type" not in existing_doc.tags):
+            self._document_store.patch_head_tags(
+                doc_coll, id,
+                {"_content_type": merged_tags["_content_type"]},
+            )
+
         # Early return: content and tags unchanged.
         # Still dispatch after-write flow — it will no-op if processing
         # is already complete, but re-enqueues if a prior purge dropped
@@ -1780,6 +1789,14 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
                     if (existing
                             and existing.tags.get("_file_mtime_ns") == str(st.st_mtime_ns)
                             and existing.tags.get("_file_size") == str(st.st_size)):
+                        # Backfill _content_type for items stored before it was tracked
+                        if "_content_type" not in existing.tags:
+                            from .providers.documents import FileDocumentProvider
+                            ct = FileDocumentProvider.EXTENSION_TYPES.get(fpath.suffix.lower())
+                            if ct:
+                                self._document_store.patch_head_tags(
+                                    doc_coll, doc_id, {"_content_type": ct},
+                                )
                         # File stat unchanged — check if tags would also be unchanged
                         if not tags or not _user_tags_changed(
                                 existing.tags,
