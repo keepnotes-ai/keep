@@ -1964,18 +1964,15 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
         to the parent email.  The child ID uses a fragment suffix:
         ``{parent_id}#att-{N}``.
 
-        Temp files created by _extract_email are cleaned up after processing.
+        Temp files in ~/.cache/keep/email-att/ are NOT cleaned up here
+        because background tasks (OCR, describe) need the files later.
         """
-        import shutil
-
         results = []
-        dirs_to_clean: set[str] = set()
 
         for i, att in enumerate(attachments, 1):
             att_path = att.get("path")
             if not att_path:
                 continue
-            dirs_to_clean.add(str(Path(att_path).parent))
 
             child_id = f"{parent_id}#att-{i}"
             filename = att.get("filename", f"attachment-{i}")
@@ -2006,13 +2003,6 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
                     "Failed to store email attachment %s (%s): %s",
                     child_id, filename, e,
                 )
-
-        # Clean up temp directories
-        for d in dirs_to_clean:
-            try:
-                shutil.rmtree(d, ignore_errors=True)
-            except Exception:
-                pass
 
         return results
 
