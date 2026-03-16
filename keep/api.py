@@ -1505,6 +1505,9 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
                         merged_tags.pop(key, None)
                     _merge_tags_additive(merged_tags, {key: values})
 
+        # Track content length as a system tag (always updated)
+        system_tags["_content_length"] = str(len(content))
+
         _merge_tags_additive(merged_tags, system_tags, replace_system=True)
 
         # Restore analysis version watermark (dropped by filter_non_system_tags)
@@ -1521,14 +1524,14 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
             and _user_tags_changed(existing_doc.tags, merged_tags)
         )
 
-        # Backfill _content_type for items stored before it was tracked
-        if (existing_doc is not None
-                and "_content_type" in merged_tags
-                and "_content_type" not in existing_doc.tags):
-            self._document_store.patch_head_tags(
-                doc_coll, id,
-                {"_content_type": merged_tags["_content_type"]},
-            )
+        # Backfill system tags for items stored before they were tracked
+        if existing_doc is not None:
+            backfill_tags = {}
+            for sys_key in ("_content_type", "_content_length"):
+                if sys_key in merged_tags and sys_key not in existing_doc.tags:
+                    backfill_tags[sys_key] = merged_tags[sys_key]
+            if backfill_tags:
+                self._document_store.patch_head_tags(doc_coll, id, backfill_tags)
 
         # Early return: content and tags unchanged.
         # Still dispatch after-write flow — it will no-op if processing
