@@ -219,9 +219,11 @@ class FileDocumentProvider:
         extracted_tags: dict[str, str] | None = None
         ocr_pages: list[int] | None = None
         email_attachments: list[dict] | None = None
+        extracted_links: list[str] | None = None
         try:
             if suffix == ".pdf":
                 content, ocr_pages = self._extract_pdf_text(path)
+                extracted_links = self._extract_pdf_links(path)
                 if not content and ocr_pages:
                     # Fully scanned PDF — placeholder until background OCR
                     content = (
@@ -230,10 +232,13 @@ class FileDocumentProvider:
                     )
             elif suffix in (".html", ".htm"):
                 content = self._extract_html_text(path)
+                extracted_links = self._extract_html_links(path)
             elif suffix in (".docx",):
                 content, extracted_tags = self._extract_docx(path)
+                extracted_links = self._extract_docx_links(path)
             elif suffix in (".pptx",):
                 content, extracted_tags = self._extract_pptx(path)
+                extracted_links = self._extract_pptx_links(path)
             elif content_type and content_type.startswith("application/vnd.apple."):
                 content, extracted_tags = self._extract_iwork_metadata(path, content_type)
             elif suffix == ".svg":
@@ -285,6 +290,10 @@ class FileDocumentProvider:
         # Signal email attachments to the caller (for child item creation)
         if email_attachments:
             metadata["_attachments"] = email_attachments
+
+        # Pre-extracted links from document structure (PDF annotations, DOCX hyperlinks, etc.)
+        if extracted_links:
+            metadata["_links"] = extracted_links
 
         return Document(
             uri=f"file://{path.resolve()}",  # Normalize to absolute
@@ -854,6 +863,99 @@ class FileDocumentProvider:
             )
         except Exception as e:
             raise IOError(f"Failed to extract text from HTML {path}: {e}")
+
+    @staticmethod
+    def _extract_pdf_links(path: Path) -> list[str] | None:
+        """Extract hyperlink URLs from PDF annotations."""
+        try:
+            from pypdf import PdfReader
+        except ImportError:
+            return None
+        try:
+            reader = PdfReader(path)
+            urls: list[str] = []
+            seen: set[str] = set()
+            for page in reader.pages:
+                annotations = page.get("/Annots")
+                if not annotations:
+                    continue
+                for annot in annotations:
+                    obj = annot.get_object() if hasattr(annot, "get_object") else annot
+                    if obj.get("/Subtype") != "/Link":
+                        continue
+                    action = obj.get("/A")
+                    if action and action.get("/S") == "/URI":
+                        uri = str(action.get("/URI", ""))
+                        if uri and uri not in seen:
+                            seen.add(uri)
+                            urls.append(uri)
+            return urls or None
+        except Exception:
+            return None
+
+    @staticmethod
+    def _extract_html_links(path: Path) -> list[str] | None:
+        """Extract href URLs from HTML anchor tags."""
+        try:
+            from bs4 import BeautifulSoup
+        except ImportError:
+            return None
+        try:
+            html = path.read_text(encoding="utf-8")
+            soup = BeautifulSoup(html, "html.parser")
+            urls: list[str] = []
+            seen: set[str] = set()
+            for a in soup.find_all("a", href=True):
+                href = a["href"]
+                if href and href.startswith(("http://", "https://")) and href not in seen:
+                    seen.add(href)
+                    urls.append(href)
+            return urls or None
+        except Exception:
+            return None
+
+    @staticmethod
+    def _extract_docx_links(path: Path) -> list[str] | None:
+        """Extract hyperlink URLs from DOCX document relationships."""
+        try:
+            from docx import Document as DocxDocument
+        except ImportError:
+            return None
+        try:
+            doc = DocxDocument(path)
+            urls: list[str] = []
+            seen: set[str] = set()
+            for rel in doc.part.rels.values():
+                if rel.reltype == "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink":
+                    url = str(rel.target_ref)
+                    if url and url.startswith(("http://", "https://")) and url not in seen:
+                        seen.add(url)
+                        urls.append(url)
+            return urls or None
+        except Exception:
+            return None
+
+    @staticmethod
+    def _extract_pptx_links(path: Path) -> list[str] | None:
+        """Extract hyperlink URLs from PPTX slide relationships."""
+        try:
+            from pptx import Presentation
+        except ImportError:
+            return None
+        try:
+            prs = Presentation(path)
+            urls: list[str] = []
+            seen: set[str] = set()
+            for slide in prs.slides:
+                for rel in slide.part.rels.values():
+                    if rel.reltype == "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink":
+                        url = str(rel.target_ref)
+                        if url and url.startswith(("http://", "https://")) and url not in seen:
+                            seen.add(url)
+                            urls.append(url)
+            return urls or None
+        except Exception:
+            return None
 
     @staticmethod
     def _detect_email(content: str) -> bool:
