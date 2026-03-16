@@ -156,7 +156,7 @@ class ContextResolutionMixin:
                 self._migrate_system_documents()
                 self._needs_sysdoc_migration = False
             except Exception as e:
-                logger.warning("System doc migration deferred: %s", e)
+                logger.warning("System doc migration deferred: %s", e, exc_info=True)
 
         id = normalize_id(id)
         resolved = self.resolve_version_offset(id, version)

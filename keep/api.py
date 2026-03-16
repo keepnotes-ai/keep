@@ -1457,7 +1457,7 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
             try:
                 self._migrate_system_documents()
             except Exception as e:
-                logger.warning("System doc migration deferred: %s", e)
+                logger.warning("System doc migration deferred: %s", e, exc_info=True)
 
         # Get existing item to preserve tags (check document store first, fall back to ChromaDB)
         existing_tags = {}
@@ -2096,7 +2096,7 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
                 self._flush_edge_backfill(doc_coll)
                 self._needs_sysdoc_migration = False
             except Exception as e:
-                logger.warning("System doc migration deferred: %s", e)
+                logger.warning("System doc migration deferred: %s", e, exc_info=True)
 
         embedding = None  # Set in semantic/similar_to branches
 
@@ -3188,7 +3188,7 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
             try:
                 self._migrate_system_documents()
             except Exception as e:
-                logger.warning("System doc migration deferred: %s", e)
+                logger.warning("System doc migration deferred: %s", e, exc_info=True)
 
         # Validate inputs
         id = normalize_id(id)
