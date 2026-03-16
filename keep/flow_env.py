@@ -209,7 +209,7 @@ class LocalFlowEnvironment:
                 entries.append({
                     "id": ref.source_id,
                     "summary": ref.summary or "",
-                    "predicate": ref.predicate or "",
+                    "predicate": key,
                     "date": ref.date or "",
                 })
                 total += 1
