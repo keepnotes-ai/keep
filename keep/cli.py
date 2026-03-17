@@ -1860,12 +1860,16 @@ def _handle_watch(
     *,
     recurse: bool = False,
     exclude: list[str] | None = None,
+    interval: str | None = None,
 ) -> None:
     """Add or remove a watch entry if --watch or --unwatch was given."""
     if not watch and not unwatch:
         return
     from .watches import add_watch, remove_watch
     if watch:
+        kwargs: dict = {}
+        if interval:
+            kwargs["interval"] = interval
         try:
             entry = add_watch(
                 kp, source, kind,
@@ -1873,6 +1877,7 @@ def _handle_watch(
                 recurse=recurse,
                 exclude=exclude or [],
                 max_watches=kp.config.max_watches,
+                **kwargs,
             )
             typer.echo(f"Watching {kind}: {source} (interval {entry.interval})", err=True)
         except ValueError as e:
@@ -1896,6 +1901,7 @@ def _put_store(
     exclude: list[str] | None = None,
     watch: bool = False,
     unwatch: bool = False,
+    interval: str | None = None,
 ) -> Optional["Item"]:
     """Execute the store operation for put(). Returns Item, or None for directory mode."""
     if source == "-" or (source is None and _has_stdin_data()):
@@ -1967,18 +1973,18 @@ def _put_store(
         if results:
             typer.echo(_format_items(results, as_json=_get_json_output()))
         _handle_watch(kp, watch, unwatch, str(resolved_path), "directory",
-                      parsed_tags, recurse=recurse, exclude=exclude)
+                      parsed_tags, recurse=recurse, exclude=exclude, interval=interval)
         return None
     elif resolved_path is not None and resolved_path.is_file():
         # File mode: bare file path → normalize to file:// URI
         file_uri = f"file://{resolved_path}"
         item = kp.put(uri=file_uri, id=id or None, tags=parsed_tags or None, summary=summary, force=force)
-        _handle_watch(kp, watch, unwatch, file_uri, "file", parsed_tags)
+        _handle_watch(kp, watch, unwatch, file_uri, "file", parsed_tags, interval=interval)
         return item
     elif source and _URI_SCHEME_PATTERN.match(source):
         # URI mode: fetch from URI (--id overrides the document ID)
         item = kp.put(uri=source, id=id or None, tags=parsed_tags or None, summary=summary, force=force)
-        _handle_watch(kp, watch, unwatch, source, "url", parsed_tags)
+        _handle_watch(kp, watch, unwatch, source, "url", parsed_tags, interval=interval)
         return item
     elif source:
         # Text mode: inline content (no :// in source)
@@ -2032,6 +2038,10 @@ def put(
         "--unwatch",
         help="Stop watching this source for changes"
     )] = False,
+    interval: Annotated[Optional[str], typer.Option(
+        "--interval",
+        help="Watch poll interval as ISO 8601 duration (default PT30S, e.g. PT5M, P1D)"
+    )] = None,
     _analyze: Annotated[bool, typer.Option(
         "--analyze", hidden=True, help="(deprecated, no-op)"
     )] = False,
@@ -2066,6 +2076,16 @@ def put(
     if watch and unwatch:
         typer.echo("Error: --watch and --unwatch are mutually exclusive", err=True)
         raise typer.Exit(1)
+    if interval and not watch:
+        typer.echo("Error: --interval requires --watch", err=True)
+        raise typer.Exit(1)
+    if interval:
+        from .watches import parse_duration
+        try:
+            parse_duration(interval)
+        except ValueError:
+            typer.echo(f"Error: invalid interval {interval!r} (use ISO 8601: PT30S, PT5M, P1D)", err=True)
+            raise typer.Exit(1)
 
     kp = _get_keeper(store)
     parsed_tags = _parse_tags(tags)
@@ -2078,6 +2098,7 @@ def put(
         item = _put_store(
             kp, source, resolved_path, parsed_tags, id, summary, force,
             recurse=recurse, exclude=exclude, watch=watch, unwatch=unwatch,
+            interval=interval,
         )
     except ValueError as e:
         typer.echo(f"Error: {e}", err=True)

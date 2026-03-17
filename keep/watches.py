@@ -422,9 +422,23 @@ def check_url(entry: WatchEntry) -> bool:
         logger.warning("URL watch got %d for %s", resp.status_code, entry.source)
         return False
 
-    # Content changed (200 or other 2xx)
-    entry.etag = resp.headers.get("ETag", "")
-    entry.last_modified = resp.headers.get("Last-Modified", "")
+    # 200 or other 2xx — check if content actually changed
+    new_etag = resp.headers.get("ETag", "")
+    new_last_modified = resp.headers.get("Last-Modified", "")
+
+    # If server provides cache headers, trust them
+    if new_etag or new_last_modified:
+        entry.etag = new_etag
+        entry.last_modified = new_last_modified
+        entry.stale = False
+        return True
+
+    # No cache headers — fall back to content hash comparison
+    content_hash = hashlib.sha256(resp.content).hexdigest()[:16]
+    if content_hash == entry.walk_hash:
+        # Reuse walk_hash field for URL content hash
+        return False
+    entry.walk_hash = content_hash
     entry.stale = False
     return True
 
@@ -497,7 +511,9 @@ def _reput_source(keeper: Keeper, entry: WatchEntry) -> None:
     if entry.kind == "file":
         keeper.put(uri=entry.source, tags=tags, force=True)
     elif entry.kind == "directory":
-        # Re-import all files in the directory
+        # Walk the directory but let keep's mtime fast-path skip unchanged
+        # files. The walk-hash told us *something* changed; individual file
+        # mtimes narrow the blast radius without force=True.
         from .utils import _list_directory_files
         directory = Path(entry.source)
         files = _list_directory_files(
@@ -506,7 +522,7 @@ def _reput_source(keeper: Keeper, entry: WatchEntry) -> None:
         for fpath in files:
             file_uri = f"file://{fpath}"
             try:
-                keeper.put(uri=file_uri, tags=tags, force=True)
+                keeper.put(uri=file_uri, tags=tags)
             except Exception as e:
                 logger.warning("Watch re-put failed for %s: %s", file_uri, e)
     elif entry.kind == "url":

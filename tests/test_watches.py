@@ -373,3 +373,101 @@ class TestNextCheckDelay:
         )
         delay = next_check_delay([entry])
         assert 0 < delay <= 30.0
+
+
+# ---------------------------------------------------------------------------
+# CLI integration: _handle_watch
+# ---------------------------------------------------------------------------
+
+class TestHandleWatch:
+    """Tests for the CLI watch/unwatch wiring."""
+
+    @pytest.fixture
+    def kp(self, mock_providers, tmp_path):
+        from keep.api import Keeper
+        return Keeper(store_path=tmp_path)
+
+    def test_watch_file(self, kp, tmp_path):
+        from keep.cli import _handle_watch
+        f = tmp_path / "test.txt"
+        f.write_text("hello")
+        _handle_watch(kp, True, False, f"file://{f}", "file", {})
+        watches = list_watches(kp)
+        assert len(watches) == 1
+        assert watches[0].kind == "file"
+
+    def test_unwatch_file(self, kp, tmp_path):
+        from keep.cli import _handle_watch
+        f = tmp_path / "test.txt"
+        f.write_text("hello")
+        _handle_watch(kp, True, False, f"file://{f}", "file", {})
+        assert len(list_watches(kp)) == 1
+        _handle_watch(kp, False, True, f"file://{f}", "file", {})
+        assert len(list_watches(kp)) == 0
+
+    def test_watch_with_interval(self, kp, tmp_path):
+        from keep.cli import _handle_watch
+        f = tmp_path / "test.txt"
+        f.write_text("hello")
+        _handle_watch(kp, True, False, f"file://{f}", "file", {}, interval="PT5M")
+        watches = list_watches(kp)
+        assert watches[0].interval == "PT5M"
+
+    def test_watch_directory_with_options(self, kp, tmp_path):
+        from keep.cli import _handle_watch
+        d = tmp_path / "docs"
+        d.mkdir()
+        (d / "a.txt").write_text("A")
+        _handle_watch(kp, True, False, str(d), "directory", {},
+                      recurse=True, exclude=["*.log"])
+        watches = list_watches(kp)
+        assert watches[0].recurse is True
+        assert watches[0].exclude == ["*.log"]
+
+    def test_watch_noop_when_neither(self, kp):
+        from keep.cli import _handle_watch
+        _handle_watch(kp, False, False, "file:///x", "file", {})
+        assert list_watches(kp) == []
+
+    def test_unwatch_nonexistent(self, kp):
+        from keep.cli import _handle_watch
+        # Should not raise, just prints "Not watching"
+        _handle_watch(kp, False, True, "file:///nope", "file", {})
+        assert list_watches(kp) == []
+
+
+# ---------------------------------------------------------------------------
+# URL content hash fallback
+# ---------------------------------------------------------------------------
+
+class TestURLContentHashFallback:
+
+    def test_no_cache_headers_uses_content_hash(self):
+        entry = WatchEntry(source="https://example.com/doc", kind="url")
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.headers = {}  # No ETag, no Last-Modified
+        mock_resp.content = b"hello world"
+        mock_session = MagicMock()
+        mock_session.get.return_value = mock_resp
+        with patch("keep.providers.http.http_session", return_value=mock_session):
+            assert check_url(entry) is True
+            first_hash = entry.walk_hash
+            assert first_hash  # content hash was set
+
+    def test_no_cache_headers_unchanged(self):
+        import hashlib
+        content = b"stable content"
+        content_hash = hashlib.sha256(content).hexdigest()[:16]
+        entry = WatchEntry(
+            source="https://example.com/doc", kind="url",
+            walk_hash=content_hash,
+        )
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.headers = {}
+        mock_resp.content = content
+        mock_session = MagicMock()
+        mock_session.get.return_value = mock_resp
+        with patch("keep.providers.http.http_session", return_value=mock_session):
+            assert check_url(entry) is False  # same content, no change

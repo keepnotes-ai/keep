@@ -109,6 +109,13 @@ is tagged `stale: true`. It appears in `keep pending` as a warning.
 Already-imported items remain in the store. The user can `--unwatch` to
 acknowledge and remove the stale entry.
 
+## Known concurrency note
+
+If a user manually runs `keep put ./file --watch` while the daemon is
+mid-poll, both could call `put()` on the same file concurrently. Keep's
+SQLite WAL handles data integrity, so this is safe but may produce
+double logging. Acceptable in practice.
+
 ## Open questions
 
 - Should `--watch` on a directory store exclude patterns from the original
