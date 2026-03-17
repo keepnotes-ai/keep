@@ -2,63 +2,190 @@
 
 ## Why
 
-OpenClaw writes memory files (markdown) which are a solid foundation for long-term memory. But flat files aren't enough to reliably recall what's happening, what needs follow-up, or to build a continuous improvement loop.
+OpenClaw writes memory files (markdown) which are a solid foundation for
+long-term memory. But flat files aren't enough to reliably recall what's
+happening, what needs follow-up, or to build a continuous improvement loop.
 
-[Keep](https://github.com/keepnotes-ai/keep) includes OpenClaw hooks that add three things:
+[Keep](https://github.com/keepnotes-ai/keep) integrates with OpenClaw as a
+**context engine** — it owns how context is captured, assembled, and enriched
+across the agent's lifecycle.
 
-1. **Context injection** (`before_agent_start`) — at the start of every agent turn, keep injects current intentions, similar notes, and open commitments. The agent starts each turn knowing what matters.
-2. **Episodic knowledge** (`after_compaction`) — when OpenClaw compacts context, keep indexes the memory files and turns them into searchable, tagged, versioned knowledge. Not just "what was said" but the structure within it.
-3. **Reflection** (cron with `keep prompt reflect`) — a nightly review that asks: did the outcomes match the intentions? What patterns are forming? What could we do better? This is the learning loop that flat files can't provide.
+What this gives you:
+
+1. **Semantic context assembly** — every agent turn, keep surfaces relevant
+   memories: similar items, open commitments, learnings, edge relationships.
+   The agent starts each turn knowing what matters, not just what's recent.
+2. **Continuous capture** — user and assistant messages are ingested into keep's
+   versioned store. Background processing (summarize, analyze, tag, link
+   extraction) runs automatically.
+3. **Inflection-aware reflection** — after each turn, keep detects topic shifts,
+   commitments, and significant moments. When it finds one, it triggers the
+   reflective practice in the background.
+4. **Memory indexing** — when OpenClaw compacts context, keep indexes workspace
+   memory files and turns them into searchable, tagged, versioned knowledge.
+5. **Session archival** — when a session ends, keep archives its message trace
+   and cleans up the working context.
 
 ---
 
-## Install keep
+## Quick Start
+
+### 1. Install keep
 
 ```bash
 uv tool install keep-skill                    # API providers included
 # Or: uv tool install 'keep-skill[local]'    # Local models, no API keys needed
 ```
 
-## Install the Plugin
+### 2. Configure providers
 
 ```bash
-openclaw plugins install -l $(keep config openclaw-plugin)
-openclaw plugins enable keep
-openclaw gateway restart
+keep config --setup                           # Interactive wizard
+# Or: just have Ollama running (auto-detected)
+# Or: set OPENAI_API_KEY, GEMINI_API_KEY, etc.
 ```
 
-This installs the lightweight plugin from keep's package data directory.
-
-## What Gets Installed
-
-**Protocol block** — `AGENTS.md` in your OpenClaw workspace gets the keep protocol block appended automatically (on any `keep` command, if `AGENTS.md` exists in the current directory).
-
-**Plugin hooks:**
-
-| Hook | Event | What it does |
-|------|-------|-------------|
-| `before_agent_start` | Agent turn begins | Runs `keep now -n 10`, injects output as prepended context |
-| `after_agent_stop` | Agent turn ends | Runs `keep now 'Session ended'` to update intentions |
-| `after_compaction` | Context compacted | Indexes `memory/` dir + `MEMORY.md` into keep via `keep put` |
-
-The agent starts each turn knowing its current intentions, similar items, open commitments, and recent learnings.
-
-After compaction, workspace memory files are automatically indexed into keep. This uses the file-stat fast-path (mtime+size check) — unchanged files are skipped without reading. Safe to run on every compaction.
-
-## Reinstall / Upgrade
-
-After upgrading keep, reinstall the plugin:
+### 3. Install the plugin
 
 ```bash
 openclaw plugins install -l $(keep config openclaw-plugin)
 openclaw gateway restart
 ```
 
-The plugin source lives at `$(keep config openclaw-plugin)` — this resolves to the `openclaw-plugin/` directory inside the installed keep package.
+### 4. Verify
+
+```bash
+openclaw plugins list                         # Should show: keep (loaded, 0.99.0)
+openclaw keep doctor                          # Check keep store health
+```
+
+The plugin spawns a persistent `keep mcp` process at gateway start. All keep
+operations go through MCP for low latency (~10-50ms per call).
+
+---
+
+## How It Works
+
+### Context Engine (automatic)
+
+When the plugin is installed, OpenClaw activates keep as the context engine
+(`plugins.slots.contextEngine: keep`). This means keep participates in every
+stage of the agent lifecycle:
+
+| Lifecycle method | What keep does |
+|-----------------|----------------|
+| **bootstrap** | Initialize session state, index resume file if present |
+| **ingest** | Capture each user and assistant message as a `now` version |
+| **assemble** | Run `.state/openclaw-assemble` flow — 5 parallel queries for intentions, similar items, meta-tags, edges, and recent session context |
+| **afterTurn** | Detect inflection points (topic shifts, commitments, substantial work), trigger background reflection |
+| **compact** | Index the session transcript into keep's store (advisory — OpenClaw still manages its own compaction in v0.99) |
+| **session_end** | Archive session message versions, clean up working context |
+
+The agent doesn't need to do anything — context flows in automatically.
+
+### Practice Layer (agent-initiated)
+
+The agent also has voluntary access to keep via CLI commands:
+
+```
+keep prompt reflect                              # Full reflection practice
+keep flow get-context -p item_id=now             # Current intentions + context
+keep flow query-resolve -p query="topic"         # Semantic search
+keep flow put -p content="insight" -p 'tags={"type":"learning"}'  # Capture
+keep flow put -p content="next steps" -p id=now  # Update intentions
+```
+
+These are injected into the agent's system prompt as cacheable static
+instructions (`appendSystemContext`), so they don't add per-turn token cost.
+
+### Memory Indexing (on compaction)
+
+After OpenClaw compacts conversation context, the plugin indexes workspace
+memory files (`memory/` directory and `MEMORY.md`) into keep. This uses the
+file-stat fast-path (mtime+size check) — unchanged files are skipped without
+even reading them. Safe to run on every compaction.
+
+---
+
+## Customizing Context Assembly
+
+The context assembly flow is a keep state doc: `.state/openclaw-assemble`.
+Edit it to change what context the agent sees:
+
+```bash
+keep get .state/openclaw-assemble              # View current
+keep put --id .state/openclaw-assemble ...     # Replace
+keep config --reset-system-docs                # Restore defaults
+```
+
+The default runs five parallel queries:
+
+1. **intentions** — current `now` content (what the agent is working on)
+2. **similar** — semantically similar items to the current user prompt
+3. **meta** — resolved meta-docs (learnings, todos, open commitments)
+4. **edges** — edge relationships from `now` (references, speakers, threads)
+5. **recent** — recent items from this session
+
+All results are token-budgeted so they fit within the context window.
+
+---
+
+## Plugin Configuration
+
+Configure in OpenClaw's config under `plugins.entries.keep.config`:
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `contextBudgetRatio` | number | 0.3 | Fraction of token budget for keep context (0.0–1.0) |
+| `captureHeartbeats` | boolean | false | Whether to capture heartbeat messages |
+
+Example:
+
+```yaml
+plugins:
+  entries:
+    keep:
+      enabled: true
+      config:
+        contextBudgetRatio: 0.25
+```
+
+---
+
+## CLI Commands
+
+The plugin registers CLI commands under `openclaw keep`:
+
+| Command | Description |
+|---------|-------------|
+| `openclaw keep setup` | Run keep's interactive setup wizard (providers, models) |
+| `openclaw keep doctor` | Check keep store health and diagnose issues |
+
+---
+
+## Provider Configuration
+
+keep auto-detects AI providers from environment variables:
+
+```bash
+export OPENAI_API_KEY=...      # Handles both embeddings + summarization
+# Or: GEMINI_API_KEY=...       # Also does both
+# Or: VOYAGE_API_KEY=... and ANTHROPIC_API_KEY=...  # Separate services
+```
+
+If Ollama is running locally, it's auto-detected with no configuration needed.
+
+For explicit setup: `openclaw keep setup` or `keep config --setup`
+
+For local-only operation (no API keys): `uv tool install 'keep-skill[local]'`
+
+See [QUICKSTART.md](QUICKSTART.md) for full provider options and troubleshooting.
+
+---
 
 ## Recommended: Daily Reflection Cron
 
-For automatic deep reflection with document analysis, create a cron job:
+For automatic deep reflection with document analysis:
 
 ```bash
 openclaw cron add \
@@ -73,28 +200,96 @@ openclaw cron add \
 This is the deeper review — not just what happened, but what it means."
 ```
 
-This runs nightly in an isolated session. Step 1 indexes workspace memory files — the `--analyze` flag finds themes within each document; with v0.42.4+'s smart skip, unchanged files cost nothing. Step 2 renders the reflection prompt with current context injected, guiding the agent through the full practice.
+This runs nightly in an isolated session. The `--analyze` flag finds themes
+within each document; unchanged files cost nothing via hash-skip.
 
-**Three-layer integration:**
+---
 
-| Layer | Trigger | Command | Purpose |
-|-------|---------|---------|---------|
-| Hook | After compaction | `keep put memory/` | Index files (cheap, hash-skip) |
-| Cron | Daily (e.g. 9pm) | `keep put memory/ --analyze` | Find themes, deep reflection |
-| Practice | Manual | `keep put`, `keep now` | Intentional capture |
+## Integration Layers
 
-## Provider Configuration
+| Layer | Trigger | What it does | Latency |
+|-------|---------|-------------|---------|
+| **Context engine** | Every agent turn | Ingest messages, assemble context, detect inflections | ~10-50ms |
+| **Memory sync** | After compaction | Index workspace memory files | Background |
+| **Session archival** | Session end | Archive message trace, clean up `now` | Background |
+| **Daily reflection** | Cron (optional) | Deep analysis + practice reflection | Isolated session |
+| **Agent practice** | Agent-initiated | Voluntary reflection, search, capture | On demand |
 
-keep auto-detects AI providers from environment variables. Set one and go:
+---
 
-```bash
-export OPENAI_API_KEY=...      # Simplest (handles both embeddings + summarization)
-# Or: GEMINI_API_KEY=...       # Also does both
-# Or: VOYAGE_API_KEY=... and ANTHROPIC_API_KEY=...  # Separate services
+## Architecture
+
+```
+OpenClaw Gateway (Node.js)
+  └── keep plugin (TypeScript, in-process)
+        ├── Context Engine (bootstrap, ingest, assemble, afterTurn, compact)
+        ├── Legacy Hooks (fallback when not context engine)
+        │     ├── before_prompt_build → context injection
+        │     ├── after_compaction → memory file indexing
+        │     └── session_end → version archival
+        └── MCP Client (stdio transport)
+              └── keep mcp (Python, persistent process)
+                    └── keep store (SQLite + ChromaDB)
 ```
 
-If Ollama is running locally, it's auto-detected with no configuration needed.
+The MCP transport bundles `@modelcontextprotocol/sdk` and spawns `keep mcp` as
+a persistent stdio process at gateway start. All operations have per-type
+timeouts (8s for assemble, 15s for writes, 30s for queries). If the MCP
+process fails, the plugin falls back to CLI (`execFileSync`) for all operations.
 
-For local-only operation (no API keys): `uv tool install 'keep-skill[local]'`
+---
 
-See [QUICKSTART.md](QUICKSTART.md) for full provider options, model configuration, and troubleshooting.
+## Upgrading
+
+After upgrading keep:
+
+```bash
+uv tool upgrade keep-skill
+openclaw plugins install -l $(keep config openclaw-plugin)
+openclaw gateway restart
+```
+
+The plugin source lives at `$(keep config openclaw-plugin)` — this resolves to
+the `openclaw-plugin/` directory inside the installed keep package. The build
+step (`npm install + npm run build`) runs automatically during pip packaging.
+
+---
+
+## Troubleshooting
+
+**Plugin loads but MCP not connected:**
+```bash
+keep config                    # Verify keep is configured
+keep config providers          # Verify providers are set
+openclaw keep doctor           # Run health check
+```
+
+**Context engine not activating:**
+Check that `plugins.slots.contextEngine` is set to `"keep"`:
+```bash
+grep contextEngine ~/.openclaw/openclaw.json
+```
+
+**Slow context assembly:**
+The `.state/openclaw-assemble` flow runs 5 parallel queries. If one is slow
+(e.g., embedding provider timeout), it blocks the whole assembly. Check:
+```bash
+keep doctor --log              # Watch flow execution in real time
+```
+
+**Falling back to legacy hooks:**
+If the MCP transport fails to connect, the plugin falls back to the original
+hook-based behavior (CLI shell-outs). Check gateway logs for:
+```
+[keep] MCP connect failed, falling back to CLI
+```
+
+**Reset to defaults:**
+```bash
+# Reset context engine slot to legacy
+# Edit ~/.openclaw/openclaw.json: set plugins.slots.contextEngine to "legacy"
+openclaw gateway restart
+
+# Reset keep's state docs
+keep config --reset-system-docs
+```
