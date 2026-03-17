@@ -1,7 +1,17 @@
 {
   "name": "keep",
   "version": "0.99.1",
+  "type": "module",
   "openclaw": {
-    "extensions": ["./index.ts"]
+    "extensions": ["./dist/index.js"]
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "npx tsx --test src/index.test.ts",
+    "clean": "rm -rf dist"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "esbuild": "^0.25.0"
   }
 }

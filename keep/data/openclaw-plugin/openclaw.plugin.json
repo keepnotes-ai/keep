@@ -1,11 +1,23 @@
 {
   "id": "keep",
   "name": "keep",
-  "description": "Reflective memory — prompt-aware context injection, memory sync, session archival",
+  "description": "Reflective memory — context engine with prompt-aware injection, memory sync, session archival",
   "version": "0.99.1",
+  "kind": "context-engine",
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
-    "properties": {}
+    "properties": {
+      "contextBudgetRatio": {
+        "type": "number",
+        "default": 0.3,
+        "description": "Fraction of token budget for keep context (0.0-1.0)"
+      },
+      "captureHeartbeats": {
+        "type": "boolean",
+        "default": false,
+        "description": "Whether to capture heartbeat messages in keep"
+      }
+    }
   }
 }
