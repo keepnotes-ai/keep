@@ -62,19 +62,24 @@ class TestFindTagsFilter:
         results = kp.find("pets", tags={"user": "charlie"})
         assert len(results) == 0
 
-    def test_put_same_key_adds_distinct_values(self, kp):
-        """Repeated writes with same key keep distinct values."""
+    def test_put_same_key_replaces_value(self, kp):
+        """Repeated writes with same key replace (not accumulate)."""
         kp.put("alice with two topics", id="alice:pets", tags={"topic": "animals"})
         item = kp.get("alice:pets")
         assert item is not None
-        assert set(item.tags["topic"]) == {"pets", "animals"}
+        assert item.tags["topic"] == "animals"
 
-    def test_find_matches_each_value_for_multivalue_key(self, kp):
-        """Tag filters match any stored value for the key."""
+    def test_put_multivalue_explicit(self, kp):
+        """Explicit multi-value in a single put is preserved."""
+        kp.put("alice topics", id="alice:pets", tags={"topic": ["animals", "pets"]})
+        item = kp.get("alice:pets")
+        assert item is not None
+        assert set(item.tags["topic"]) == {"animals", "pets"}
+
+    def test_find_matches_replaced_value(self, kp):
+        """Tag filters match the replaced value, not the old one."""
         kp.put("alice with two topics", id="alice:pets", tags={"topic": "animals"})
-        by_pets = {r.id for r in kp.find("alice", tags={"topic": "pets"})}
         by_animals = {r.id for r in kp.find("alice", tags={"topic": "animals"})}
-        assert "alice:pets" in by_pets
         assert "alice:pets" in by_animals
 
     def test_find_hybrid_with_tags(self, kp):

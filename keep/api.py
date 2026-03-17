@@ -1490,20 +1490,19 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
             user_tags = casefold_tags(filter_non_system_tags(tags))
             # Validate constrained tags (only user-provided, not existing/env)
             self._validate_constrained_tags(user_tags)
-            # Singular enforcement: clear existing values so merge replaces
+            # Validate constrained tags
             singular_keys = self._get_singular_keys(
                 k for k in user_tags if tag_values(user_tags, k) != [""]
             )
             if singular_keys:
                 self._validate_singular_tags(user_tags, singular_keys)
+            # Replace semantics: new tag values replace existing, not accumulate
             for key in user_tags:
                 values = tag_values(user_tags, key)
                 if values == [""]:
                     merged_tags.pop(key, None)
                 else:
-                    if key in singular_keys:
-                        merged_tags.pop(key, None)
-                    _merge_tags_additive(merged_tags, {key: values})
+                    set_tag_values(merged_tags, key, values)
 
         # Track content length as a system tag (always updated)
         system_tags["_content_length"] = str(len(content))
@@ -1881,6 +1880,9 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
                 email_date = (merged_tags or {}).get("date") or (doc.tags or {}).get("date")
                 if email_date and created_at is None:
                     created_at = email_date
+                # No special tag handling needed — replace semantics in _upsert
+                # means each message's tags replace the previous, and the
+                # version archive preserves per-message tags independently.
 
             # Store source URI as system tag when using custom ID
             if doc_id != uri:

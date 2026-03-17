@@ -290,8 +290,8 @@ class TestEdgeIntegration:
         ctx = kp.get_context("nate")
         assert ctx.edges.get("said", []) == []
 
-    def test_tag_value_change_adds_second_edge_value(self, kp):
-        """Changing tag value via put() adds a second edge value."""
+    def test_tag_value_change_replaces_edge(self, kp):
+        """Changing tag value via put() replaces the edge (not accumulate)."""
         self._create_tagdoc(kp, "speaker", "said")
 
         kp.put(content="Someone said hello", id="conv1", summary="Greeting",
@@ -301,15 +301,15 @@ class TestEdgeIntegration:
         ctx_alice = kp.get_context("alice")
         assert len(ctx_alice.edges.get("said", [])) == 1
 
-        # Change speaker from alice to bob
+        # Change speaker from alice to bob (replace, not add)
         kp.put(content="Someone said hello", id="conv1", summary="Greeting",
                tags={"speaker": "bob"})
 
-        # Both edges are now present for this source+predicate.
+        # bob has the edge, alice's edge is removed
         ctx_bob = kp.get_context("bob")
         assert len(ctx_bob.edges.get("said", [])) == 1
         ctx_alice = kp.get_context("alice")
-        assert len(ctx_alice.edges.get("said", [])) == 1
+        assert len(ctx_alice.edges.get("said", [])) == 0
 
     def test_multivalue_edge_tag_creates_all_edges(self, kp):
         """A single put with multiple tag values creates one edge per value."""
@@ -352,9 +352,9 @@ class TestEdgeIntegration:
             ctx = kp.get_context(name)
             assert len(ctx.edges.get("said", [])) == 1, f"{name} should have edge"
 
-        # bob's edge was added previously and persists (edge tags are additive)
+        # bob's edge is removed (replace semantics — new values replace old)
         ctx_bob = kp.get_context("bob")
-        assert len(ctx_bob.edges.get("said", [])) == 1
+        assert len(ctx_bob.edges.get("said", [])) == 0
 
     def test_get_context_unions_explicit_and_inverse_edge_refs(self, kp):
         """Query-time edge refs include both explicit and inverse values per key."""
