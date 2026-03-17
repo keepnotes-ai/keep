@@ -6,7 +6,6 @@ Usage:
     keep get file:///path/to/doc.md
 """
 
-import fnmatch
 import importlib.metadata
 import importlib.resources
 import json
@@ -73,105 +72,7 @@ def _is_filesystem_path(source: str) -> Optional[Path]:
     return None
 
 
-def _git_visible_files(
-    directory: Path, recurse: bool, exclude: list[str] | None = None,
-) -> list[Path] | None:
-    """Return files visible to git (tracked + untracked, excluding ignored).
-
-    Returns None if the directory is not inside a git repository or git
-    is not available, signalling the caller to fall back to plain walk.
-    """
-    try:
-        # Tracked files + untracked-but-not-ignored files
-        result = subprocess.run(
-            ["git", "ls-files", "-co", "--exclude-standard", "-z"],
-            cwd=directory, capture_output=True, timeout=10,
-        )
-        if result.returncode != 0:
-            return None
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return None
-
-    raw = result.stdout.decode("utf-8", errors="replace")
-    if not raw:
-        return []
-
-    files = []
-    for relpath in raw.split("\0"):
-        if not relpath:
-            continue
-        # Skip paths with any hidden component (.github/, .vscode/, etc.)
-        parts = relpath.split("/")
-        if any(p.startswith(".") for p in parts):
-            continue
-        entry = (directory / relpath).resolve()
-        # Scope to directory
-        if not str(entry).startswith(str(directory.resolve())):
-            continue
-        # Apply recurse constraint: without -r, only top-level files
-        if not recurse and len(parts) > 1:
-            continue
-        if entry.is_symlink() or not entry.is_file():
-            continue
-        # Apply user-specified exclude patterns against relative path
-        if exclude and any(fnmatch.fnmatch(relpath, pat) for pat in exclude):
-            continue
-        files.append(entry)
-    return sorted(files)
-
-
-def _list_directory_files(
-    directory: Path, *, recurse: bool = False, exclude: list[str] | None = None,
-) -> list[Path]:
-    """List regular files in a directory, sorted by name.
-
-    Respects .gitignore when the directory is inside a git repository.
-    Skips symlinks, hidden files/dirs (names starting with '.').
-    When recurse=True, walks subdirectories.
-    Exclude patterns use fnmatch against relative paths (gitignore-style globs).
-    """
-    # Try git-aware listing first
-    git_files = _git_visible_files(directory, recurse, exclude=exclude)
-    if git_files is not None:
-        return git_files
-
-    # Fallback: plain walk (non-git directories)
-    files = []
-    if recurse:
-        for root, dirs, filenames in os.walk(directory, followlinks=False):
-            # Skip hidden directories (modifying dirs in-place prunes them)
-            dirs[:] = sorted(d for d in dirs if not d.startswith("."))
-            # Prune excluded directories early
-            if exclude:
-                rel_root = Path(root).relative_to(directory)
-                dirs[:] = [
-                    d for d in dirs
-                    if not any(fnmatch.fnmatch(str(rel_root / d), pat) for pat in exclude)
-                ]
-            root_path = Path(root)
-            for name in sorted(filenames):
-                if name.startswith("."):
-                    continue
-                entry = root_path / name
-                if entry.is_symlink():
-                    continue
-                if exclude:
-                    relpath = str(entry.relative_to(directory))
-                    if any(fnmatch.fnmatch(relpath, pat) for pat in exclude):
-                        continue
-                files.append(entry)
-    else:
-        for entry in sorted(directory.iterdir()):
-            if entry.name.startswith("."):
-                continue
-            if entry.is_symlink():
-                continue
-            if entry.is_dir():
-                continue
-            if exclude and any(fnmatch.fnmatch(entry.name, pat) for pat in exclude):
-                continue
-            files.append(entry)
-    return files
+from .utils import _git_visible_files, _list_directory_files  # noqa: E402
 
 
 def _output_width() -> int:
@@ -1949,6 +1850,40 @@ def tag_update(
     )
 
 
+def _handle_watch(
+    kp: "Keeper",
+    watch: bool,
+    unwatch: bool,
+    source: str,
+    kind: str,
+    parsed_tags: dict,
+    *,
+    recurse: bool = False,
+    exclude: list[str] | None = None,
+) -> None:
+    """Add or remove a watch entry if --watch or --unwatch was given."""
+    if not watch and not unwatch:
+        return
+    from .watches import add_watch, remove_watch
+    if watch:
+        try:
+            entry = add_watch(
+                kp, source, kind,
+                tags=parsed_tags or {},
+                recurse=recurse,
+                exclude=exclude or [],
+                max_watches=kp.config.max_watches,
+            )
+            typer.echo(f"Watching {kind}: {source} (interval {entry.interval})", err=True)
+        except ValueError as e:
+            typer.echo(f"Watch error: {e}", err=True)
+    elif unwatch:
+        if remove_watch(kp, source):
+            typer.echo(f"Stopped watching: {source}", err=True)
+        else:
+            typer.echo(f"Not watching: {source}", err=True)
+
+
 def _put_store(
     kp: "Keeper",
     source: Optional[str],
@@ -1959,6 +1894,8 @@ def _put_store(
     force: bool = False,
     recurse: bool = False,
     exclude: list[str] | None = None,
+    watch: bool = False,
+    unwatch: bool = False,
 ) -> Optional["Item"]:
     """Execute the store operation for put(). Returns Item, or None for directory mode."""
     if source == "-" or (source is None and _has_stdin_data()):
@@ -2029,14 +1966,20 @@ def _put_store(
                 typer.echo(f"  error: {e}", err=True)
         if results:
             typer.echo(_format_items(results, as_json=_get_json_output()))
+        _handle_watch(kp, watch, unwatch, str(resolved_path), "directory",
+                      parsed_tags, recurse=recurse, exclude=exclude)
         return None
     elif resolved_path is not None and resolved_path.is_file():
         # File mode: bare file path → normalize to file:// URI
         file_uri = f"file://{resolved_path}"
-        return kp.put(uri=file_uri, id=id or None, tags=parsed_tags or None, summary=summary, force=force)
+        item = kp.put(uri=file_uri, id=id or None, tags=parsed_tags or None, summary=summary, force=force)
+        _handle_watch(kp, watch, unwatch, file_uri, "file", parsed_tags)
+        return item
     elif source and _URI_SCHEME_PATTERN.match(source):
         # URI mode: fetch from URI (--id overrides the document ID)
-        return kp.put(uri=source, id=id or None, tags=parsed_tags or None, summary=summary, force=force)
+        item = kp.put(uri=source, id=id or None, tags=parsed_tags or None, summary=summary, force=force)
+        _handle_watch(kp, watch, unwatch, source, "url", parsed_tags)
+        return item
     elif source:
         # Text mode: inline content (no :// in source)
         if summary is not None:
@@ -2081,6 +2024,14 @@ def put(
         "--exclude", "-x",
         help="Glob pattern to exclude files (directory mode, repeatable)"
     )] = None,
+    watch: Annotated[bool, typer.Option(
+        "--watch",
+        help="Watch this source for changes (daemon re-imports on change)"
+    )] = False,
+    unwatch: Annotated[bool, typer.Option(
+        "--unwatch",
+        help="Stop watching this source for changes"
+    )] = False,
     _analyze: Annotated[bool, typer.Option(
         "--analyze", hidden=True, help="(deprecated, no-op)"
     )] = False,
@@ -2112,6 +2063,10 @@ def put(
       keep put "my note" -t done   # Same ID, new version (tag change)
       keep put "different note"    # Different ID (new doc)
     """
+    if watch and unwatch:
+        typer.echo("Error: --watch and --unwatch are mutually exclusive", err=True)
+        raise typer.Exit(1)
+
     kp = _get_keeper(store)
     parsed_tags = _parse_tags(tags)
 
@@ -2120,7 +2075,10 @@ def put(
     resolved_path = _is_filesystem_path(source) if source and source != "-" else None
 
     try:
-        item = _put_store(kp, source, resolved_path, parsed_tags, id, summary, force, recurse=recurse, exclude=exclude)
+        item = _put_store(
+            kp, source, resolved_path, parsed_tags, id, summary, force,
+            recurse=recurse, exclude=exclude, watch=watch, unwatch=unwatch,
+        )
     except ValueError as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(1)
@@ -3688,6 +3646,17 @@ def pending_cmd(
                     break
                 result = kp.process_pending(limit=50, shutdown_check=_is_shutdown)
                 delegated = result.get("delegated", 0)
+
+                # Poll watched sources for changes
+                from .watches import poll_watches as _poll_watches, has_active_watches, next_check_delay, load_watches
+                watch_result = _poll_watches(kp)
+                if watch_result["checked"] > 0:
+                    _daemon_logger.info(
+                        "Watches: checked=%d changed=%d stale=%d errors=%d",
+                        watch_result["checked"], watch_result["changed"],
+                        watch_result["stale"], watch_result["errors"],
+                    )
+
                 _daemon_logger.info(
                     "Daemon batch: processed=%d failed=%d delegated=%d flow_processed=%d flow_failed=%d",
                     result["processed"], result["failed"], delegated,
@@ -3716,6 +3685,14 @@ def pending_cmd(
                     if pending_remaining > 0:
                         _daemon_logger.info("Waiting for %d pending items (retry backoff)", pending_remaining)
                         time.sleep(5)
+                        continue
+
+                    # Active watches keep the daemon alive
+                    if has_active_watches(kp):
+                        delay = next_check_delay(load_watches(kp))
+                        delay = max(1.0, min(delay, 30.0))
+                        _daemon_logger.debug("Sleeping %.1fs (next watch check)", delay)
+                        time.sleep(delay)
                         continue
 
                     # Items may have been enqueued after our last dequeue
@@ -3802,7 +3779,12 @@ def pending_cmd(
             flow_items = wq.list_pending(limit=100)
         except Exception:
             flow_items = []
-        if not items and not failed and not flow_items:
+        try:
+            from .watches import list_watches as _lw
+            _watches = _lw(kp)
+        except Exception:
+            _watches = []
+        if not items and not failed and not flow_items and not _watches:
             typer.echo("Nothing pending.")
         else:
             if items:
@@ -3822,6 +3804,31 @@ def pending_cmd(
                 for item in failed[:10]:
                     error = item.get("last_error", "unknown")
                     typer.echo(f"  {item['task_type']:15s} {item['id']}: {error}")
+        # Show watches
+        try:
+            from .watches import list_watches
+            watches = list_watches(kp)
+            if watches:
+                active = [w for w in watches if not w.stale]
+                stale = [w for w in watches if w.stale]
+                label = f"{len(active)} active"
+                if stale:
+                    label += f", {len(stale)} stale"
+                typer.echo(f"\nWatches ({label}):")
+                for w in watches:
+                    suffix = " [stale]" if w.stale else ""
+                    detail = ""
+                    if w.kind == "directory":
+                        parts = []
+                        if w.recurse:
+                            parts.append("recurse")
+                        if w.exclude:
+                            parts.append(f"{len(w.exclude)} excludes")
+                        if parts:
+                            detail = f" ({', '.join(parts)})"
+                    typer.echo(f"  {w.kind:12s} {w.source}{detail}{suffix}")
+        except Exception:
+            pass
         kp.close()
         return
 

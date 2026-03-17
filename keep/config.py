@@ -172,6 +172,9 @@ class StoreConfig:
     # Maximum files to index in a single `put -r` directory import
     max_dir_files: int = 1000
 
+    # Maximum watched sources (files, directories, URLs) per store
+    max_watches: int = 100
+
     # Maximum retries before a pending task is dead-lettered
     max_task_attempts: int = 5
 
@@ -726,6 +729,7 @@ def load_config(config_dir: Path) -> StoreConfig:
 
     budget_per_flow = int(data.get("store", {}).get("budget_per_flow", 5))
     max_dir_files = int(data.get("store", {}).get("max_dir_files", 1000))
+    max_watches = int(data.get("store", {}).get("max_watches", 100))
     max_task_attempts = int(data.get("store", {}).get("max_task_attempts", 5))
     incremental_context = int(data.get("store", {}).get("incremental_context", 10))
 
@@ -756,6 +760,7 @@ def load_config(config_dir: Path) -> StoreConfig:
         backend_params=backend_params,
         budget_per_flow=budget_per_flow,
         max_dir_files=max_dir_files,
+        max_watches=max_watches,
         max_task_attempts=max_task_attempts,
         incremental_context=incremental_context,
     )
@@ -818,6 +823,8 @@ def save_config(config: StoreConfig) -> None:
         store_section["budget_per_flow"] = config.budget_per_flow
     if config.max_dir_files != 1000:
         store_section["max_dir_files"] = config.max_dir_files
+    if config.max_watches != 100:
+        store_section["max_watches"] = config.max_watches
     if config.max_task_attempts != 5:
         store_section["max_task_attempts"] = config.max_task_attempts
     if config.incremental_context != 10:

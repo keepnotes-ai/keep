@@ -6,10 +6,13 @@ transforms for timestamps, tags, content parsing, and hashing.
 
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import os
 import re
+import subprocess
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Optional
 
 from .types import (
@@ -472,3 +475,107 @@ def _text_content_id(content: str) -> str:
     """
     content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()[:12]
     return f"%{content_hash}"
+
+
+# ---------------------------------------------------------------------------
+# Directory walking (shared by cli.py and watches.py)
+# ---------------------------------------------------------------------------
+
+def _git_visible_files(
+    directory: Path, recurse: bool, exclude: list[str] | None = None,
+) -> list[Path] | None:
+    """Return files visible to git (tracked + untracked, excluding ignored).
+
+    Returns None if the directory is not inside a git repository or git
+    is not available, signalling the caller to fall back to plain walk.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "ls-files", "-co", "--exclude-standard", "-z"],
+            cwd=directory, capture_output=True, timeout=10,
+        )
+        if result.returncode != 0:
+            return None
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+
+    raw = result.stdout.decode("utf-8", errors="replace")
+    if not raw:
+        return []
+
+    files = []
+    for relpath in raw.split("\0"):
+        if not relpath:
+            continue
+        # Skip paths with any hidden component (.github/, .vscode/, etc.)
+        parts = relpath.split("/")
+        if any(p.startswith(".") for p in parts):
+            continue
+        entry = (directory / relpath).resolve()
+        # Scope to directory
+        if not str(entry).startswith(str(directory.resolve())):
+            continue
+        # Apply recurse constraint: without -r, only top-level files
+        if not recurse and len(parts) > 1:
+            continue
+        if entry.is_symlink() or not entry.is_file():
+            continue
+        # Apply user-specified exclude patterns against relative path
+        if exclude and any(fnmatch.fnmatch(relpath, pat) for pat in exclude):
+            continue
+        files.append(entry)
+    return sorted(files)
+
+
+def _list_directory_files(
+    directory: Path, *, recurse: bool = False, exclude: list[str] | None = None,
+) -> list[Path]:
+    """List regular files in a directory, sorted by name.
+
+    Respects .gitignore when the directory is inside a git repository.
+    Skips symlinks, hidden files/dirs (names starting with '.').
+    When recurse=True, walks subdirectories.
+    Exclude patterns use fnmatch against relative paths (gitignore-style globs).
+    """
+    # Try git-aware listing first
+    git_files = _git_visible_files(directory, recurse, exclude=exclude)
+    if git_files is not None:
+        return git_files
+
+    # Fallback: plain walk (non-git directories)
+    files = []
+    if recurse:
+        for root, dirs, filenames in os.walk(directory, followlinks=False):
+            # Skip hidden directories (modifying dirs in-place prunes them)
+            dirs[:] = sorted(d for d in dirs if not d.startswith("."))
+            # Prune excluded directories early
+            if exclude:
+                rel_root = Path(root).relative_to(directory)
+                dirs[:] = [
+                    d for d in dirs
+                    if not any(fnmatch.fnmatch(str(rel_root / d), pat) for pat in exclude)
+                ]
+            root_path = Path(root)
+            for name in sorted(filenames):
+                if name.startswith("."):
+                    continue
+                entry = root_path / name
+                if entry.is_symlink():
+                    continue
+                if exclude:
+                    relpath = str(entry.relative_to(directory))
+                    if any(fnmatch.fnmatch(relpath, pat) for pat in exclude):
+                        continue
+                files.append(entry)
+    else:
+        for entry in sorted(directory.iterdir()):
+            if entry.name.startswith("."):
+                continue
+            if entry.is_symlink():
+                continue
+            if entry.is_dir():
+                continue
+            if exclude and any(fnmatch.fnmatch(entry.name, pat) for pat in exclude):
+                continue
+            files.append(entry)
+    return files
