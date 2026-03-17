@@ -1,5 +1,5 @@
 /**
- * keep — OpenClaw plugin (v0.99.0)
+ * keep — OpenClaw plugin
  *
  * Context engine + legacy hooks for backward compatibility.
  *
