@@ -64,3 +64,9 @@ test_extraction_store/
 .DS_Store
 .claude/settings.local.json
 .agents/
+documents.db
+keep-ops.log
+keep.toml
+pending_summaries.db
+planner_stats.db
+stores/

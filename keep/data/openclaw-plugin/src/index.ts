@@ -168,8 +168,8 @@ export default function register(api: any) {
   // Track first assemble per session for session-start context.
   const sessionFirstAssemble = new Set<string>();
 
-  // Track workspace indexing per session.
-  const sessionWorkspaceIndexed = new Set<string>();
+  // Track whether workspace watches have been set up.
+  let watchesInitialized = false;
 
   // ---------------------------------------------------------------------------
   // Config helpers
@@ -193,116 +193,50 @@ export default function register(api: any) {
   }
 
   // ---------------------------------------------------------------------------
-  // Workspace directory walking + exclude matching
+  // Workspace watches: use keep's daemon-driven --watch to keep index fresh
   // ---------------------------------------------------------------------------
 
-  /** Check if a relative path matches any exclude pattern. */
-  function matchesExclude(relPath: string, patterns: string[]): boolean {
-    for (const pattern of patterns) {
-      // Directory pattern: ends with /
-      if (pattern.endsWith("/")) {
-        const dirPattern = pattern.slice(0, -1);
-        if (relPath === dirPattern || relPath.startsWith(dirPattern + "/")) {
-          return true;
-        }
-        continue;
+  /**
+   * Ensure watches exist for configured indexPaths. Uses `keep put --watch`
+   * via CLI (one-time setup). The daemon polls for changes automatically.
+   * Excludes are captured at watch-creation time.
+   */
+  function ensureWatches(workspaceDir: string): void {
+    if (watchesInitialized) return;
+    watchesInitialized = true;
+
+    const cfg = getConfig();
+
+    for (const relPath of cfg.indexPaths) {
+      const absPath = path.resolve(workspaceDir, relPath);
+      if (!fs.existsSync(absPath)) continue;
+
+      const stat = fs.statSync(absPath);
+      const source = stat.isDirectory() ? absPath : `file://${absPath}`;
+
+      // Build CLI args: keep put <path> -r --watch [--exclude ...]
+      const args: string[] = ["put", absPath];
+      if (stat.isDirectory()) args.push("-r");
+      args.push("--watch");
+      for (const pattern of cfg.indexExclude) {
+        args.push("--exclude", pattern);
       }
 
-      // Glob patterns
-      if (pattern.includes("*")) {
-        const regex = new RegExp(
-          "^" + pattern
-            .replace(/\*\*/g, ".*")  // ** matches any path
-            .replace(/\*/g, "[^/]*") // * matches any non-slash
-            .replace(/\./g, "\\.")   // escape dots
-          + "$"
-        );
-        if (regex.test(relPath)) return true;
-        continue;
-      }
-
-      // Literal match
-      if (relPath === pattern) return true;
-    }
-    return false;
-  }
-
-  /** Recursively walk a directory, yielding relative paths. */
-  function* walkDir(dirPath: string, baseDir: string, excludes: string[]): Generator<string> {
-    try {
-      const entries = fs.readdirSync(dirPath, { withFileTypes: true });
-      
-      for (const entry of entries) {
-        // Skip hidden files and directories
-        if (entry.name.startsWith(".")) continue;
-
-        const fullPath = path.join(dirPath, entry.name);
-        const relPath = path.relative(baseDir, fullPath);
-
-        // Skip if matches exclude pattern
-        if (matchesExclude(relPath, excludes)) continue;
-
-        if (entry.isDirectory()) {
-          // Skip symlinks
-          if (entry.isSymbolicLink()) continue;
-          
-          // Recursively walk subdirectory
-          yield* walkDir(fullPath, baseDir, excludes);
-        } else if (entry.isFile()) {
-          yield relPath;
+      try {
+        execFileSync("keep", args, {
+          encoding: "utf-8",
+          timeout: 30_000,
+          stdio: ["pipe", "pipe", "pipe"],
+        });
+        api.logger?.info(`[keep] Watch set up for ${relPath}`);
+      } catch (err: any) {
+        // "Already watching" is fine — means a previous session set it up
+        if (err.stderr?.includes("Already watching") || err.message?.includes("Already watching")) {
+          api.logger?.debug(`[keep] Watch already active for ${relPath}`);
+        } else {
+          api.logger?.warn(`[keep] Failed to set up watch for ${relPath}: ${err.message}`);
         }
       }
-    } catch (err: any) {
-      api.logger?.debug(`[keep] walkDir error for ${dirPath}: ${err.message}`);
-    }
-  }
-
-  /** Index workspace paths via MCP. */
-  async function indexWorkspacePaths(workspaceDir: string, label: string): Promise<void> {
-    if (!mcp.connected) return;
-
-    try {
-      const config = getConfig();
-      const startTime = Date.now();
-      let indexed = 0;
-
-      for (const indexPath of config.indexPaths) {
-        const fullPath = path.resolve(workspaceDir, indexPath);
-        
-        if (!fs.existsSync(fullPath)) {
-          api.logger?.debug(`[keep] ${label}: path ${indexPath} does not exist, skipping`);
-          continue;
-        }
-
-        const stat = fs.statSync(fullPath);
-        
-        if (stat.isFile()) {
-          // Single file
-          const relPath = path.relative(workspaceDir, fullPath);
-          if (!matchesExclude(relPath, config.indexExclude)) {
-            await mcp.flow({
-              state: "put",
-              params: { uri: `file://${fullPath}` },
-            });
-            indexed++;
-          }
-        } else if (stat.isDirectory()) {
-          // Directory: walk and index each file
-          for (const relPath of walkDir(fullPath, workspaceDir, config.indexExclude)) {
-            const filePath = path.join(workspaceDir, relPath);
-            await mcp.flow({
-              state: "put",
-              params: { uri: `file://${filePath}` },
-            });
-            indexed++;
-          }
-        }
-      }
-
-      const elapsed = Date.now() - startTime;
-      api.logger?.info(`[keep] ${label}: indexed ${indexed} files in ${elapsed}ms`);
-    } catch (err: any) {
-      api.logger?.warn(`[keep] ${label} indexing error: ${err.message}`);
     }
   }
 
@@ -576,15 +510,11 @@ export default function register(api: any) {
         if (params.isHeartbeat) return;
         if (!mcp.connected) return;
 
+        // Ensure workspace watches are set up (once per gateway lifetime).
+        // Watches keep the index fresh via daemon polling — no per-turn walking.
         const workspaceDir = params.runtimeContext?.workspaceDir as string;
-
-        // Index workspace on first turn
-        if (workspaceDir && !sessionWorkspaceIndexed.has(params.sessionId)) {
-          sessionWorkspaceIndexed.add(params.sessionId);
-          // Fire and forget
-          indexWorkspacePaths(workspaceDir, "workspace start").catch((err: any) => {
-            api.logger?.warn(`[keep] afterTurn workspace indexing error: ${err.message}`);
-          });
+        if (workspaceDir && !watchesInitialized) {
+          try { ensureWatches(workspaceDir); } catch {}
         }
 
         // Identify new messages from this turn
@@ -602,13 +532,6 @@ export default function register(api: any) {
           mcp.prompt({ name: "reflect" }).catch((err: any) => {
             api.logger?.warn(`[keep] afterTurn reflect error: ${err.message}`);
           });
-
-          // Also re-index workspace on inflection
-          if (workspaceDir) {
-            indexWorkspacePaths(workspaceDir, "inflection").catch((err: any) => {
-              api.logger?.warn(`[keep] afterTurn inflection indexing error: ${err.message}`);
-            });
-          }
         }
 
         // If OpenClaw auto-compacted, index the summary as context
@@ -663,14 +586,9 @@ export default function register(api: any) {
             });
           }
 
-          // Also re-index workspace during compaction
-          const workspaceDir = params.runtimeContext?.workspaceDir as string;
-          if (workspaceDir) {
-            // Fire and forget
-            indexWorkspacePaths(workspaceDir, "compaction refresh").catch((err: any) => {
-              api.logger?.warn(`[keep] compact workspace indexing error: ${err.message}`);
-            });
-          }
+          // Workspace indexing is handled by daemon watches — no manual
+          // re-index needed here. Session file indexing above is kept
+          // because session transcripts aren't in the workspace.
 
           if (params.currentTokenCount) {
             api.logger?.debug(
@@ -689,7 +607,7 @@ export default function register(api: any) {
 
       async dispose() {
         sessionFirstAssemble.clear();
-        sessionWorkspaceIndexed.clear();
+        watchesInitialized = false;
         // Transport cleanup handled by gateway_stop hook
       },
     };
