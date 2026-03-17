@@ -3225,6 +3225,12 @@ def _format_config_with_defaults(cfg, store_path: Path) -> str:
         if cfg.summarization and cfg.summarization.params.get("model"):
             lines.append(f"    model: {cfg.summarization.params['model']}")
 
+        # Show limits
+        lines.append("")
+        lines.append("limits:")
+        lines.append(f"  max_summary_length: {cfg.max_summary_length}")
+        lines.append(f"  max_inline_length: {cfg.max_inline_length}")
+
         # Show configured tags or example
         if cfg.default_tags:
             lines.append("")
