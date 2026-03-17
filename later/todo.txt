@@ -2,8 +2,6 @@
 * claude-desktop mcpb (no local components at all, only remote MCP)
     - just ship this as a pre-built thing
 
-* recall lineno/chunk position - design?
-
 * mcpb submission to Claude Desktop directory
     - privacy policy (URL + manifest `privacy_policies` field + README section)
     - 3+ structured examples (prompt → behavior → output) in README
