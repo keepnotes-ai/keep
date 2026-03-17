@@ -17,6 +17,22 @@
         "type": "boolean",
         "default": false,
         "description": "Whether to capture heartbeat messages in keep"
+      },
+      "indexPaths": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "default": ["./"],
+        "description": "Workspace paths to index (relative to workspace root)"
+      },
+      "indexExclude": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "default": [],
+        "description": "Glob patterns to exclude from indexing"
       }
     }
   }

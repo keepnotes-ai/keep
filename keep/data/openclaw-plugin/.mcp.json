@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "keep": {
+      "command": "keep",
+      "args": ["mcp"],
+      "env": {}
+    }
+  }
+}
