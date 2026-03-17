@@ -2003,6 +2003,7 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
 
         Temp files in ~/.cache/keep/email-att/ are NOT cleaned up here
         because background tasks (OCR, describe) need the files later.
+        The daemon sweeps this directory daily, deleting dirs older than 24h.
         """
         results = []
 

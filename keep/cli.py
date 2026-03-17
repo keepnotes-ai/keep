@@ -3633,6 +3633,37 @@ def pending_cmd(
         signal.signal(signal.SIGTERM, handle_signal)
         signal.signal(signal.SIGINT, handle_signal)
 
+        # TTL cleanup for temp files (email attachments, etc.)
+        _last_cleanup_ts = 0.0
+        _CLEANUP_INTERVAL = 86400  # 24 hours
+        _CLEANUP_MAX_AGE = 86400   # delete files older than 24 hours
+
+        def _cleanup_temp_files():
+            nonlocal _last_cleanup_ts
+            now = time.time()
+            if now - _last_cleanup_ts < _CLEANUP_INTERVAL:
+                return
+            _last_cleanup_ts = now
+            cache_dirs = [
+                Path.home() / ".cache" / "keep" / "email-att",
+            ]
+            total_removed = 0
+            for cache_dir in cache_dirs:
+                if not cache_dir.is_dir():
+                    continue
+                for entry in cache_dir.iterdir():
+                    if not entry.is_dir():
+                        continue
+                    try:
+                        age = now - entry.stat().st_mtime
+                        if age > _CLEANUP_MAX_AGE:
+                            shutil.rmtree(entry)
+                            total_removed += 1
+                    except OSError:
+                        pass
+            if total_removed:
+                _daemon_logger.info("Cleaned up %d temp directories", total_removed)
+
         try:
             pid_path.write_text(str(os.getpid()))
             while not shutdown_requested:
@@ -3656,6 +3687,9 @@ def pending_cmd(
                         watch_result["checked"], watch_result["changed"],
                         watch_result["stale"], watch_result["errors"],
                     )
+
+                # TTL cleanup (self-throttled to once per day)
+                _cleanup_temp_files()
 
                 _daemon_logger.info(
                     "Daemon batch: processed=%d failed=%d delegated=%d flow_processed=%d flow_failed=%d",
