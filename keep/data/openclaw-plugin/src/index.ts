@@ -270,7 +270,7 @@ export default function register(api: any) {
       info: {
         id: "keep",
         name: "keep reflective memory",
-        version: "0.100.0",
+        version: "0.100.1",
         ownsCompaction: false, // v0.99: don't own compaction yet
       },
 

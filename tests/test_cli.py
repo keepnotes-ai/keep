@@ -744,6 +744,65 @@ class TestPutDirectory:
         assert result.returncode == 0
         assert "Directory mode" in result.stdout or "directory" in result.stdout.lower()
 
+    # --exclude tests (unit-level, against _list_directory_files)
+
+    def test_list_directory_exclude_by_extension(self, tmp_path):
+        """--exclude filters files by extension glob."""
+        from keep.cli import _list_directory_files
+        (tmp_path / "a.txt").write_text("A")
+        (tmp_path / "b.log").write_text("B")
+        (tmp_path / "c.txt").write_text("C")
+        files = _list_directory_files(tmp_path, exclude=["*.log"])
+        assert [f.name for f in files] == ["a.txt", "c.txt"]
+
+    def test_list_directory_exclude_multiple_patterns(self, tmp_path):
+        """--exclude supports multiple patterns."""
+        from keep.cli import _list_directory_files
+        (tmp_path / "a.txt").write_text("A")
+        (tmp_path / "b.log").write_text("B")
+        (tmp_path / "c.pyc").write_text("C")
+        (tmp_path / "d.md").write_text("D")
+        files = _list_directory_files(tmp_path, exclude=["*.log", "*.pyc"])
+        assert [f.name for f in files] == ["a.txt", "d.md"]
+
+    def test_list_directory_exclude_recursive(self, tmp_path):
+        """--exclude filters files in subdirectories when recursing."""
+        from keep.cli import _list_directory_files
+        (tmp_path / "top.txt").write_text("top")
+        sub = tmp_path / "sub"
+        sub.mkdir()
+        (sub / "keep.txt").write_text("keep")
+        (sub / "skip.log").write_text("skip")
+        files = _list_directory_files(tmp_path, recurse=True, exclude=["*.log"])
+        names = [f.name for f in files]
+        assert "top.txt" in names
+        assert "keep.txt" in names
+        assert "skip.log" not in names
+
+    def test_list_directory_exclude_subdirectory_pattern(self, tmp_path):
+        """--exclude can match subdirectory paths like 'build/*'."""
+        from keep.cli import _list_directory_files
+        (tmp_path / "readme.txt").write_text("ok")
+        build = tmp_path / "build"
+        build.mkdir()
+        (build / "output.js").write_text("built")
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "main.js").write_text("source")
+        files = _list_directory_files(tmp_path, recurse=True, exclude=["build/*"])
+        names = [str(f.relative_to(tmp_path)) for f in files]
+        assert "readme.txt" in names
+        assert "src/main.js" in names
+        assert "build/output.js" not in names
+
+    def test_list_directory_exclude_no_effect_without_match(self, tmp_path):
+        """--exclude with non-matching pattern returns all files."""
+        from keep.cli import _list_directory_files
+        (tmp_path / "a.txt").write_text("A")
+        (tmp_path / "b.txt").write_text("B")
+        files = _list_directory_files(tmp_path, exclude=["*.xyz"])
+        assert [f.name for f in files] == ["a.txt", "b.txt"]
+
 
 class TestCommandAliases:
     """Tests that old command names still work as hidden aliases."""

@@ -6,6 +6,7 @@ Usage:
     keep get file:///path/to/doc.md
 """
 
+import fnmatch
 import importlib.metadata
 import importlib.resources
 import json
@@ -72,7 +73,9 @@ def _is_filesystem_path(source: str) -> Optional[Path]:
     return None
 
 
-def _git_visible_files(directory: Path, recurse: bool) -> list[Path] | None:
+def _git_visible_files(
+    directory: Path, recurse: bool, exclude: list[str] | None = None,
+) -> list[Path] | None:
     """Return files visible to git (tracked + untracked, excluding ignored).
 
     Returns None if the directory is not inside a git repository or git
@@ -110,19 +113,25 @@ def _git_visible_files(directory: Path, recurse: bool) -> list[Path] | None:
             continue
         if entry.is_symlink() or not entry.is_file():
             continue
+        # Apply user-specified exclude patterns against relative path
+        if exclude and any(fnmatch.fnmatch(relpath, pat) for pat in exclude):
+            continue
         files.append(entry)
     return sorted(files)
 
 
-def _list_directory_files(directory: Path, *, recurse: bool = False) -> list[Path]:
+def _list_directory_files(
+    directory: Path, *, recurse: bool = False, exclude: list[str] | None = None,
+) -> list[Path]:
     """List regular files in a directory, sorted by name.
 
     Respects .gitignore when the directory is inside a git repository.
     Skips symlinks, hidden files/dirs (names starting with '.').
     When recurse=True, walks subdirectories.
+    Exclude patterns use fnmatch against relative paths (gitignore-style globs).
     """
     # Try git-aware listing first
-    git_files = _git_visible_files(directory, recurse)
+    git_files = _git_visible_files(directory, recurse, exclude=exclude)
     if git_files is not None:
         return git_files
 
@@ -132,6 +141,13 @@ def _list_directory_files(directory: Path, *, recurse: bool = False) -> list[Pat
         for root, dirs, filenames in os.walk(directory, followlinks=False):
             # Skip hidden directories (modifying dirs in-place prunes them)
             dirs[:] = sorted(d for d in dirs if not d.startswith("."))
+            # Prune excluded directories early
+            if exclude:
+                rel_root = Path(root).relative_to(directory)
+                dirs[:] = [
+                    d for d in dirs
+                    if not any(fnmatch.fnmatch(str(rel_root / d), pat) for pat in exclude)
+                ]
             root_path = Path(root)
             for name in sorted(filenames):
                 if name.startswith("."):
@@ -139,6 +155,10 @@ def _list_directory_files(directory: Path, *, recurse: bool = False) -> list[Pat
                 entry = root_path / name
                 if entry.is_symlink():
                     continue
+                if exclude:
+                    relpath = str(entry.relative_to(directory))
+                    if any(fnmatch.fnmatch(relpath, pat) for pat in exclude):
+                        continue
                 files.append(entry)
     else:
         for entry in sorted(directory.iterdir()):
@@ -147,6 +167,8 @@ def _list_directory_files(directory: Path, *, recurse: bool = False) -> list[Pat
             if entry.is_symlink():
                 continue
             if entry.is_dir():
+                continue
+            if exclude and any(fnmatch.fnmatch(entry.name, pat) for pat in exclude):
                 continue
             files.append(entry)
     return files
@@ -1936,6 +1958,7 @@ def _put_store(
     summary: Optional[str],
     force: bool = False,
     recurse: bool = False,
+    exclude: list[str] | None = None,
 ) -> Optional["Item"]:
     """Execute the store operation for put(). Returns Item, or None for directory mode."""
     if source == "-" or (source is None and _has_stdin_data()):
@@ -1963,7 +1986,7 @@ def _put_store(
         if id is not None:
             typer.echo("Error: --id cannot be used with directory mode", err=True)
             raise typer.Exit(1)
-        files = _list_directory_files(resolved_path, recurse=recurse)
+        files = _list_directory_files(resolved_path, recurse=recurse, exclude=exclude)
         if not files:
             typer.echo(f"Error: no eligible files in {resolved_path}/", err=True)
             hint = "hidden files and symlinks are skipped"
@@ -2054,6 +2077,10 @@ def put(
         "--recurse", "-r",
         help="Recurse into subdirectories (directory mode)"
     )] = False,
+    exclude: Annotated[Optional[list[str]], typer.Option(
+        "--exclude", "-x",
+        help="Glob pattern to exclude files (directory mode, repeatable)"
+    )] = None,
     _analyze: Annotated[bool, typer.Option(
         "--analyze", hidden=True, help="(deprecated, no-op)"
     )] = False,
@@ -2076,6 +2103,8 @@ def put(
 
     \b
     Directory mode skips hidden files/dirs and symlinks.
+    Use --exclude/-x to skip additional patterns (repeatable, fnmatch globs):
+      keep put ./src/ -r -x "*.pyc" -x "test_*"
 
     \b
     Text mode uses content-addressed IDs for versioning:
@@ -2091,7 +2120,7 @@ def put(
     resolved_path = _is_filesystem_path(source) if source and source != "-" else None
 
     try:
-        item = _put_store(kp, source, resolved_path, parsed_tags, id, summary, force, recurse=recurse)
+        item = _put_store(kp, source, resolved_path, parsed_tags, id, summary, force, recurse=recurse, exclude=exclude)
     except ValueError as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(1)

@@ -2,7 +2,7 @@
   "id": "keep",
   "name": "keep",
   "description": "Reflective memory — context engine with prompt-aware injection, memory sync, session archival",
-  "version": "0.100.0",
+  "version": "0.100.1",
   "kind": "context-engine",
   "configSchema": {
     "type": "object",
