@@ -365,6 +365,8 @@ export default function register(api: any) {
               // Use a simple find via an inline state doc — single query
               // with scope, no multi-step branching. query-resolve is too
               // slow and returns out-of-scope results for memory recall.
+              // No token_budget — we need raw JSON, not rendered text.
+              // (token_budget triggers text rendering in keep_flow MCP tool.)
               const result = await mcp.flow({
                 state: "memory-search",
                 params: {
@@ -372,7 +374,6 @@ export default function register(api: any) {
                   scope: memoryScope,
                   limit: maxResults,
                 },
-                token_budget: 4000,
               });
 
               // State doc binding "results" contains { results: [...] }
