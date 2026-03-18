@@ -364,6 +364,29 @@ class WorkQueue:
         )
         return cursor.rowcount
 
+    def cancel_by_item_ids(self, item_ids: set[str]) -> int:
+        """Cancel unclaimed work items targeting any of the given item IDs.
+
+        Marks matching ``requested`` items as ``superseded``.
+        Already-claimed items are skipped (they'll be cleaned up later).
+        Returns the number of cancelled items.
+        """
+        if not item_ids:
+            return 0
+        now = self._now()
+        placeholders = ",".join("?" * len(item_ids))
+        cursor = self._conn.execute(
+            f"""
+            UPDATE continue_work
+            SET status = 'superseded', updated_at = ?
+            WHERE status = 'requested'
+              AND claimed_by IS NULL
+              AND json_extract(input_json, '$.item_id') IN ({placeholders})
+            """,
+            (now, *item_ids),
+        )
+        return cursor.rowcount
+
     # ------------------------------------------------------------------
     # Query
     # ------------------------------------------------------------------

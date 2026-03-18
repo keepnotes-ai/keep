@@ -211,6 +211,8 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
         self._provider_init_lock = threading.RLock()
         self._last_spawn_time: float = 0.0
         self._tagdoc_cache: dict[str, Optional[dict[str, str]]] = {}
+        self._ignore_patterns: Optional[list[str]] = None
+        self._ignore_patterns_ts: float = 0.0
 
         # Check store consistency and reconcile in background if needed
         # (safe for all backends — uses abstract store interface)
@@ -1043,6 +1045,70 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
         """DocumentStore collection — always 'default'."""
         return "default"
 
+    # ------------------------------------------------------------------
+    # .ignore — global store-level ignore patterns
+    # ------------------------------------------------------------------
+
+    def _load_ignore_patterns(self) -> list[str]:
+        """Load and cache ``.ignore`` patterns from the store (60s TTL)."""
+        import time as _time
+        now = _time.monotonic()
+        if self._ignore_patterns is not None and (now - self._ignore_patterns_ts) < 60:
+            return self._ignore_patterns
+        from .ignore import parse_ignore_patterns
+        doc_coll = self._resolve_doc_collection()
+        rec = self._document_store.get(doc_coll, ".ignore")
+        if rec and rec.summary:
+            self._ignore_patterns = parse_ignore_patterns(rec.summary)
+        else:
+            self._ignore_patterns = []
+        self._ignore_patterns_ts = now
+        return self._ignore_patterns
+
+    def _invalidate_ignore_cache(self) -> None:
+        """Clear cached ``.ignore`` patterns."""
+        self._ignore_patterns = None
+        self._ignore_patterns_ts = 0.0
+
+    def _purge_ignored_items(self, patterns: list[str]) -> dict:
+        """Delete file:// items matching ignore patterns + cancel queued work.
+
+        Called automatically when ``.ignore`` gains new patterns.
+        Returns ``{"deleted": int, "cancelled": int}``.
+        """
+        from .ignore import match_file_uri
+
+        doc_coll = self._resolve_doc_collection()
+        records = self._document_store.query_by_id_prefix(
+            doc_coll, "file://", limit=0,
+        )
+        matched_ids: set[str] = set()
+        for rec in records:
+            if match_file_uri(rec.id, patterns):
+                matched_ids.add(rec.id)
+
+        if not matched_ids:
+            return {"deleted": 0, "cancelled": 0}
+
+        for mid in matched_ids:
+            try:
+                self.delete(mid)
+            except Exception as e:
+                logger.warning("Failed to purge %s: %s", mid, e)
+
+        cancelled = 0
+        try:
+            wq = self._get_work_queue()
+            cancelled = wq.cancel_by_item_ids(matched_ids)
+        except Exception as e:
+            logger.warning("Failed to cancel work items: %s", e)
+
+        logger.info(
+            "Purged %d items and cancelled %d work items matching .ignore patterns",
+            len(matched_ids), cancelled,
+        )
+        return {"deleted": len(matched_ids), "cancelled": cancelled}
+
     def _build_tag_where(self, tags: dict) -> dict | None:
         """Build backend where-clause for tag filters."""
         builder = getattr(self._store, "build_tag_where", None)
@@ -1704,6 +1770,13 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
 
         # Process tag-driven edges (_inverse on tagdocs)
         self._process_edge_tags(id, merged_tags, existing_tags, doc_coll)
+
+        # .ignore update: purge items matching current patterns
+        if id == ".ignore":
+            self._invalidate_ignore_cache()
+            pats = self._load_ignore_patterns()
+            if pats:
+                self._purge_ignored_items(pats)
 
         # Spawn background processor if needed (local only — uses filesystem locks)
         if (

@@ -606,7 +606,7 @@ class MockDocumentStore:
         self,
         collection: str,
         prefix: str,
-        limit: int | None = None,
+        limit: int = 0,
         offset: int = 0,
     ) -> list:
         if collection not in self._data:
@@ -615,9 +615,11 @@ class MockDocumentStore:
         for id, rec in self._data[collection].items():
             if id.startswith(prefix):
                 results.append(self._make_record(collection, id, rec))
-        if limit is None:
-            return results[offset:]
-        return results[offset:offset + limit]
+        if offset > 0:
+            results = results[offset:]
+        if limit > 0:
+            results = results[:limit]
+        return results
 
     def query_by_id_glob(
         self,

@@ -299,7 +299,7 @@ def add_watch(
     if kind == "file":
         _update_file_fingerprint(entry)
     elif kind == "directory":
-        _update_directory_fingerprint(entry)
+        _update_directory_fingerprint(entry, extra_exclude=keeper._load_ignore_patterns())
     # URLs: fingerprint is empty until first poll
 
     entries.append(entry)
@@ -366,10 +366,17 @@ def check_file(entry: WatchEntry) -> bool:
     return False
 
 
-def _compute_walk_hash(directory: Path, recurse: bool, exclude: list[str] | None) -> str:
+def _compute_walk_hash(
+    directory: Path,
+    recurse: bool,
+    exclude: list[str] | None,
+    extra_exclude: list[str] | None = None,
+) -> str:
     """Compute a hash of sorted (relpath, mtime_ns) for a directory."""
     from .utils import _list_directory_files
-    files = _list_directory_files(directory, recurse=recurse, exclude=exclude)
+    from .ignore import merge_excludes
+    combined_exclude = merge_excludes(extra_exclude or [], exclude) or None
+    files = _list_directory_files(directory, recurse=recurse, exclude=combined_exclude)
     parts = []
     for f in files:
         try:
@@ -382,24 +389,36 @@ def _compute_walk_hash(directory: Path, recurse: bool, exclude: list[str] | None
     return hashlib.sha256(combined.encode()).hexdigest()[:16]
 
 
-def _update_directory_fingerprint(entry: WatchEntry) -> None:
+def _update_directory_fingerprint(
+    entry: WatchEntry,
+    extra_exclude: list[str] | None = None,
+) -> None:
     """Update a directory entry's walk_hash from disk."""
     try:
         directory = Path(entry.source)
-        entry.walk_hash = _compute_walk_hash(directory, entry.recurse, entry.exclude or None)
+        entry.walk_hash = _compute_walk_hash(
+            directory, entry.recurse, entry.exclude or None,
+            extra_exclude=extra_exclude,
+        )
         entry.stale = False
     except OSError:
         entry.stale = True
 
 
-def check_directory(entry: WatchEntry) -> bool:
+def check_directory(
+    entry: WatchEntry,
+    extra_exclude: list[str] | None = None,
+) -> bool:
     """Check if a watched directory has changed. Returns True if changed."""
     directory = Path(entry.source)
     if not directory.is_dir():
         entry.stale = True
         return False
 
-    new_hash = _compute_walk_hash(directory, entry.recurse, entry.exclude or None)
+    new_hash = _compute_walk_hash(
+        directory, entry.recurse, entry.exclude or None,
+        extra_exclude=extra_exclude,
+    )
     if new_hash != entry.walk_hash:
         entry.walk_hash = new_hash
         entry.stale = False
@@ -475,6 +494,9 @@ def poll_watches(keeper: Keeper) -> dict[str, int]:
     from .types import utc_now as _utc_now
     now_ts = _utc_now()
 
+    # Load global ignore patterns once for all watches this tick
+    ignore_pats = keeper._load_ignore_patterns()
+
     stats = {"checked": 0, "changed": 0, "stale": 0, "errors": 0}
     dirty = False
 
@@ -492,7 +514,7 @@ def poll_watches(keeper: Keeper) -> dict[str, int]:
             if entry.kind == "file":
                 changed = check_file(entry)
             elif entry.kind == "directory":
-                changed = check_directory(entry)
+                changed = check_directory(entry, extra_exclude=ignore_pats)
             elif entry.kind == "url":
                 changed = check_url(entry)
         except Exception as e:
@@ -530,9 +552,11 @@ def _reput_source(keeper: Keeper, entry: WatchEntry) -> None:
         # files. The walk-hash told us *something* changed; individual file
         # mtimes narrow the blast radius without force=True.
         from .utils import _list_directory_files
+        from .ignore import merge_excludes
         directory = Path(entry.source)
+        combined = merge_excludes(keeper._load_ignore_patterns(), entry.exclude or None)
         files = _list_directory_files(
-            directory, recurse=entry.recurse, exclude=entry.exclude or None,
+            directory, recurse=entry.recurse, exclude=combined or None,
         )
         for fpath in files:
             file_uri = f"file://{fpath}"

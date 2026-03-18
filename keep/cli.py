@@ -1933,7 +1933,9 @@ def _put_store(
         if id is not None:
             typer.echo("Error: --id cannot be used with directory mode", err=True)
             raise typer.Exit(1)
-        files = _list_directory_files(resolved_path, recurse=recurse, exclude=exclude)
+        from .ignore import merge_excludes
+        combined_exclude = merge_excludes(kp._load_ignore_patterns(), exclude)
+        files = _list_directory_files(resolved_path, recurse=recurse, exclude=combined_exclude or None)
         if not files:
             typer.echo(f"Error: no eligible files in {resolved_path}/", err=True)
             hint = "hidden files and symlinks are skipped"
