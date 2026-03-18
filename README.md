@@ -31,7 +31,7 @@ keep prompt reflect
 
 Store anything — URLs, files, notes — and `keep` summarizes, embeds, and tags each item. You search by meaning, not keywords. Content goes in as text, PDF, HTML, Office documents, audio, or images; what comes back is a summary with tags and semantic neighbors. Audio and image files auto-extract metadata tags (artist, album, camera, date, etc.).
 
-What makes this more than a vector store: when you view your current context (`keep now`) or retrieve any item (`keep get`), keep automatically surfaces relevant open commitments, past learnings, and breakdowns — ranked by similarity and recency. The right things appear at the right time. That's what makes reflection real.
+What makes this more than a vector store: tags become edges. Define a tag like `author` or `git_commit` and keep creates bidirectional links — a user-defined graph model where every tag can be a navigable relationship. When you retrieve any item, keep follows these edges and surfaces related items: open commitments, past learnings, referenced files, commit history. The right things appear at the right time, without manual graph construction.
 
 - **Summarize, embed, tag** — URLs, files, and text are summarized and indexed on ingest
 - **Contextual feedback** — Open commitments and past learnings surface automatically
