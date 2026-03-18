@@ -1,8 +1,4 @@
 
-* states (for "get") --> templates (for "prompt")
-    - just embed the states within the getters
-    - then use "prompt" rather than "find" or "get" --> surrounded with text
-
 * claude-desktop mcpb (no local components at all, only remote MCP)
     - just ship this as a pre-built thing
 
@@ -293,3 +289,5 @@ x acp
 . extract links from pdf, word, etc.
 . watch paths
 . async cleanup (TTL)
+. git changelog ingest
+. states (for "get") --> templates (for "prompt")
