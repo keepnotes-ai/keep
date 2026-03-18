@@ -56,6 +56,7 @@ Complete listing with summaries:
 | [CLI Quick Start](QUICKSTART.md) | Install keep with `uv tool install keep-skill`, configure an embedding provider (Voyage AI, OpenAI, Gemini, Mistral, Ollama, or local MLX), store your first note, and run a semantic search. |
 | [keep put](KEEP-PUT.md) | Store content from inline text, stdin, file paths, directories (recursive), or HTTP/HTTPS URLs. Supports custom IDs, tags, and automatic embedding on store. Handles PDF, markdown, and plain text. |
 | [keep get](KEEP-GET.md) | Retrieve a note by exact ID or prefix match. Returns content, all tags, version count, and meta-tag relationships (similar notes, learnings, previous versions). |
+| [keep edit](KEEP-EDIT.md) | Edit a note's content in `$EDITOR`. Useful for prompts, `.ignore`, and other system docs. |
 | [keep find](KEEP-FIND.md) | Semantic similarity search across all stored notes. Specify a query string; returns ranked results with similarity scores. Filter by tag key-value pairs, set minimum similarity threshold, limit result count. |
 | [keep list](KEEP-LIST.md) | List notes with filters: by tag, date range, source type, ID pattern. Sort by creation date, update date, or access time. Output as YAML, JSON, or compact single-line format. |
 | [keep now](KEEP-NOW.md) | The `now` note is a single mutable record representing your agent's current state, goals, and working context. Read it to recall active intentions; write it to update direction. Related notes and learnings surface automatically as meta-tag fields. |

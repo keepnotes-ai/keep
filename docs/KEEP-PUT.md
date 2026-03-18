@@ -61,13 +61,7 @@ The `.ignore` system doc contains glob patterns that are automatically excluded 
 
 ```bash
 keep get .ignore                           # View current patterns
-keep put .ignore "$(cat <<'EOF'
-*.min.js
-dist/*
-package-lock.json
-__pycache__/*
-EOF
-)"                                         # Edit patterns
+keep edit .ignore                          # Edit in $EDITOR
 ```
 
 Updating `.ignore` retroactively purges matching `file://` items from the store and cancels their pending work. Ships with sensible defaults for build artifacts, lock files, bytecode, and binaries.

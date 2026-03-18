@@ -1,6 +1,6 @@
 # Store-level ignore patterns (one per line, fnmatch syntax)
 # Applied to all directory walks and watches, in addition to .gitignore
-# Edit with: keep get .ignore / keep put .ignore
+# Edit with: keep edit .ignore
 
 # Build output
 *.min.js

@@ -119,14 +119,16 @@ keep put /path/ -r --watch            # Watch for changes
 keep put "note" --suggest-tags        # Show tag suggestions
 keep put doc.pdf --analyze            # Index + decompose into parts
 keep get .ignore                      # View global ignore patterns
-keep put .ignore "dist/*"             # Edit ignore patterns (retroactive purge)
+keep edit .ignore                     # Edit ignore patterns in $EDITOR
 
-# Retrieve
+# Retrieve and edit
 keep get ID                           # Current version
 keep get ID -V 1                      # Previous version
 keep get "ID@P{1}"                    # Part 1 (from analyze)
 keep get ID --history                 # List all versions
 keep get ID --parts                   # List structural parts
+keep edit ID                          # Edit content in $EDITOR
+keep edit .ignore                     # Edit system docs
 
 # Search
 keep find "query"                     # Semantic search
