@@ -2404,6 +2404,11 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
                     if part_num:
                         parent_tags["_focus_part"] = part_num
                         parent_tags["_focus_summary"] = item.summary
+                        # Propagate line range tags if present
+                        if "_start_line" in item.tags:
+                            parent_tags["_focus_start_line"] = item.tags["_start_line"]
+                        if "_end_line" in item.tags:
+                            parent_tags["_focus_end_line"] = item.tags["_end_line"]
                     uplifted.append(Item(
                         id=parent_id, summary=parent_item.summary,
                         tags=parent_tags, score=item.score,
@@ -2438,6 +2443,38 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
                 uplifted.append(item)
                 seen_parents[item.id] = len(uplifted) - 1
         items = uplifted
+
+        # Keyword passage fallback: for file-backed items that matched
+        # semantically (no _focus_part from FTS), find the best passage
+        # by keyword overlap in the source file. Only runs for URI items
+        # when a query string is available.
+        if query:
+            from .analyzers import _find_best_passage
+
+            for idx, item in enumerate(items):
+                if item.tags.get("_focus_part"):
+                    continue  # already has a part match
+                if item.tags.get("_source") != "uri":
+                    continue  # not file-backed
+                if not item.id.startswith("file://"):
+                    continue
+
+                fpath = Path(item.id.removeprefix("file://"))
+                try:
+                    content = fpath.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+
+                passage = _find_best_passage(content, query)
+                if passage:
+                    enriched_tags = dict(item.tags)
+                    enriched_tags["_focus_summary"] = passage["snippet"]
+                    enriched_tags["_focus_start_line"] = passage["start_line"]
+                    enriched_tags["_focus_end_line"] = passage["end_line"]
+                    items[idx] = Item(
+                        id=item.id, summary=item.summary,
+                        tags=enriched_tags, score=item.score,
+                    )
 
         # Remap deep_groups: uplift keys AND items (parts → parents), dedup.
         # Only exclude deep items that appear in the top primary results
@@ -2558,6 +2595,12 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
                     focus_version = item.tags.get("_focus_version")
                     if focus_version:
                         tags["_focus_version"] = focus_version
+                    focus_start = item.tags.get("_focus_start_line")
+                    if focus_start:
+                        tags["_focus_start_line"] = focus_start
+                    focus_end = item.tags.get("_focus_end_line")
+                    if focus_end:
+                        tags["_focus_end_line"] = focus_end
                     entity_marker = item.tags.get("_entity")
                     if entity_marker:
                         tags["_entity"] = entity_marker
@@ -3752,6 +3795,18 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
                 prompt_override=analysis_prompt,
                 classifier_provider=analyzer_provider,
             )
+
+        # Extract line ranges for URI-sourced documents
+        if (proc_result.parts 
+            and doc_record.tags.get("_source") == "uri" 
+            and chunk_dicts 
+            and len(chunk_dicts) == 1):
+            try:
+                from .analyzers import _extract_line_ranges
+                source_content = chunk_dicts[0]["content"]
+                proc_result.parts = _extract_line_ranges(source_content, proc_result.parts)
+            except Exception as e:
+                logger.warning("Line range extraction failed: %s", e)
 
         # Content not decomposable — single section is redundant with the note
         if not proc_result.parts or len(proc_result.parts) <= 1:

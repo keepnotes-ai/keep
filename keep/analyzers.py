@@ -28,6 +28,250 @@ def _estimate_tokens(text: str) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Line range extraction for URI-sourced documents
+# ---------------------------------------------------------------------------
+
+def _extract_line_ranges(source_content: str, parts: list[dict]) -> list[dict]:
+    """Add _start_line and _end_line to parts by matching against source content.
+    
+    Strategy for markdown files:
+    - Split source into sections by heading markers (# ## ### etc.)
+    - Parts are ordered to match document structure (part 1 = first section, etc.)
+    - Match each part summary's leading text against section headings
+    - Fallback: assign sections sequentially to parts
+    
+    For non-markdown or when matching fails, parts get file-level line ranges
+    (startLine=1, endLine=total_lines).
+    
+    Args:
+        source_content: The full source document content
+        parts: List of part dicts with "summary" keys
+    
+    Returns:
+        The same parts list with "_start_line" and "_end_line" string tags added
+    """
+    if not parts or not source_content:
+        return parts
+    
+    lines = source_content.splitlines()
+    total_lines = len(lines)
+    
+    # Try to extract markdown sections
+    sections = _extract_markdown_sections(lines)
+    
+    # If no sections found or sections don't match parts count reasonably,
+    # fall back to file-level ranges
+    if not sections or len(sections) < len(parts):
+        logger.info(
+            "Line ranges: using file-level fallback (sections=%d, parts=%d)",
+            len(sections), len(parts)
+        )
+        for part in parts:
+            if "tags" not in part:
+                part["tags"] = {}
+            part["tags"]["_start_line"] = "1"
+            part["tags"]["_end_line"] = str(total_lines)
+        return parts
+    
+    # Try to match parts to sections
+    section_assignments = _match_parts_to_sections(parts, sections)
+    
+    # Apply line ranges to parts
+    for i, part in enumerate(parts):
+        if "tags" not in part:
+            part["tags"] = {}
+        
+        if i < len(section_assignments) and section_assignments[i] is not None:
+            section = sections[section_assignments[i]]
+            part["tags"]["_start_line"] = str(section["start_line"])
+            part["tags"]["_end_line"] = str(section["end_line"])
+        else:
+            # Fallback to file-level range
+            part["tags"]["_start_line"] = "1"
+            part["tags"]["_end_line"] = str(total_lines)
+    
+    return parts
+
+
+def _extract_markdown_sections(lines: list[str]) -> list[dict]:
+    """Extract markdown sections defined by headings.
+    
+    Returns:
+        List of section dicts with keys: title, start_line, end_line (1-indexed)
+    """
+    import re
+    
+    sections = []
+    # Only match headings that start at the beginning of the line (no indentation)
+    heading_pattern = re.compile(r'^#{1,6}\s+(.+)$')
+    
+    current_section = None
+    
+    for i, line in enumerate(lines, 1):  # 1-indexed
+        # Don't strip leading whitespace - we want to check for indentation
+        match = heading_pattern.match(line)
+        if match:
+            # End previous section
+            if current_section is not None:
+                current_section["end_line"] = i - 1
+                sections.append(current_section)
+            
+            # Start new section
+            current_section = {
+                "title": match.group(1).strip(),
+                "start_line": i,
+                "end_line": len(lines)  # Will be updated when next section starts or at EOF
+            }
+    
+    # Close final section
+    if current_section is not None:
+        current_section["end_line"] = len(lines)
+        sections.append(current_section)
+    
+    return sections
+
+
+def _match_parts_to_sections(parts: list[dict], sections: list[dict]) -> list[int | None]:
+    """Match part summaries to markdown sections.
+    
+    Strategy:
+    1. Check if part summary starts with or contains section title
+    2. Sequential fallback: part N -> section N
+    
+    Returns:
+        List of section indices for each part, or None for no match
+    """
+    assignments = [None] * len(parts)
+    used_sections = set()
+    
+    # First pass: try to match by content similarity
+    for i, part in enumerate(parts):
+        summary = part.get("summary", "").lower()
+        if not summary:
+            continue
+        
+        best_match = None
+        best_score = 0
+        
+        for j, section in enumerate(sections):
+            if j in used_sections:
+                continue
+            
+            section_title = section["title"].lower()
+            
+            # Check if summary starts with or contains section title
+            if summary.startswith(section_title):
+                score = len(section_title) / len(summary) * 2  # Higher weight for starts-with
+            elif section_title in summary:
+                score = len(section_title) / len(summary)
+            elif any(word in summary for word in section_title.split() if len(word) > 3):
+                # Partial word match for longer words
+                matching_words = [w for w in section_title.split() if len(w) > 3 and w in summary]
+                score = len(matching_words) / len(section_title.split()) * 0.5
+            else:
+                score = 0
+            
+            if score > best_score and score > 0.1:  # Minimum threshold
+                best_match = j
+                best_score = score
+        
+        if best_match is not None:
+            assignments[i] = best_match
+            used_sections.add(best_match)
+    
+    # Second pass: sequential assignment for unmatched parts
+    section_idx = 0
+    for i, assignment in enumerate(assignments):
+        if assignment is None:
+            # Find next available section
+            while section_idx < len(sections) and section_idx in used_sections:
+                section_idx += 1
+            if section_idx < len(sections):
+                assignments[i] = section_idx
+                used_sections.add(section_idx)
+                section_idx += 1
+    
+    return assignments
+
+
+# ---------------------------------------------------------------------------
+# Keyword passage extraction (fallback when no part match)
+# ---------------------------------------------------------------------------
+
+def _find_best_passage(
+    source_content: str,
+    query: str,
+    window: int = 8,
+    overlap: int = 4,
+) -> dict | None:
+    """Find the best-matching passage in a file by keyword overlap.
+
+    Used as a fallback when semantic search matches a file but no specific
+    part was matched via FTS. Scans the file with a sliding window and
+    returns the window with the highest concentration of query terms.
+
+    Args:
+        source_content: Full file content
+        query: Search query string
+        window: Number of lines per passage window
+        overlap: Overlap between windows (step = window - overlap)
+
+    Returns:
+        Dict with start_line, end_line, snippet (1-indexed lines),
+        or None if no terms match at all.
+    """
+    if not source_content or not query:
+        return None
+
+    lines = source_content.splitlines()
+    total_lines = len(lines)
+    if total_lines == 0:
+        return None
+
+    # Extract query terms (lowercase, skip very short words)
+    terms = set()
+    for t in re.split(r'\W+', query.lower()):
+        if len(t) >= 2:
+            terms.add(t)
+    if not terms:
+        return None
+
+    best_score = 0
+    best_start = 0
+    step = max(1, window - overlap)
+
+    for i in range(0, total_lines, step):
+        end = min(i + window, total_lines)
+        window_text = " ".join(lines[i:end]).lower()
+        score = sum(1 for t in terms if t in window_text)
+        if score > best_score:
+            best_score = score
+            best_start = i
+
+    if best_score == 0:
+        return None
+
+    end = min(best_start + window, total_lines)
+
+    # Snap to nearest heading if within 2 lines (prefer section boundaries).
+    # Only snap if the heading is within the window — don't pull in a
+    # distant top-level heading that isn't part of the match.
+    for offset in range(1, min(3, best_start + 1)):
+        check = best_start - offset
+        if check >= 0 and re.match(r'^#{1,6}\s', lines[check]):
+            best_start = check
+            end = min(best_start + window, total_lines)
+            break
+
+    snippet = "\n".join(lines[best_start:end])
+    return {
+        "start_line": str(best_start + 1),  # 1-indexed
+        "end_line": str(end),
+        "snippet": snippet,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Sliding-window output parser
 # ---------------------------------------------------------------------------
 
