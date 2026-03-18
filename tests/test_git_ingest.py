@@ -97,7 +97,8 @@ class TestGetCommits:
         c = commits[0]
         assert c["sha"]  # full SHA
         assert c["sha_short"]  # short SHA
-        assert c["author"] == "Test"
+        assert c["author_name"] == "Test"
+        assert c["author_email"] == "t@t.com"
         assert c["date"]  # ISO date
         assert c["message"]
         assert c["id"].startswith("git://")

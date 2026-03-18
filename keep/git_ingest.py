@@ -14,8 +14,8 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
-# git log format: sha\x00author\x00date\x00subject\x00body\x00files
-_LOG_FORMAT = "%H%x00%an%x00%aI%x00%s%x00%b"
+# git log format: sha\x00author_name\x00author_email\x00date\x00subject\x00body
+_LOG_FORMAT = "%H%x00%an%x00%ae%x00%aI%x00%s%x00%b"
 _LOG_SEP = "\x1e"  # record separator
 
 
@@ -95,15 +95,16 @@ def _parse_commits(raw: str, repo_dir: Path) -> list[dict[str, Any]]:
             continue
 
         parts = line.split("\x00")
-        if len(parts) < 4:
+        if len(parts) < 5:
             i += 1
             continue
 
         sha = parts[0]
-        author = parts[1]
-        date = parts[2]
-        subject = parts[3]
-        body = parts[4] if len(parts) > 4 else ""
+        author_name = parts[1]
+        author_email = parts[2].strip().lower()
+        date = parts[3]
+        subject = parts[4]
+        body = parts[5] if len(parts) > 5 else ""
         i += 1
 
         # Skip blank line between header and file list
@@ -124,7 +125,8 @@ def _parse_commits(raw: str, repo_dir: Path) -> list[dict[str, Any]]:
         commits.append({
             "sha": sha,
             "sha_short": sha_short,
-            "author": author,
+            "author_name": author_name,
+            "author_email": author_email,
             "date": date,
             "message": message,
             "subject": subject,
@@ -228,7 +230,8 @@ def ingest_git_history(
         tags: dict[str, Any] = {
             "_source": "git",
             "_git_sha": commit["sha"],
-            "_git_author": commit["author"],
+            "_git_author": commit["author_name"],
+            "author": commit["author_email"],
         }
         if refs:
             tags["references"] = refs
