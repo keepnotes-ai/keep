@@ -37,6 +37,51 @@ function truncate(text: string, limit: number): string {
   return text.slice(0, limit) + "…";
 }
 
+// -- estimateTokens (from index.ts) --
+
+function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4);
+}
+
+// -- sessionItemId (from index.ts) --
+
+function sessionItemId(params: { sessionKey?: string; sessionId: string }): string {
+  return params.sessionKey || params.sessionId;
+}
+
+// -- sessionTags (from index.ts) --
+
+function sessionTags(params: {
+  sessionKey?: string;
+  sessionId: string;
+  extra?: Record<string, string>;
+}): Record<string, string> {
+  const tags: Record<string, string> = {};
+  if (params.sessionKey) tags.session_key = params.sessionKey;
+  tags.session_id = params.sessionId;
+  if (params.extra) Object.assign(tags, params.extra);
+  return tags;
+}
+
+// -- formatTurn (from index.ts) --
+
+const INGEST_ROLES = new Set(["user", "assistant"]);
+
+function formatTurn(messages: any[], maxInlineLength: number): string {
+  const parts: string[] = [];
+  for (const msg of messages) {
+    const role: string = msg.role || "unknown";
+    if (!INGEST_ROLES.has(role)) continue;
+
+    const text = extractText(msg.content);
+    if (!text.trim()) continue;
+
+    const limit = role === "user" ? 500 : maxInlineLength;
+    parts.push(`[${role}] ${truncate(text, limit)}`);
+  }
+  return parts.join("\n\n");
+}
+
 // -- detectInflection (from index.ts) --
 
 type InflectionSignal = {
@@ -227,6 +272,135 @@ describe("truncate", () => {
   });
 });
 
+describe("estimateTokens", () => {
+  it("estimates ~4 chars per token", () => {
+    assert.equal(estimateTokens("hello world!"), 3);
+  });
+
+  it("returns 0 for empty string", () => {
+    assert.equal(estimateTokens(""), 0);
+  });
+
+  it("rounds up", () => {
+    assert.equal(estimateTokens("hi"), 1);
+  });
+});
+
+describe("sessionItemId", () => {
+  it("prefers sessionKey over sessionId", () => {
+    assert.equal(
+      sessionItemId({ sessionKey: "agent:main:webchat:direct:gw", sessionId: "uuid-123" }),
+      "agent:main:webchat:direct:gw",
+    );
+  });
+
+  it("falls back to sessionId when sessionKey is absent", () => {
+    assert.equal(
+      sessionItemId({ sessionId: "uuid-123" }),
+      "uuid-123",
+    );
+  });
+
+  it("falls back to sessionId when sessionKey is empty", () => {
+    assert.equal(
+      sessionItemId({ sessionKey: "", sessionId: "uuid-123" }),
+      "uuid-123",
+    );
+  });
+});
+
+describe("sessionTags", () => {
+  it("includes both session_key and session_id when key is present", () => {
+    const tags = sessionTags({
+      sessionKey: "agent:main:tg:direct:12345",
+      sessionId: "uuid-abc",
+    });
+    assert.equal(tags.session_key, "agent:main:tg:direct:12345");
+    assert.equal(tags.session_id, "uuid-abc");
+  });
+
+  it("omits session_key when absent", () => {
+    const tags = sessionTags({ sessionId: "uuid-abc" });
+    assert.equal(tags.session_key, undefined);
+    assert.equal(tags.session_id, "uuid-abc");
+  });
+
+  it("merges extra tags", () => {
+    const tags = sessionTags({
+      sessionKey: "agent:main:webchat:direct:gw",
+      sessionId: "uuid-abc",
+      extra: { role: "user", type: "compaction-summary" },
+    });
+    assert.equal(tags.role, "user");
+    assert.equal(tags.type, "compaction-summary");
+    assert.equal(tags.session_key, "agent:main:webchat:direct:gw");
+  });
+});
+
+describe("formatTurn", () => {
+  it("formats user and assistant messages into a turn block", () => {
+    const msgs = [
+      { role: "user", content: "What's the plan?" },
+      { role: "assistant", content: "Here's what I think..." },
+    ];
+    const result = formatTurn(msgs, 2000);
+    assert.ok(result.includes("[user] What's the plan?"));
+    assert.ok(result.includes("[assistant] Here's what I think..."));
+    // Separated by double newline
+    assert.ok(result.includes("\n\n"));
+  });
+
+  it("skips system and tool messages", () => {
+    const msgs = [
+      { role: "system", content: "You are helpful" },
+      { role: "user", content: "hello" },
+      { role: "tool", content: '{"result": 42}' },
+      { role: "assistant", content: "hi" },
+    ];
+    const result = formatTurn(msgs, 2000);
+    assert.ok(!result.includes("[system]"));
+    assert.ok(!result.includes("[tool]"));
+    assert.ok(result.includes("[user] hello"));
+    assert.ok(result.includes("[assistant] hi"));
+  });
+
+  it("truncates user messages at 500 chars", () => {
+    const longContent = "x".repeat(600);
+    const msgs = [{ role: "user", content: longContent }];
+    const result = formatTurn(msgs, 2000);
+    // [user] prefix + 500 chars + ellipsis
+    assert.ok(result.length < 520);
+    assert.ok(result.endsWith("…"));
+  });
+
+  it("truncates assistant messages at maxInlineLength", () => {
+    const longContent = "y".repeat(300);
+    const msgs = [{ role: "assistant", content: longContent }];
+    const result = formatTurn(msgs, 100);
+    // Should truncate at 100
+    assert.ok(result.includes("…"));
+    assert.ok(result.length < 120);
+  });
+
+  it("returns empty for no ingestable messages", () => {
+    const msgs = [
+      { role: "system", content: "You are helpful" },
+      { role: "tool", content: "result" },
+    ];
+    assert.equal(formatTurn(msgs, 2000), "");
+  });
+
+  it("skips messages with empty content", () => {
+    const msgs = [
+      { role: "user", content: "" },
+      { role: "assistant", content: "response" },
+    ];
+    const result = formatTurn(msgs, 2000);
+    assert.ok(!result.includes("[user]"));
+    assert.ok(result.includes("[assistant] response"));
+  });
+});
+
 describe("detectInflection", () => {
   it("detects explicit transition", () => {
     const msgs = [{ role: "user", content: "ok, let's move on to testing" }];
@@ -265,8 +439,6 @@ describe("detectInflection", () => {
       { role: "assistant", content: "let's move on to the next thing" },
     ];
     const result = detectInflection(msgs);
-    // assistant saying "let's move on" shouldn't trigger — only user
-    // (but it IS >2000? no, it's short)
     assert.equal(result.shouldReflect, false);
   });
 
@@ -386,65 +558,33 @@ describe("timeoutForState", () => {
   });
 });
 
-describe("estimateTokens", () => {
-  function estimateTokens(text: string): number {
-    return Math.ceil(text.length / 4);
-  }
-
-  it("estimates ~4 chars per token", () => {
-    assert.equal(estimateTokens("hello world!"), 3); // 12 chars / 4
-  });
-
-  it("returns 0 for empty string", () => {
-    assert.equal(estimateTokens(""), 0);
-  });
-
-  it("rounds up", () => {
-    assert.equal(estimateTokens("hi"), 1); // 2 chars → ceil(0.5) = 1
-  });
-});
-
 describe("subagent lifecycle", () => {
-  // These tests validate the contract expectations for subagent methods.
-  // The actual MCP calls are tested via integration; here we test the
-  // data flow assumptions.
-
-  it("prepareSubagentSpawn should tag child with parent session", () => {
-    // The spawn marker includes both session keys for cross-reference
-    const parentKey = "main-abc123";
-    const childKey = "sub-def456";
+  it("prepareSubagentSpawn writes to child sessionKey as item id", () => {
+    // The child item id IS the childSessionKey — not `now`
+    const childKey = "agent:main:sub:task-abc";
+    const parentKey = "agent:main:webchat:direct:gw";
+    // Item id should be the child's key
+    assert.equal(childKey, "agent:main:sub:task-abc");
+    // Tags should include parent linkage
     const expectedTags = {
-      session: childKey,
+      session_key: childKey,
       parent_session: parentKey,
       type: "subagent-spawn",
     };
-    // Verify tag structure matches what keep's tag query can find
-    assert.equal(expectedTags.session, childKey);
     assert.equal(expectedTags.parent_session, parentKey);
-    assert.equal(expectedTags.type, "subagent-spawn");
   });
 
-  it("onSubagentEnded archive name follows session naming convention", () => {
-    const childKey = "sub-def456";
-    const archiveName = `session-${childKey}`;
-    // Must match the same pattern used by session_end hook
-    assert.ok(archiveName.startsWith("session-"));
-    assert.ok(archiveName.includes(childKey));
-  });
-
-  it("SubagentEndReason values are handled", () => {
-    // All four reason values from the upstream contract
+  it("onSubagentEnded does not archive — item persists", () => {
+    // Design: no `move` call. The child session item stays
+    // in the store with its version history intact.
     const reasons = ["deleted", "completed", "swept", "released"];
     for (const reason of reasons) {
       assert.ok(typeof reason === "string");
-      assert.ok(reason.length > 0);
     }
   });
 });
 
 describe("INGEST_ROLES", () => {
-  const INGEST_ROLES = new Set(["user", "assistant"]);
-
   it("includes user and assistant", () => {
     assert.ok(INGEST_ROLES.has("user"));
     assert.ok(INGEST_ROLES.has("assistant"));

@@ -1,8 +1,11 @@
 /**
- * keep — OpenClaw plugin
+ * keep — OpenClaw context engine plugin
  *
- * Context engine for OpenClaw. Requires plugins.slots.contextEngine: 'keep'.
- * Remaining hook: session_end (no CE onSessionEnd lifecycle for main sessions).
+ * Requires plugins.slots.contextEngine: 'keep'.
+ *
+ * Design: each session is a keep item keyed by sessionKey. Turns become
+ * versions of that item. The agent-managed `now` item is reserved for
+ * explicit cross-session intentions — the plugin never writes to it.
  */
 
 import { execFileSync } from "child_process";
@@ -53,8 +56,55 @@ function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
 }
 
-// Roles worth ingesting into keep's now trace.
+// Roles worth ingesting into the session trace.
 const INGEST_ROLES = new Set(["user", "assistant"]);
+
+// ---------------------------------------------------------------------------
+// Session identity helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Stable session identifier for keep items. Prefers sessionKey (structured,
+ * persistent across restarts) over sessionId (opaque UUID, per-record).
+ */
+function sessionItemId(params: { sessionKey?: string; sessionId: string }): string {
+  return params.sessionKey || params.sessionId;
+}
+
+/**
+ * Build tags for a session item. Always includes both identifiers when
+ * available so items are queryable by either.
+ */
+function sessionTags(params: {
+  sessionKey?: string;
+  sessionId: string;
+  extra?: Record<string, string>;
+}): Record<string, string> {
+  const tags: Record<string, string> = {};
+  if (params.sessionKey) tags.session_key = params.sessionKey;
+  tags.session_id = params.sessionId;
+  if (params.extra) Object.assign(tags, params.extra);
+  return tags;
+}
+
+/**
+ * Format a batch of messages into a single turn content block.
+ * User and assistant messages are labeled; others are skipped.
+ */
+function formatTurn(messages: any[], maxInlineLength: number): string {
+  const parts: string[] = [];
+  for (const msg of messages) {
+    const role: string = msg.role || "unknown";
+    if (!INGEST_ROLES.has(role)) continue;
+
+    const text = extractText(msg.content);
+    if (!text.trim()) continue;
+
+    const limit = role === "user" ? 500 : maxInlineLength;
+    parts.push(`[${role}] ${truncate(text, limit)}`);
+  }
+  return parts.join("\n\n");
+}
 
 // ---------------------------------------------------------------------------
 // Plugin registration
@@ -85,8 +135,6 @@ export default function register(api: any) {
   // First-run health check
   // -----------------------------------------------------------------------
 
-  // Verify keep has a working provider configured.
-  // This runs once at register time (not every turn).
   let keepHealthy = true;
   try {
     const providers = execFileSync("keep", ["config", "providers"], {
@@ -102,7 +150,6 @@ export default function register(api: any) {
       );
     }
   } catch {
-    // keep config failed — keep is installed but misconfigured
     keepHealthy = false;
     api.logger?.warn(
       "[keep] Provider check failed. Run `keep config --setup` to configure.",
@@ -110,7 +157,7 @@ export default function register(api: any) {
   }
 
   // -----------------------------------------------------------------------
-  // CLI: `openclaw keep setup`
+  // CLI: `openclaw keep setup` / `openclaw keep doctor`
   // -----------------------------------------------------------------------
 
   api.registerCli((ctx: any) => {
@@ -165,7 +212,7 @@ export default function register(api: any) {
     },
   });
 
-  // Track first assemble per session for session-start context.
+  // Track first assemble per session (keyed by sessionKey for persistence).
   const sessionFirstAssemble = new Set<string>();
 
   // Track whether workspace watches have been set up.
@@ -193,14 +240,9 @@ export default function register(api: any) {
   }
 
   // ---------------------------------------------------------------------------
-  // Workspace watches: use keep's daemon-driven --watch to keep index fresh
+  // Workspace watches
   // ---------------------------------------------------------------------------
 
-  /**
-   * Ensure watches exist for configured indexPaths. Uses `keep put --watch`
-   * via CLI (one-time setup). The daemon polls for changes automatically.
-   * Excludes are captured at watch-creation time.
-   */
   function ensureWatches(workspaceDir: string): void {
     if (watchesInitialized) return;
     watchesInitialized = true;
@@ -212,9 +254,7 @@ export default function register(api: any) {
       if (!fs.existsSync(absPath)) continue;
 
       const stat = fs.statSync(absPath);
-      const source = stat.isDirectory() ? absPath : `file://${absPath}`;
 
-      // Build CLI args: keep put <path> -r --watch [--exclude ...]
       const args: string[] = ["put", absPath];
       if (stat.isDirectory()) args.push("-r");
       args.push("--watch");
@@ -230,7 +270,6 @@ export default function register(api: any) {
         });
         api.logger?.info(`[keep] Watch set up for ${relPath}`);
       } catch (err: any) {
-        // "Already watching" is fine — means a previous session set it up
         if (err.stderr?.includes("Already watching") || err.message?.includes("Already watching")) {
           api.logger?.debug(`[keep] Watch already active for ${relPath}`);
         } else {
@@ -271,12 +310,11 @@ export default function register(api: any) {
         id: "keep",
         name: "keep reflective memory",
         version: "0.103.0",
-        ownsCompaction: false, // v0.99: don't own compaction yet
+        ownsCompaction: false,
       },
 
       // -------------------------------------------------------------------
       // bootstrap: initialize keep for this session
-      // Practice moment: REFLECT BEFORE
       // -------------------------------------------------------------------
       async bootstrap(params: {
         sessionId: string;
@@ -287,20 +325,11 @@ export default function register(api: any) {
           return { bootstrapped: false, reason: "MCP not connected" };
         }
 
-        try {
-          // Index session file if resuming an existing session
-          if (params.sessionFile && fs.existsSync(params.sessionFile)) {
-            await mcp.flow({
-              state: "put",
-              params: {
-                uri: `file://${params.sessionFile}`,
-                tags: { session: params.sessionId },
-              },
-            });
-          }
+        const itemId = sessionItemId(params);
 
+        try {
           // Mark session for first-assemble enrichment
-          sessionFirstAssemble.add(params.sessionId);
+          sessionFirstAssemble.add(itemId);
 
           return { bootstrapped: true };
         } catch (err: any) {
@@ -310,8 +339,7 @@ export default function register(api: any) {
       },
 
       // -------------------------------------------------------------------
-      // ingest: capture messages into keep's now trace
-      // Practice moment: CAPTURE (continuous)
+      // ingest: capture a single message as a version of the session item
       // -------------------------------------------------------------------
       async ingest(params: {
         sessionId: string;
@@ -321,7 +349,6 @@ export default function register(api: any) {
       }) {
         const cfg = getConfig();
 
-        // Skip heartbeats unless configured
         if (params.isHeartbeat && !cfg.captureHeartbeats) {
           return { ingested: false };
         }
@@ -332,10 +359,6 @@ export default function register(api: any) {
 
         const role: string = params.message.role || "unknown";
 
-        // Only ingest user and assistant messages.
-        // Skip system prompts (huge, not useful in trace) and tool
-        // results (noisy, often enormous — the assistant's summary
-        // of tool output is captured when we ingest the assistant turn).
         if (!INGEST_ROLES.has(role)) {
           return { ingested: false };
         }
@@ -346,21 +369,16 @@ export default function register(api: any) {
             return { ingested: false };
           }
 
-          // User messages: 500 chars (the prompt intent).
-          // Assistant messages: keep's max_inline_length (the store's own
-          // definition of inline-sized content, typically 2000).
           const limit = role === "user" ? 500 : maxInlineLength;
-          const content = truncate(text, limit);
+          const content = `[${role}] ${truncate(text, limit)}`;
+          const itemId = sessionItemId(params);
 
           await mcp.flow({
             state: "put",
             params: {
               content,
-              id: "now",
-              tags: {
-                session: params.sessionId,
-                role,
-              },
+              id: itemId,
+              tags: sessionTags({ ...params, extra: { role } }),
             },
           });
 
@@ -372,7 +390,7 @@ export default function register(api: any) {
       },
 
       // -------------------------------------------------------------------
-      // ingestBatch: capture a completed turn as a unit
+      // ingestBatch: capture a completed turn as one version
       // -------------------------------------------------------------------
       async ingestBatch(params: {
         sessionId: string;
@@ -388,36 +406,38 @@ export default function register(api: any) {
           return { ingestedCount: 0 };
         }
 
-        let count = 0;
-        for (const msg of params.messages) {
-          const role: string = msg.role || "unknown";
-          if (!INGEST_ROLES.has(role)) continue;
-
-          const text = extractText(msg.content);
-          if (!text.trim()) continue;
-
-          const limit = role === "user" ? 500 : maxInlineLength;
-          try {
-            await mcp.flow({
-              state: "put",
-              params: {
-                content: truncate(text, limit),
-                id: "now",
-                tags: { session: params.sessionId, role },
-              },
-            });
-            count++;
-          } catch (err: any) {
-            api.logger?.warn(`[keep] ingestBatch item error: ${err.message}`);
-          }
+        // Format all messages in the batch into a single turn block
+        const turnContent = formatTurn(params.messages, maxInlineLength);
+        if (!turnContent.trim()) {
+          return { ingestedCount: 0 };
         }
 
-        return { ingestedCount: count };
+        const itemId = sessionItemId(params);
+
+        try {
+          await mcp.flow({
+            state: "put",
+            params: {
+              content: turnContent,
+              id: itemId,
+              tags: sessionTags(params),
+            },
+          });
+
+          // Count how many messages contributed to the turn
+          const count = params.messages.filter(
+            (m: any) => INGEST_ROLES.has(m.role || "") && extractText(m.content).trim(),
+          ).length;
+
+          return { ingestedCount: count };
+        } catch (err: any) {
+          api.logger?.warn(`[keep] ingestBatch error: ${err.message}`);
+          return { ingestedCount: 0 };
+        }
       },
 
       // -------------------------------------------------------------------
       // assemble: build model context with keep's memory
-      // Practice moment: SURFACE WHAT MATTERS
       // -------------------------------------------------------------------
       async assemble(params: {
         sessionId: string;
@@ -425,7 +445,6 @@ export default function register(api: any) {
         messages: any[];
         tokenBudget?: number;
       }) {
-        // Estimate conversation token cost for accurate totals
         const conversationTokens = params.messages.reduce((sum: number, m: any) => {
           return sum + estimateTokens(extractText(m.content));
         }, 0);
@@ -440,7 +459,6 @@ export default function register(api: any) {
         try {
           const cfg = getConfig();
 
-          // Extract last user message for semantic query
           const lastUser = [...params.messages]
             .reverse()
             .find((m: any) => m.role === "user");
@@ -448,26 +466,23 @@ export default function register(api: any) {
             ? truncate(extractText(lastUser.content), 500)
             : "";
 
-          // Budget: fraction of total window for keep context
           const totalBudget = params.tokenBudget || 8000;
           const keepBudget = Math.floor(totalBudget * cfg.contextBudgetRatio);
 
-          // First assemble in a session? Include richer context.
-          const isFirstAssemble = sessionFirstAssemble.delete(params.sessionId);
+          const itemId = sessionItemId(params);
+          const isFirstAssemble = sessionFirstAssemble.delete(itemId);
 
           const result = await mcp.flow({
             state: "openclaw-assemble",
             params: {
               prompt: prompt || "session context",
+              session_key: itemId,
               session_id: params.sessionId,
               ...(isFirstAssemble ? { first_turn: "true" } : {}),
             },
             token_budget: keepBudget,
           });
 
-          // The MCP flow with token_budget returns rendered text.
-          // result.text is the token-budgeted rendering, result.data
-          // is the raw structured output.
           const contextText =
             result.text ||
             (result.data
@@ -476,11 +491,9 @@ export default function register(api: any) {
 
           const keepTokens = estimateTokens(contextText);
 
-          // Build systemPromptAddition
           const parts: string[] = [];
           if (contextText) parts.push(`\`keep context\`:\n${contextText}`);
 
-          // On first turn, hint that keep tools are available via MCP
           if (isFirstAssemble) {
             parts.push(
               `\`keep tools\`: keep_flow, keep_help, and keep_prompt are available as tools. ` +
@@ -505,7 +518,6 @@ export default function register(api: any) {
 
       // -------------------------------------------------------------------
       // afterTurn: post-turn reflection and background work
-      // Practice moment: REFLECT DURING
       // -------------------------------------------------------------------
       async afterTurn(params: {
         sessionId: string;
@@ -522,13 +534,11 @@ export default function register(api: any) {
         if (!mcp.connected) return;
 
         // Ensure workspace watches are set up (once per gateway lifetime).
-        // Watches keep the index fresh via daemon polling — no per-turn walking.
         const workspaceDir = params.runtimeContext?.workspaceDir as string;
         if (workspaceDir && !watchesInitialized) {
           try { ensureWatches(workspaceDir); } catch {}
         }
 
-        // Identify new messages from this turn
         const newMessages = params.messages.slice(params.prePromptMessageCount);
         if (newMessages.length === 0) return;
 
@@ -539,23 +549,24 @@ export default function register(api: any) {
           api.logger?.debug(
             `[keep] Inflection detected (${signals.reason}), triggering reflection`,
           );
-          // Fire and forget — don't block the turn
           mcp.prompt({ name: "reflect" }).catch((err: any) => {
             api.logger?.warn(`[keep] afterTurn reflect error: ${err.message}`);
           });
         }
 
-        // If OpenClaw auto-compacted, index the summary as context
+        // If OpenClaw auto-compacted, record as a version of the session item
         if (params.autoCompactionSummary) {
+          const itemId = sessionItemId(params);
           mcp
             .flow({
               state: "put",
               params: {
-                content: truncate(params.autoCompactionSummary, 2000),
-                tags: {
-                  type: "compaction-summary",
-                  session: params.sessionId,
-                },
+                content: `[compaction] ${truncate(params.autoCompactionSummary, 2000)}`,
+                id: itemId,
+                tags: sessionTags({
+                  ...params,
+                  extra: { type: "compaction-summary" },
+                }),
               },
             })
             .catch((err: any) => {
@@ -567,8 +578,7 @@ export default function register(api: any) {
       },
 
       // -------------------------------------------------------------------
-      // compact: advisory compaction (ownsCompaction=false for v0.99)
-      // Practice moment: REFLECT AFTER
+      // compact: advisory (ownsCompaction=false)
       // -------------------------------------------------------------------
       async compact(params: {
         sessionId: string;
@@ -581,44 +591,19 @@ export default function register(api: any) {
         customInstructions?: string;
         runtimeContext?: Record<string, unknown>;
       }) {
-        if (!mcp.connected) {
-          return { ok: true, compacted: false, reason: "MCP not connected" };
+        if (params.currentTokenCount) {
+          api.logger?.debug(
+            `[keep] compact advisory: ${params.currentTokenCount} tokens, ` +
+              `target=${params.compactionTarget || "budget"}, ` +
+              `budget=${params.tokenBudget}`,
+          );
         }
 
-        try {
-          // Index the session transcript for keep's store
-          if (params.sessionFile && fs.existsSync(params.sessionFile)) {
-            await mcp.flow({
-              state: "put",
-              params: {
-                uri: `file://${params.sessionFile}`,
-                tags: { session: params.sessionId },
-              },
-            });
-          }
-
-          // Workspace indexing is handled by daemon watches — no manual
-          // re-index needed here. Session file indexing above is kept
-          // because session transcripts aren't in the workspace.
-
-          if (params.currentTokenCount) {
-            api.logger?.debug(
-              `[keep] compact advisory: ${params.currentTokenCount} tokens, ` +
-                `target=${params.compactionTarget || "budget"}, ` +
-                `budget=${params.tokenBudget}`,
-            );
-          }
-
-          return { ok: true, compacted: false, reason: "advisory" };
-        } catch (err: any) {
-          api.logger?.warn(`[keep] compact error: ${err.message}`);
-          return { ok: false, compacted: false, reason: err.message };
-        }
+        return { ok: true, compacted: false, reason: "advisory" };
       },
 
       // -------------------------------------------------------------------
-      // prepareSubagentSpawn: set up context linkage before child starts
-      // Practice moment: PREPARE — share context with the child
+      // prepareSubagentSpawn: link child to parent session
       // -------------------------------------------------------------------
       async prepareSubagentSpawn(params: {
         parentSessionKey: string;
@@ -628,22 +613,20 @@ export default function register(api: any) {
         if (!mcp.connected) return undefined;
 
         try {
-          // Snapshot parent's current intentions into a child-scoped tag.
-          // The child can later retrieve context via its session tag.
+          // Write spawn marker as first version of the child session item
           await mcp.flow({
             state: "put",
             params: {
-              content: `Subagent ${params.childSessionKey} spawned from ${params.parentSessionKey}`,
-              id: "now",
+              content: `Subagent spawned from ${params.parentSessionKey}`,
+              id: params.childSessionKey,
               tags: {
-                session: params.childSessionKey,
+                session_key: params.childSessionKey,
                 parent_session: params.parentSessionKey,
                 type: "subagent-spawn",
               },
             },
           });
 
-          // Mark child for first-assemble enrichment
           sessionFirstAssemble.add(params.childSessionKey);
 
           api.logger?.debug(
@@ -652,16 +635,10 @@ export default function register(api: any) {
 
           return {
             rollback: async () => {
-              // Spawn failed — clean up the spawn marker
               try {
                 await mcp.flow({
                   state: "delete",
-                  params: {
-                    tags: {
-                      session: params.childSessionKey,
-                      type: "subagent-spawn",
-                    },
-                  },
+                  params: { id: params.childSessionKey },
                 });
               } catch {
                 // best-effort cleanup
@@ -679,77 +656,27 @@ export default function register(api: any) {
       },
 
       // -------------------------------------------------------------------
-      // onSubagentEnded: archive child context, merge learnings to parent
-      // Practice moment: REFLECT AFTER — inherit what the child learned
+      // onSubagentEnded: clean up tracking state
+      // The child's session item persists — no move/archive needed.
       // -------------------------------------------------------------------
       async onSubagentEnded(params: {
         childSessionKey: string;
-        reason: string; // "deleted" | "completed" | "swept" | "released"
+        reason: string;
       }) {
-        if (!mcp.connected) return;
-
-        try {
-          // Archive the child session's trace into a named collection
-          await mcp.flow({
-            state: "move",
-            params: {
-              name: `session-${params.childSessionKey}`,
-              tags: { session: params.childSessionKey },
-            },
-          });
-
-          api.logger?.info(
-            `[keep] Subagent ${params.childSessionKey} ended (${params.reason}), archived`,
-          );
-        } catch (err: any) {
-          api.logger?.warn(`[keep] onSubagentEnded error: ${err.message}`);
-        }
-
-        // Clean up first-assemble tracking
         sessionFirstAssemble.delete(params.childSessionKey);
+        api.logger?.debug(
+          `[keep] Subagent ${params.childSessionKey} ended (${params.reason})`,
+        );
       },
 
       async dispose() {
         sessionFirstAssemble.clear();
         watchesInitialized = false;
-        // Transport cleanup handled by gateway_stop hook
       },
     };
   });
 
-  // -----------------------------------------------------------------------
-  // Legacy hooks (session_end only)
-  // -----------------------------------------------------------------------
-
-  // No CE onSessionEnd lifecycle exists, so this must stay as a hook
-  api.on(
-    "session_end",
-    async (_event: any, ctx: any) => {
-      const key = ctx?.sessionId || ctx?.sessionKey;
-      if (!key) return;
-
-      if (mcp.connected) {
-        try {
-          await mcp.flow({
-            state: "move",
-            params: {
-              name: `session-${key}`,
-              tags: { session: key },
-            },
-          });
-          api.logger?.info(`[keep] Session ${key} archived via MCP`);
-          return;
-        } catch (err: any) {
-          api.logger?.error(`[keep] session_end MCP error: ${err.message}`);
-        }
-      } else {
-        api.logger?.warn("[keep] session_end: MCP not connected, cannot archive");
-      }
-    },
-    { priority: 10 },
-  );
-
-  api.logger?.info("[keep] Registered: context engine + session_end hook");
+  api.logger?.info("[keep] Registered: context engine");
 }
 
 // ---------------------------------------------------------------------------
@@ -761,14 +688,11 @@ type InflectionSignal = {
   reason: string;
 };
 
-/** Simple heuristic inflection detection on new turn messages. */
 function detectInflection(messages: any[]): InflectionSignal {
-  // Look at user messages for explicit signals
   for (const msg of messages) {
     if (msg.role !== "user") continue;
     const text = extractText(msg.content).toLowerCase();
 
-    // Explicit transition markers
     if (
       /\b(let'?s move on|that'?s done|moving on|next topic|switching to|wrapping up|let'?s wrap)\b/.test(
         text,
@@ -777,7 +701,6 @@ function detectInflection(messages: any[]): InflectionSignal {
       return { shouldReflect: true, reason: "explicit-transition" };
     }
 
-    // Commitment language (strong signals of a decision made)
     if (
       /\b(i'?ll do|let'?s do|we should|go ahead|ship it|merge it|deploy|let'?s build)\b/.test(
         text,
@@ -787,7 +710,6 @@ function detectInflection(messages: any[]): InflectionSignal {
     }
   }
 
-  // Long assistant response (>2000 chars) suggests substantial work completed
   for (const msg of messages) {
     if (msg.role !== "assistant") continue;
     const text = extractText(msg.content);
@@ -803,13 +725,11 @@ function detectInflection(messages: any[]): InflectionSignal {
 // Format helpers
 // ---------------------------------------------------------------------------
 
-/** Format structured flow data into readable text for system prompt injection. */
 function formatAssembleData(data: Record<string, unknown>): string {
   if (!data || typeof data !== "object") return "";
 
   const parts: string[] = [];
 
-  // Intentions (now)
   if (data.intentions && typeof data.intentions === "object") {
     const intentions = data.intentions as any;
     if (intentions.summary) {
@@ -817,7 +737,6 @@ function formatAssembleData(data: Record<string, unknown>): string {
     }
   }
 
-  // Similar items
   if (data.similar && typeof data.similar === "object") {
     const similar = data.similar as any;
     const results = similar.results || similar;
@@ -833,7 +752,6 @@ function formatAssembleData(data: Record<string, unknown>): string {
     }
   }
 
-  // Meta sections (learnings, todos)
   if (data.meta && typeof data.meta === "object") {
     const meta = data.meta as any;
     const sections = meta.sections || meta;
@@ -852,7 +770,6 @@ function formatAssembleData(data: Record<string, unknown>): string {
     }
   }
 
-  // Edges
   if (data.edges && typeof data.edges === "object") {
     const edges = data.edges as any;
     const edgeMap = edges.edges || edges;
