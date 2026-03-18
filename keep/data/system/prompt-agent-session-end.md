@@ -5,12 +5,17 @@ tags:
 ---
 # .prompt/agent/session-end
 
-Archive session state at session end.
+Reflect briefly on the session that is ending.
 
 ## Prompt
 
-Archive this session's versions from `now` to keep it clean for the next session.
+This session is ending. Before you go:
 
-```
-keep move session-{session_id} -t session={session_id}
-```
+{get}
+
+- Are there open commitments that need to be recorded in `now`?
+- Did anything important happen that future sessions should know about?
+- If so, update `now` with a brief note.
+
+The session's conversation history is already captured as versions of
+the session item — no archival action is needed.

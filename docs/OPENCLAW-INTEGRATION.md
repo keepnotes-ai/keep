@@ -23,8 +23,8 @@ What this gives you:
    reflective practice in the background.
 4. **Memory indexing** — when OpenClaw compacts context, keep indexes workspace
    memory files and turns them into searchable, tagged, versioned knowledge.
-5. **Session archival** — when a session ends, keep archives its message trace
-   and cleans up the working context.
+5. **Session persistence** — each session is a versioned item keyed by its
+   routing identity. Turns accumulate as versions. No archival step needed.
 
 ---
 
