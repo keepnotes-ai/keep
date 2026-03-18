@@ -311,10 +311,10 @@ export default function register(api: any) {
 
       const workspaceDir: string = ctx.workspaceDir;
 
-      // Build the scope prefix from workspace memory paths
+      // Build the scope prefix from workspace memory paths.
+      // SQLite LIKE is case-insensitive for ASCII, so "memory*" matches
+      // both memory/ directory contents and MEMORY.md at workspace root.
       const memoryScope = `file://${path.resolve(workspaceDir, "memory")}*`;
-      // Also match MEMORY.md at workspace root
-      const memoryMdId = `file://${path.resolve(workspaceDir, "MEMORY.md")}`;
 
       return [
         {

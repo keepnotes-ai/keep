@@ -21,10 +21,12 @@ What this gives you:
 3. **Inflection-aware reflection** — after each turn, keep detects topic shifts,
    commitments, and significant moments. When it finds one, it triggers the
    reflective practice in the background.
-4. **Memory indexing** — when OpenClaw compacts context, keep indexes workspace
-   memory files and turns them into searchable, tagged, versioned knowledge.
+4. **Memory indexing** — daemon-driven watches keep workspace files, memory
+   markdown, and git history continuously indexed. No manual steps needed.
 5. **Session persistence** — each session is a versioned item keyed by its
    routing identity. Turns accumulate as versions. No archival step needed.
+6. **Memory tools** — `memory_search` and `memory_get` provide semantic
+   recall over memory files, replacing OpenClaw's built-in flat-file search.
 
 ---
 
@@ -106,6 +108,33 @@ The plugin sets up daemon-driven watches on the workspace directory (including
 `memory/` and `MEMORY.md`) on the first agent turn. The daemon polls for
 changes automatically — no manual indexing needed. Git repositories in the
 workspace are also discovered and their commit history is ingested incrementally.
+
+### Memory Tools (`memory_search` / `memory_get`)
+
+The plugin registers `memory_search` and `memory_get` as agent tools,
+providing the same interface as OpenClaw's built-in `memory-core` plugin.
+OpenClaw's system prompt instructions ("run memory_search before answering
+questions about prior work...") work automatically.
+
+**`memory_search(query, maxResults?, minScore?)`** — Searches `MEMORY.md`
+and `memory/*.md` using keep's semantic search with scope-constrained
+`query-resolve` flow. Returns results in memory-core's format: `path`,
+`startLine`, `endLine`, `score`, `snippet`, `source`. Line positions come
+from keep's part analysis and keyword fallback.
+
+**`memory_get(path, from?, lines?)`** — Safe file read constrained to
+`MEMORY.md` and `memory/*.md` paths. Supports `from` (1-indexed start line)
+and `lines` (count) for slicing. Path validation prevents traversal outside
+memory paths.
+
+To avoid tool name conflicts with memory-core, disable it:
+
+```yaml
+plugins:
+  slots:
+    contextEngine: "keep"
+    memory: "none"          # disable memory-core (keep provides memory_search)
+```
 
 ---
 
@@ -212,6 +241,7 @@ restarts.
 | Layer | Trigger | What it does | Latency |
 |-------|---------|-------------|---------|
 | **Context engine** | Every agent turn | Ingest messages, assemble context, detect inflections | ~10-50ms |
+| **Memory tools** | Agent-initiated | `memory_search` / `memory_get` over workspace memory files | ~50-200ms |
 | **Workspace watches** | Daemon-driven | Index files, memory, git history automatically | Background |
 | **Daily reflection** | Cron (optional) | Deep practice reflection | Isolated session |
 | **Agent practice** | Agent-initiated | Voluntary reflection, search, capture | On demand |
