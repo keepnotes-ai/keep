@@ -64,12 +64,15 @@ The skill instructions and hooks install into your agent's configuration automat
 | Tool | Integration |
 |------|-------------|
 | **[OpenClaw](docs/OPENCLAW-INTEGRATION.md)** | Context engine plugin — full memory assembly, session archival, reflection triggers |
+| **Claude Desktop** | `keep config mcpb` ([details](docs/CLAUDE-DESKTOP.md)) |
 | **Claude Code** | Plugin: `/plugin install keep@keepnotes-ai` |
 | **VS Code Copilot** | MCP: `code --add-mcp '{"name":"keep","command":"keep","args":["mcp"]}'` |
 | **Kiro** | MCP + practice prompt: `kiro-cli mcp add --name keep --scope global -- keep mcp` |
 | **OpenAI Codex** | MCP: `codex mcp add keep -- keep mcp` |
 | **LangChain** | [LangGraph BaseStore](docs/LANGCHAIN-INTEGRATION.md), retriever, tools, and middleware |
 | **Any MCP client** | [Stdio server](docs/KEEP-MCP.md) with 3 tools (`keep_flow`, `keep_prompt`, `keep_help`) |
+
+After install, just tell your agent: *Please read all the keep_help documentation, and then use keep_prompt(name="reflect") to save some notes about what you learn.*
 
 ---
 
