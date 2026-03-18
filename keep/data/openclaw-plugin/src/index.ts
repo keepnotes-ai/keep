@@ -362,8 +362,11 @@ export default function register(api: any) {
             }
 
             try {
+              // Use a simple find via an inline state doc — single query
+              // with scope, no multi-step branching. query-resolve is too
+              // slow and returns out-of-scope results for memory recall.
               const result = await mcp.flow({
-                state: "query-resolve",
+                state: "memory-search",
                 params: {
                   query,
                   scope: memoryScope,
@@ -372,10 +375,9 @@ export default function register(api: any) {
                 token_budget: 4000,
               });
 
-              // query-resolve puts results at data.results (final output),
-              // not data.search.results (intermediate binding).
-              const searchResults = result.data?.results
-                || result.data?.search?.results
+              // State doc binding "results" contains { results: [...] }
+              const searchResults = result.data?.results?.results
+                || result.data?.results
                 || [];
 
               // Map keep results to memory_search shape
