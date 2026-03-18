@@ -292,6 +292,10 @@ export class KeepMcpTransport {
       case "stats":
         return ASSEMBLE_TIMEOUT_MS;
 
+      // Memory search — single find but may need embedding cold start
+      case "memory-search":
+        return WRITE_CALL_TIMEOUT_MS;
+
       // Write operations — may trigger background work
       case "put":
       case "tag":
