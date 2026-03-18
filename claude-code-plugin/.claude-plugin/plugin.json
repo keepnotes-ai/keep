@@ -1,6 +1,6 @@
 {
   "name": "keep",
-  "version": "0.104.4",
+  "version": "0.105.0",
   "description": "Reflective memory with semantic search for AI agents",
   "author": {
     "name": "keepnotes-ai",
