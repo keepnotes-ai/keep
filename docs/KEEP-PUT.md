@@ -108,15 +108,15 @@ keep put doc.pdf -t topic=auth         # Re-queued for contextual summary
 
 ## Git changelog
 
-When a directory is a git repository, `put -r` automatically indexes the commit history:
+When a directory is a git repository, `put -r` queues the commit history for background indexing:
 
 ```bash
 keep put ./myproject/ -r
 # 42 indexed, 0 errors from myproject/
-# git: 156 commits, 8 tags, 35 files linked
+# git: changelog ingest queued
 ```
 
-Each commit becomes a searchable item (`git://repo#sha`) with the commit message as its summary. Files get a `git_commit` edge tag linking to their last commit. Git tags/releases are indexed as separate items (`git://repo@tag`).
+Each commit becomes a searchable item (ID: git://repo#sha) with the commit message as its summary. Files get a git\_commit edge tag linking to their last commit. Git tags and releases are indexed as separate items (ID: git://repo@tag).
 
 **Incremental:** On re-scan (or via a watch), only new commits since the last ingest are processed. A `git_watermark` tag on the directory tracks the last ingested SHA.
 

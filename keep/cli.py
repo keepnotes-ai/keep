@@ -1979,17 +1979,19 @@ def _put_store(
         if results:
             typer.echo(_format_items(results, as_json=_get_json_output()))
 
-        # Git changelog ingest: if this is a git repo, index commits
-        from .git_ingest import is_git_repo, ingest_git_history
+        # Git changelog ingest: enqueue for background processing
+        from .git_ingest import is_git_repo
         if is_git_repo(resolved_path):
-            git_result = ingest_git_history(kp, resolved_path)
-            if git_result["commits"] > 0:
-                typer.echo(
-                    f"git: {git_result['commits']} commits, "
-                    f"{git_result['tags']} tags, "
-                    f"{git_result['files_tagged']} files linked",
-                    err=True,
+            try:
+                kp._get_work_queue().enqueue(
+                    "ingest_git",
+                    {"item_id": f"file://{resolved_path}", "directory": str(resolved_path)},
+                    supersede_key=f"git:{resolved_path}",
+                    priority=8,  # lower priority than summarize/analyze
                 )
+                typer.echo("git: changelog ingest queued", err=True)
+            except Exception as e:
+                logger.warning("Failed to queue git ingest: %s", e)
 
         _handle_watch(kp, watch, unwatch, str(resolved_path), "directory",
                       parsed_tags, recurse=recurse, exclude=exclude, interval=interval)

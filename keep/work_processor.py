@@ -91,6 +91,15 @@ def _execute_work_item(
 
     Returns the outcome dict (keys: status, details).
     """
+    # Special-case: git ingest is directory-level, not item-scoped
+    if kind == "ingest_git":
+        from .git_ingest import ingest_git_history
+        directory = input_data.get("directory")
+        if not directory:
+            raise ValueError("ingest_git requires 'directory' in input")
+        result = ingest_git_history(keeper, Path(directory))
+        return {"status": "applied", "details": result}
+
     task_type = input_data.get("task_type") or kind
     item_id = str(input_data.get("item_id") or input_data.get("id") or "").strip()
     if not item_id:
