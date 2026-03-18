@@ -12,12 +12,19 @@ session history).
 
 ## Prompt
 
+The following is retrieved memory context from keep.
+
+Current intentions (`now`):
 {intentions}
 
+Related items (by similarity to this turn):
 {similar}
 
+Meta (learnings, commitments, patterns):
 {meta}
 
+Linked items:
 {edges}
 
+Recent session activity:
 {session}
