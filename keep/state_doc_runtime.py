@@ -470,6 +470,9 @@ class _EnvActionContext:
             limit=limit,
         )
 
+    def list_parts(self, id: str) -> list[Any]:
+        return self._env.list_parts(id)
+
     def get_document(self, id: str) -> Any:
         return self._env.get_document(id)
 

@@ -288,6 +288,7 @@ class ContextResolutionMixin:
         tags: Optional[TagMap] = None,
         limit: int = 10,
         deep: bool = False,
+        scope: Optional[str] = None,
         token_budget: Optional[int] = None,
     ) -> Optional[PromptResult]:
         """Render an agent prompt doc with injected context.
@@ -308,6 +309,7 @@ class ContextResolutionMixin:
             tags: Tag filter for search results
             limit: Max search results
             deep: Follow tags from results to discover related items
+            scope: ID glob to constrain search results
             token_budget: Explicit token budget (None = use template default)
 
         Returns:
@@ -348,12 +350,12 @@ class ContextResolutionMixin:
         if text:
             search_results = self.find(
                 query=text, tags=tags, since=since, until=until, limit=fetch_limit,
-                deep=deep,
+                deep=deep, scope=scope,
             )
         elif tags or since or until:
             search_results = self.find(
                 similar_to=context_id, tags=tags, since=since, until=until,
-                limit=fetch_limit, deep=deep,
+                limit=fetch_limit, deep=deep, scope=scope,
             )
 
         return PromptResult(

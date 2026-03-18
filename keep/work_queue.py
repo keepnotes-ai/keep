@@ -343,6 +343,27 @@ class WorkQueue:
             (now, error, now, work_id, worker_id),
         )
 
+    def release_stale_leases(self, current_worker: str) -> int:
+        """Release leases held by workers other than *current_worker*.
+
+        Called at daemon startup to reclaim work items that were leased
+        by a previous daemon instance that exited without completing them.
+        Returns the number of items released.
+        """
+        now = self._now()
+        cursor = self._conn.execute(
+            """
+            UPDATE continue_work
+            SET claimed_by = NULL, claimed_at = NULL, lease_until = NULL,
+                updated_at = ?
+            WHERE status = 'requested'
+              AND claimed_by IS NOT NULL
+              AND claimed_by != ?
+            """,
+            (now, current_worker),
+        )
+        return cursor.rowcount
+
     # ------------------------------------------------------------------
     # Query
     # ------------------------------------------------------------------

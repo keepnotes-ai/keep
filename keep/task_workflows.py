@@ -95,6 +95,9 @@ class _KeeperActionContext:
             order_by=order_by, include_hidden=include_hidden, limit=limit,
         )
 
+    def list_parts(self, id: str) -> list[Any]:
+        return self._keeper.list_parts(id)
+
     def get_document(self, id: str) -> Any:
         return self._keeper._document_store.get(self._collection, id)
 

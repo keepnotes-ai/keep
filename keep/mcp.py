@@ -191,6 +191,9 @@ async def keep_prompt(
     deep: Annotated[bool, Field(
         description="Follow tags from results to discover related items.",
     )] = False,
+    scope: Annotated[Optional[str], Field(
+        description="ID glob to constrain search results (e.g. 'file:///path/to/dir*').",
+    )] = None,
     token_budget: Annotated[Optional[int], Field(
         description="Token budget for search results context (template default if not set).",
     )] = None,
@@ -208,7 +211,7 @@ async def keep_prompt(
 
         result = keeper.render_prompt(
             name, text, id=id, since=since, until=until, tags=tags,
-            deep=deep, token_budget=token_budget,
+            deep=deep, scope=scope, token_budget=token_budget,
         )
 
         if result is None:

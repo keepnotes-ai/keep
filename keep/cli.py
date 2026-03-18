@@ -3635,6 +3635,13 @@ def pending_cmd(
             "Daemon started (pid=%d) keep-skill=%s python=%s store=%s",
             os.getpid(), _ver, sys.executable, kp._store_path,
         )
+        # Release leases held by previous daemon instances that exited
+        # without completing their work items.
+        wq = kp._get_work_queue()
+        released = wq.release_stale_leases(flow_worker_id)
+        if released:
+            _daemon_logger.info("Released %d stale leases from previous daemon", released)
+
         _daemon_logger.info(
             "Queue: %d pending, %d flow, %d failed",
             kp._pending_queue.count(),
@@ -3731,7 +3738,7 @@ def pending_cmd(
                 if result["processed"] == 0 and result["failed"] == 0 and delegated == 0 and not flow_activity:
                     # Check for outstanding delegated tasks before exiting
                     delegated_remaining = kp._pending_queue.count_delegated() if hasattr(kp._pending_queue, "count_delegated") else 0
-                    flow_remaining = kp.pending_work_count(claimable_only=True) if hasattr(kp, "pending_work_count") else 0
+                    flow_remaining = kp.pending_work_count() if hasattr(kp, "pending_work_count") else 0
                     pending_remaining = kp._pending_queue.count()
                     if delegated_remaining > 0:
                         _daemon_logger.info("Waiting for %d delegated tasks", delegated_remaining)
