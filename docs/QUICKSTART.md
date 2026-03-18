@@ -107,6 +107,28 @@ https://...travel-policy.pdf@P{1} 2026-02-22 Flight booking: economy for domesti
 
 One search. Three results from completely different sources: Kate's personal preference, the relevant *section* of a 30-page PDF, and context about her April plans. Your agent now has everything it needs to book a flight.
 
+## Index a directory
+
+Index an entire folder — recursively, with excludes, and set up a watch so changes are re-indexed automatically:
+
+```bash
+keep put ./docs/ -r                        # Index all files recursively
+keep put ./docs/ -r -x "*.log" -x "*.tmp"  # With excludes
+keep put ./docs/ -r --watch                # Index + watch for changes
+```
+
+The daemon polls watched directories in the background. No per-turn cost — files are re-indexed only when they change.
+
+## Scoped search
+
+When you have a large store, scope searches to a subset of items:
+
+```bash
+keep find "auth" --scope 'file:///Users/me/docs/*'
+```
+
+The search runs semantically across everything, but only returns items whose ID matches the glob. Useful for searching within a project, a folder of notes, or a specific collection.
+
 ## Tags
 
 Tags add structure without breaking search. Add them at creation time:

@@ -15,8 +15,7 @@ keep put -                            # Stdin mode (explicit)
 echo "piped content" | keep put       # Stdin mode (detected)
 ```
 
-Directory mode indexes all regular files in the folder (non-recursive).
-Skips hidden files, symlinks, and subdirectories.
+Directory mode indexes all regular files in the folder (non-recursive by default).
 
 ## Options
 
@@ -25,9 +24,36 @@ Skips hidden files, symlinks, and subdirectories.
 | `-t`, `--tag KEY=VALUE` | Tag as key=value (repeatable) |
 | `-i`, `--id ID` | Custom document ID (auto-generated for text/stdin) |
 | `--summary TEXT` | User-provided summary (skips auto-summarization) |
+| `-r`, `--recursive` | Recurse into subdirectories (directory mode) |
+| `-x`, `--exclude PATTERN` | Glob pattern to exclude (repeatable, directory mode) |
+| `--watch` | Set up a daemon watch — re-index automatically on file changes |
 | `--suggest-tags` | Show tag suggestions from similar items |
 | `--analyze` | Queue background analysis after put (skips if parts are already current) |
 | `-s`, `--store PATH` | Override store directory |
+
+## Directory mode
+
+Index a folder of files. By default non-recursive; use `-r` to include subdirectories:
+
+```bash
+keep put ./docs/                           # All files in docs/ (flat)
+keep put ./docs/ -r                        # All files in docs/ (recursive)
+keep put ./src/ -r -x "*.pyc" -x "__pycache__"  # Recursive with excludes
+```
+
+Excludes use glob patterns matched against the relative path from the directory root. Hidden files and symlinks are always skipped.
+
+## Watching for changes
+
+The `--watch` flag sets up a daemon-driven watch that re-indexes files automatically when they change:
+
+```bash
+keep put ./notes/ -r --watch               # Index + watch for changes
+keep put ./notes/ -r --watch -x "*.log"    # With exclude patterns
+keep put https://example.com/doc --watch   # Watch a URL for changes
+```
+
+Watches persist across sessions — the daemon polls for changes in the background. Use `keep pending` to see active watches. Excludes are captured at watch-creation time.
 
 ## Text mode and content-addressed IDs
 

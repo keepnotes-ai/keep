@@ -22,6 +22,7 @@ keep find --id ID                     # Find items similar to an existing item
 | `--since DURATION` | Only items updated since (see time filtering below) |
 | `--until DURATION` | Only items updated before (see time filtering below) |
 | `-D`, `--deep` | Follow tags/edges from results to discover related items |
+| `-S`, `--scope GLOB` | Constrain results to IDs matching glob pattern |
 | `--tags` | Show non-system tags for each result |
 | `-H`, `--history` | Include archived versions of matching items |
 | `--tokens N` | Token budget for rich context output (includes parts and versions) |
@@ -79,6 +80,18 @@ Results are displayed as summary lines with similarity score and date:
 ```
 
 Dates reflect when the item was created. Use `--full` for complete frontmatter with tags, similar items, and version navigation.
+
+## Scoped search
+
+Constrain results to items whose IDs match a glob pattern:
+
+```bash
+keep find "auth" --scope 'file:///Users/me/notes/*'       # Only files in notes/
+keep find "auth" --scope 'file:///path/to/memory*'         # memory/ dir + MEMORY.md
+keep find "auth" --scope '*myproject*'                      # IDs containing myproject
+```
+
+The search runs globally (traversing all items for semantic matching), but only items whose base ID matches the glob are returned. Deep search can follow edges through out-of-scope items, but results are still scoped.
 
 ## Deep search
 
