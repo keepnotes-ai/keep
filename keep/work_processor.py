@@ -75,10 +75,15 @@ def process_work_batch(
 
     stats["errors"] = errors  # type: ignore[assignment]
 
-    # Log perf summary after each batch with actual work
+    # Log perf summary + queue depth after each batch with actual work
     if stats["processed"] or stats["failed"]:
         from .perf_stats import perf
         perf.log_summary()
+        remaining = queue.count()
+        if remaining > 0:
+            by_kind = queue.count_by_kind()
+            parts = [f"{v} {k}" for k, v in sorted(by_kind.items(), key=lambda x: -x[1])]
+            logger.info("Queue: %d remaining (%s)", remaining, ", ".join(parts))
 
     return stats
 

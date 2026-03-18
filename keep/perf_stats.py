@@ -24,8 +24,10 @@ from typing import Any, Generator
 
 logger = logging.getLogger(__name__)
 
-# Auto-log a summary every N recorded samples (across all keys).
-_AUTO_LOG_INTERVAL = 25
+# Auto-log interval in seconds.  Logs at most once per interval
+# regardless of how many samples are recorded (avoids spam from
+# fast tasks while still reporting during slow LLM work).
+_AUTO_LOG_INTERVAL_SECS = 300  # 5 minutes
 
 # Maximum samples retained per key (for percentile computation).
 _MAX_SAMPLES = 500
@@ -91,25 +93,25 @@ class _TimingSeries:
 class PerfStats:
     """Process-wide performance statistics tracker."""
 
-    def __init__(self, auto_log_interval: int = _AUTO_LOG_INTERVAL) -> None:
+    def __init__(self, auto_log_interval_secs: float = _AUTO_LOG_INTERVAL_SECS) -> None:
         self._lock = threading.Lock()
         self._series: dict[str, _TimingSeries] = {}
-        self._ops_since_log = 0
-        self._auto_log_interval = auto_log_interval
+        self._auto_log_interval = auto_log_interval_secs
+        self._last_auto_log: float = 0.0
 
     def record(self, category: str, key: str, duration: float, context_id: str | None = None) -> None:
         """Record a timing sample, optionally tagging it with a context ID."""
         label = f"{category}:{key}"
+        now = time.monotonic()
         with self._lock:
             ts = self._series.get(label)
             if ts is None:
                 ts = _TimingSeries()
                 self._series[label] = ts
             ts.record(duration, context_id)
-            self._ops_since_log += 1
-            if self._ops_since_log >= self._auto_log_interval:
+            if now - self._last_auto_log >= self._auto_log_interval:
                 self._log_unlocked()
-                self._ops_since_log = 0
+                self._last_auto_log = now
 
     @contextmanager
     def timer(self, category: str, key: str, context_id: str | None = None) -> Generator[None, None, None]:

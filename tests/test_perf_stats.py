@@ -9,7 +9,7 @@ from keep.perf_stats import PerfStats
 class TestPerfStats:
 
     def test_record_and_summary(self):
-        ps = PerfStats(auto_log_interval=1000)
+        ps = PerfStats(auto_log_interval_secs=99999)
         ps.record("action", "summarize", 0.1)
         ps.record("action", "summarize", 0.2)
         ps.record("action", "summarize", 0.3)
@@ -22,7 +22,7 @@ class TestPerfStats:
         assert abs(stats["mean_ms"] - 200.0) < 1.0
 
     def test_percentiles(self):
-        ps = PerfStats(auto_log_interval=1000)
+        ps = PerfStats(auto_log_interval_secs=99999)
         for i in range(100):
             ps.record("action", "find", i / 1000.0)  # 0ms to 99ms
 
@@ -33,7 +33,7 @@ class TestPerfStats:
         assert s["p95_ms"] >= 85  # ~94ms
 
     def test_timer_context_manager(self):
-        ps = PerfStats(auto_log_interval=1000)
+        ps = PerfStats(auto_log_interval_secs=99999)
         with ps.timer("flow", "query-resolve"):
             time.sleep(0.01)
 
@@ -43,7 +43,7 @@ class TestPerfStats:
         assert s["flow:query-resolve"]["total_s"] >= 0.005
 
     def test_separate_keys(self):
-        ps = PerfStats(auto_log_interval=1000)
+        ps = PerfStats(auto_log_interval_secs=99999)
         ps.record("action", "summarize", 0.1)
         ps.record("action", "analyze", 0.5)
         ps.record("flow", "after-write", 1.0)
@@ -55,7 +55,7 @@ class TestPerfStats:
         assert s["flow:after-write"]["count"] == 1
 
     def test_reset(self):
-        ps = PerfStats(auto_log_interval=1000)
+        ps = PerfStats(auto_log_interval_secs=99999)
         ps.record("action", "x", 0.1)
         assert ps.summary()
         ps.reset()
@@ -63,16 +63,13 @@ class TestPerfStats:
 
     def test_auto_log(self, caplog):
         import logging
-        ps = PerfStats(auto_log_interval=3)
+        ps = PerfStats(auto_log_interval_secs=0)  # log on every record
         with caplog.at_level(logging.INFO, logger="keep.perf_stats"):
             ps.record("action", "a", 0.1)
-            ps.record("action", "a", 0.2)
-            assert "Perf stats:" not in caplog.text
-            ps.record("action", "a", 0.3)  # triggers auto-log
             assert "Perf stats:" in caplog.text
 
     def test_summary_line_format(self):
-        ps = PerfStats(auto_log_interval=1000)
+        ps = PerfStats(auto_log_interval_secs=99999)
         ps.record("action", "tag", 0.05)
         ps.record("action", "tag", 0.15)
 
