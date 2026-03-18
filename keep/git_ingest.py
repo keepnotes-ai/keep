@@ -69,6 +69,25 @@ def is_git_repo(directory: Path) -> bool:
     return _run_git(directory, ["rev-parse", "--git-dir"]) is not None
 
 
+def discover_git_roots(files: list[Path]) -> set[str]:
+    """Find all git repo roots by walking up from each file's parent.
+
+    Pure filesystem check (.git/ directory), no subprocess calls.
+    Returns a set of absolute paths to repo roots.
+    """
+    roots: set[str] = set()
+    checked: set[str] = set()
+    for fpath in files:
+        d = fpath.parent
+        while d != d.parent and str(d) not in checked:
+            checked.add(str(d))
+            if (d / ".git").is_dir():
+                roots.add(str(d))
+                break
+            d = d.parent
+    return roots
+
+
 def get_repo_root(directory: Path) -> Path | None:
     """Get the root of the git repo containing directory."""
     out = _run_git(directory, ["rev-parse", "--show-toplevel"])

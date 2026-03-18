@@ -1980,17 +1980,8 @@ def _put_store(
             typer.echo(_format_items(results, as_json=_get_json_output()))
 
         # Git changelog ingest: find all git repos in the tree
-        git_roots: set[str] = set()
-        # Walk up from each indexed file to find .git/ directories
-        _checked_dirs: set[str] = set()
-        for fpath in files:
-            d = fpath.parent
-            while d != d.parent and str(d) not in _checked_dirs:
-                _checked_dirs.add(str(d))
-                if (d / ".git").is_dir():
-                    git_roots.add(str(d))
-                    break
-                d = d.parent
+        from .git_ingest import discover_git_roots
+        git_roots = discover_git_roots(files)
         for root_str in sorted(git_roots):
             try:
                 kp._get_work_queue().enqueue(

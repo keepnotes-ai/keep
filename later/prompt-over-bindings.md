@@ -1,7 +1,7 @@
 # Prompt Templates Over State Doc Bindings
 
 Date: 2026-03-17
-Status: Approved design
+Status: Implemented (v0.103.0)
 
 ## Problem
 

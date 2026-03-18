@@ -1,7 +1,7 @@
 # .ignore — Global Store Ignore List
 
 Date: 2026-03-18
-Status: Design
+Status: Implemented (v0.103.1)
 
 ## Problem
 

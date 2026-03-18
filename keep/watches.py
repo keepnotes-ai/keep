@@ -565,16 +565,8 @@ def _reput_source(keeper: Keeper, entry: WatchEntry) -> None:
             except Exception as e:
                 logger.warning("Watch re-put failed for %s: %s", file_uri, e)
         # Git changelog: enqueue ingest for repos in the tree
-        git_roots: set[str] = set()
-        _checked: set[str] = set()
-        for fpath in files:
-            d = fpath.parent
-            while d != d.parent and str(d) not in _checked:
-                _checked.add(str(d))
-                if (d / ".git").is_dir():
-                    git_roots.add(str(d))
-                    break
-                d = d.parent
+        from .git_ingest import discover_git_roots
+        git_roots = discover_git_roots(files)
         for root_str in git_roots:
             try:
                 keeper._get_work_queue().enqueue(

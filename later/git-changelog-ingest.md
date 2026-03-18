@@ -1,7 +1,12 @@
 # Git Changelog Ingest
 
 Date: 2026-03-18
-Status: Design
+Status: Implemented (v0.103.x)
+
+Note: Tag names use non-system prefixes (git_sha, git_author, author)
+instead of _-prefixed names from original design, since user-provided
+system tags are filtered by put(). The author tag uses email as the
+join key per discussion.
 
 ## Problem
 
