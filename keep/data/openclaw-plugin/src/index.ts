@@ -372,7 +372,11 @@ export default function register(api: any) {
                 token_budget: 4000,
               });
 
-              const searchResults = result.data?.search?.results || [];
+              // query-resolve puts results at data.results (final output),
+              // not data.search.results (intermediate binding).
+              const searchResults = result.data?.results
+                || result.data?.search?.results
+                || [];
 
               // Map keep results to memory_search shape
               const mapped = (searchResults as any[])
