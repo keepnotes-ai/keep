@@ -106,6 +106,30 @@ keep put doc.pdf                       # Generic summary
 keep put doc.pdf -t topic=auth         # Re-queued for contextual summary
 ```
 
+## Git changelog
+
+When a directory is a git repository, `put -r` automatically indexes the commit history:
+
+```bash
+keep put ./myproject/ -r
+# 42 indexed, 0 errors from myproject/
+# git: 156 commits, 8 tags, 35 files linked
+```
+
+Each commit becomes a searchable item (`git://repo#sha`) with the commit message as its summary. Files get a `git_commit` edge tag linking to their last commit. Git tags/releases are indexed as separate items (`git://repo@tag`).
+
+**Incremental:** On re-scan (or via a watch), only new commits since the last ingest are processed. A `git_watermark` tag on the directory tracks the last ingested SHA.
+
+**Querying git history:**
+
+```bash
+keep find "why was the auth flow changed"     # Finds commit messages by meaning
+keep find "auth" --deep                       # File results + linked commit context
+keep list 'git://myproject#*'                 # All indexed commits
+keep list 'git://myproject@*'                 # All indexed tags/releases
+keep get 'git://myproject@v1.0'               # A specific release
+```
+
 ## Supported formats
 
 | Format | Extensions | Content extracted | Auto-tags |
