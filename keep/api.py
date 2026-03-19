@@ -202,6 +202,8 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
             self._store = bundle.vector_store
             self._pending_queue = bundle.pending_queue
             self._is_local = bundle.is_local
+            if getattr(bundle, 'work_queue', None) is not None:
+                self._work_queue = bundle.work_queue
 
         # Guard against concurrent background reconciliation
         import threading

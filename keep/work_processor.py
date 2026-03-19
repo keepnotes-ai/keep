@@ -12,7 +12,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
-from .work_queue import WorkQueue
+from .protocol import WorkQueueProtocol
 
 if TYPE_CHECKING:
     from .api import Keeper
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 def process_work_batch(
     keeper: "Keeper",
-    queue: WorkQueue,
+    queue: WorkQueueProtocol,
     *,
     limit: int = 10,
     worker_id: Optional[str] = None,

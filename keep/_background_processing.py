@@ -124,8 +124,9 @@ class BackgroundProcessingMixin:
         fall back to the pending queue -- that creates a duplicate
         execution path.
         """
-        if not self._is_local:
-            return  # Remote mode: tasks are processed server-side
+        wq = self._get_work_queue()
+        if wq is None:
+            return  # No work queue available
         meta = dict(metadata or {})
         supersede_key = self._task_idempotency_key(
             task_type=task_type, id=id, content=content,
@@ -133,7 +134,7 @@ class BackgroundProcessingMixin:
         )
         from .actions import get_action_priority
         priority = min(get_action_priority(task_type) + _size_priority_bump(len(content)), 9)
-        self._get_work_queue().enqueue(
+        wq.enqueue(
             task_type,
             {
                 "task_type": task_type,
@@ -1011,9 +1012,10 @@ class BackgroundProcessingMixin:
 
     def pending_work_count(self, *, claimable_only: bool = False) -> int:
         """Get count of requested work items."""
-        if not self._is_local:
+        wq = self._get_work_queue()
+        if wq is None:
             return 0
-        return self._get_work_queue().count(claimable_only=claimable_only)
+        return wq.count(claimable_only=claimable_only)
 
     def process_pending_work(
         self,
@@ -1024,12 +1026,13 @@ class BackgroundProcessingMixin:
         shutdown_check=None,
     ) -> dict:
         """Process a batch of requested work items."""
-        if not self._is_local:
+        wq = self._get_work_queue()
+        if wq is None:
             return {"claimed": 0, "processed": 0, "failed": 0, "dead_lettered": 0, "errors": []}
         from .work_processor import process_work_batch
         return process_work_batch(
             self,
-            self._get_work_queue(),
+            wq,
             limit=limit,
             worker_id=worker_id,
             shutdown_check=shutdown_check,
@@ -1061,10 +1064,16 @@ class BackgroundProcessingMixin:
     # -------------------------------------------------------------------------
 
     def _get_work_queue(self):
-        """Lazy-init the direct work queue (shares continuation.db)."""
+        """Get the work queue, lazy-creating a local SQLite one if needed.
+
+        Returns None in cloud mode when no work queue was injected via
+        StoreBundle.  Callers must handle None.
+        """
         queue = self._work_queue
         if queue is not None:
             return queue
+        if not self._is_local:
+            return None  # Cloud mode: no queue unless injected
         from .work_queue import WorkQueue
         with self._work_queue_lock:
             queue = self._work_queue
@@ -1102,6 +1111,9 @@ class BackgroundProcessingMixin:
         Returns True if a new processor was spawned, False if one was
         already running or spawn failed.
         """
+        if not self._is_local:
+            return False  # Cloud mode: worker is external
+
         import time
         from .model_lock import ModelLock
 

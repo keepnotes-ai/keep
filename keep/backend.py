@@ -19,7 +19,10 @@ from importlib.metadata import entry_points
 from typing import NamedTuple, Optional
 
 from .config import StoreConfig
-from .protocol import DocumentStoreProtocol, PendingQueueProtocol, VectorStoreProtocol
+from .protocol import (
+    DocumentStoreProtocol, PendingQueueProtocol, VectorStoreProtocol,
+    WorkQueueProtocol,
+)
 
 
 class StoreBundle(NamedTuple):
@@ -28,6 +31,7 @@ class StoreBundle(NamedTuple):
     vector_store: VectorStoreProtocol
     pending_queue: PendingQueueProtocol
     is_local: bool  # True for filesystem-backed stores
+    work_queue: Optional[WorkQueueProtocol] = None
 
 
 class NullPendingQueue:
