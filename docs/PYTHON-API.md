@@ -71,7 +71,7 @@ kp.put(content, tags={}, summary=None) → Item
 
 # Full signature:
 # kp.put(content=None, *, uri=None, id=None, summary=None,
-#        tags=None, created_at=None) → Item
+#        tags=None, created_at=None, force=False) → Item
 
 # Notes:
 # - Exactly one of content or uri must be provided
@@ -80,6 +80,7 @@ kp.put(content, tags={}, summary=None) → Item
 # - User tags (domain, topic, etc.) provide context for summarization
 # - id: override auto-generated ID (for managed imports)
 # - created_at: ISO timestamp override (for historical imports)
+# - force: re-process even if content unchanged
 ```
 
 #### Search
@@ -141,6 +142,12 @@ kp.tag(id, tags={}) → Item | None
 
 # Delete tag by setting empty value
 kp.tag("doc:1", {"obsolete": ""})  # Removes 'obsolete' tag
+
+# Remove tag keys entirely
+kp.tag("doc:1", remove=["obsolete"])
+
+# Remove specific values from a multi-value tag
+kp.tag("doc:1", remove_values={"topic": "old-topic"})
 
 # Edit tags on a part (parts are otherwise immutable)
 kp.tag_part("doc:1", 1, tags={"topic": "oauth2"}) → PartInfo | None
@@ -209,6 +216,37 @@ result = kp.render_prompt("reflect", "auth flow")
 
 # Render with scoped search
 result = kp.render_prompt("query", "auth", scope="file:///notes/*")
+
+# Render with token budget (truncates context to fit)
+result = kp.render_prompt("reflect", "auth", token_budget=4000)
+```
+
+#### Move
+
+```python
+# Move versions from one note to another
+kp.move("target-id", source_id="source-id") → Item
+
+# Move with new tags
+kp.move("target-id", source_id="source-id", tags={"project": "new"})
+
+# Move only the current version (not full history)
+kp.move("target-id", source_id="source-id", only_current=True)
+```
+
+#### Context
+
+```python
+# Get complete display context for a note (similar, meta, parts, versions)
+kp.get_context(id) → dict
+
+# Customize what's included
+kp.get_context(id,
+    include_similar=True, similar_limit=5,
+    include_meta=True, meta_limit=5,
+    include_parts=True, parts_limit=10,
+    include_versions=True, versions_limit=5,
+)
 ```
 
 #### Deletion
@@ -218,8 +256,33 @@ result = kp.render_prompt("query", "auth", scope="file:///notes/*")
 kp.delete(id) → bool
 kp.delete(id, delete_versions=False) → bool  # Keep version history
 
+# Delete a specific version
+kp.delete_version(id, offset=1) → bool  # offset: 1=previous, 2=two ago, etc.
+
 # Revert to previous version (if history exists)
 kp.revert(id) → Item | None
+```
+
+### Utility Methods
+
+```python
+# Count notes in store
+kp.count() → int
+
+# List collections
+kp.list_collections() → list[str]
+
+# List available prompt templates
+kp.list_prompts() → list[str]
+
+# Export all data (for backup/migration)
+data = kp.export_data(include_system=False) → dict
+
+# Import data
+kp.import_data(data, mode="merge") → dict  # mode: "merge" or "replace"
+
+# Close resources (embedding providers, etc.)
+kp.close()
 ```
 
 ## Data Types
