@@ -215,6 +215,11 @@ class OllamaSummarization:
             return truncated[:max_length]
         return strip_summary_preamble(result)
 
+    # Default context window for Ollama models.  Many small models ship
+    # with num_ctx=4096 which silently truncates longer prompts.  16K is
+    # safe for all current models and adds negligible VRAM overhead.
+    DEFAULT_NUM_CTX = 16384
+
     def generate(
         self,
         system: str,
@@ -234,6 +239,7 @@ class OllamaSummarization:
                     {"role": "user", "content": user},
                 ],
                 "stream": False,
+                "options": {"num_ctx": self.DEFAULT_NUM_CTX},
             },
             timeout=(10, 300),  # (connect, read) — generation can be slow
         )
