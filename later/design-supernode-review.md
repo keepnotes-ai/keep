@@ -17,6 +17,8 @@ High-cardinality nodes ("supernodes") accumulate inbound references over time â€
 
 ### Core idea
 
+Background task that automatically analyzes the supernodes to maintain a useful summary and identify important changes.
+
 `put` a new version of the supernode's content, synthesized from its inbound references. Previous content preserved as a version. Same mechanism as parts-analysis but outward instead of inward.
 
 ### Selection: one rule

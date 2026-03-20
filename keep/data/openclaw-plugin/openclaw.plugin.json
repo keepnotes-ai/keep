@@ -2,7 +2,7 @@
   "id": "keep",
   "name": "keep",
   "description": "Reflective memory — context engine + memory tools",
-  "version": "0.105.6",
+  "version": "0.106.0",
   "kind": "context-engine",
   "configSchema": {
     "type": "object",
