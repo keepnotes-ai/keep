@@ -282,7 +282,7 @@ class OllamaEmbedding:
         for _ in range(30):  # 0.9^30 ≈ 4% — covers even extreme cases
             response = ollama_session().post(
                 f"{self.base_url}/api/embeddings",
-                json={"model": self.model_name, "prompt": attempt},
+                json={"model": self.model_name, "prompt": attempt, "keep_alive": "30m"},
                 timeout=(10, 120),  # (connect, read) — model loading can be slow
             )
             if response.ok:

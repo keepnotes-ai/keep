@@ -185,14 +185,23 @@ class OllamaSummarization:
     """Summarization provider using Ollama's local API.
 
     Respects OLLAMA_HOST env var (default: http://localhost:11434).
+
+    ``context_length`` sets ``num_ctx`` in the Ollama API call.  Many
+    small models default to 4096 which silently truncates longer prompts.
+    Configurable via ``keep.toml``::
+
+        [summarization]
+        context_length = 16384
     """
 
     def __init__(
         self,
         model: str = "llama3.2",
         base_url: str | None = None,
+        context_length: int = 16384,
     ):
         self.model = model
+        self.context_length = context_length
         from .ollama_utils import ollama_base_url, ollama_ensure_model
         self.base_url = ollama_base_url(base_url)
         ollama_ensure_model(self.base_url, self.model)
@@ -215,11 +224,6 @@ class OllamaSummarization:
             return truncated[:max_length]
         return strip_summary_preamble(result)
 
-    # Default context window for Ollama models.  Many small models ship
-    # with num_ctx=4096 which silently truncates longer prompts.  16K is
-    # safe for all current models and adds negligible VRAM overhead.
-    DEFAULT_NUM_CTX = 16384
-
     def generate(
         self,
         system: str,
@@ -239,7 +243,8 @@ class OllamaSummarization:
                     {"role": "user", "content": user},
                 ],
                 "stream": False,
-                "options": {"num_ctx": self.DEFAULT_NUM_CTX},
+                "options": {"num_ctx": self.context_length},
+                "keep_alive": "30m",
             },
             timeout=(10, 300),  # (connect, read) — generation can be slow
         )
@@ -452,8 +457,10 @@ class OllamaTagging:
         self,
         model: str = "llama3.2",
         base_url: str | None = None,
+        context_length: int = 16384,
     ):
         self.model = model
+        self.context_length = context_length
         from .ollama_utils import ollama_base_url, ollama_ensure_model
         self.base_url = ollama_base_url(base_url)
         ollama_ensure_model(self.base_url, self.model)
@@ -473,6 +480,8 @@ class OllamaTagging:
                 ],
                 "format": "json",
                 "stream": False,
+                "options": {"num_ctx": self.context_length},
+                "keep_alive": "30m",
             },
             timeout=120,
         )
@@ -552,8 +561,10 @@ class OllamaMediaDescriber:
         self,
         model: str = "llava",
         base_url: str | None = None,
+        context_length: int = 16384,
     ):
         self.model = model
+        self.context_length = context_length
         from .ollama_utils import ollama_base_url, ollama_ensure_model
         self.base_url = ollama_base_url(base_url)
         ollama_ensure_model(self.base_url, self.model)
@@ -581,6 +592,8 @@ class OllamaMediaDescriber:
                     },
                 ],
                 "stream": False,
+                "options": {"num_ctx": self.context_length},
+                "keep_alive": "30m",
             },
             timeout=120,
         )
@@ -610,8 +623,10 @@ class OllamaContentExtractor:
         self,
         model: str = "glm-ocr",
         base_url: str | None = None,
+        context_length: int = 16384,
     ):
         self.model = model
+        self.context_length = context_length
         from .ollama_utils import ollama_base_url, ollama_ensure_model
         self.base_url = ollama_base_url(base_url)
         ollama_ensure_model(self.base_url, self.model)
@@ -634,6 +649,8 @@ class OllamaContentExtractor:
                 "prompt": self.OCR_PROMPT,
                 "images": [image_data],
                 "stream": False,
+                "options": {"num_ctx": self.context_length},
+                "keep_alive": "30m",
             },
             timeout=120,
         )
