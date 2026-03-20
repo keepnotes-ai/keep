@@ -580,14 +580,7 @@ class ContextResolutionMixin:
             if not matches:
                 continue
 
-            # Split: direct matches go to {name}, part-sourced go to {name}/provisional
-            direct = [m for m in matches if not m.tags.get("_provisional")]
-            provisional = [m for m in matches if m.tags.get("_provisional")]
-
-            if direct:
-                result[short_name] = direct
-            if provisional:
-                result[f"{short_name}/provisional"] = provisional
+            result[short_name] = matches
 
         return result
 
@@ -683,8 +676,7 @@ class ContextResolutionMixin:
             return []
 
         # Part-to-parent uplift: replace part hits with parent doc ID
-        # but keep the part's summary text.  Mark uplifted items with
-        # _provisional tag so resolve_meta() can route them separately.
+        # but keep the part's summary text for display.
         doc_coll = self._resolve_doc_collection()
         direct_ids: set[str] = set()
         uplifted: list[Item] = []
@@ -702,11 +694,9 @@ class ContextResolutionMixin:
                 if parent_id in direct_ids or parent_id in seen_parents:
                     continue  # Parent already matched directly, or another part did
                 seen_parents.add(parent_id)
-                tags = dict(item.tags)
-                tags["_provisional"] = "1"
                 uplifted.append(Item(
                     id=parent_id, summary=item.summary,
-                    tags=tags, score=item.score,
+                    tags=item.tags, score=item.score,
                 ))
             else:
                 uplifted.append(item)

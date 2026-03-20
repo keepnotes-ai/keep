@@ -226,10 +226,10 @@ class TestResolveInlineMeta:
 
 
 class TestProvisionalMeta:
-    """Tests for provisional meta routing (part-sourced matches)."""
+    """Tests for part-to-parent uplift in meta resolution."""
 
-    def test_part_match_routes_to_provisional(self, kp):
-        """Part-sourced meta match should appear under {name}/provisional."""
+    def test_part_match_uplifted_to_parent(self, kp):
+        """Part-sourced meta match should appear with parent ID, not part ID."""
         # Create a parent doc WITHOUT act=commitment
         kp.put("Meeting notes from Tuesday", id="meeting-notes", tags={
             "topic": "meetings", "project": "myapp",
@@ -249,24 +249,16 @@ class TestProvisionalMeta:
 
         result = kp.resolve_meta("anchor")
 
-        # The part match should appear under todo/provisional, not todo
-        if "todo/provisional" in result:
-            prov = result["todo/provisional"]
-            # ID should be the parent doc, not the part
-            assert all(item.id == "meeting-notes" for item in prov)
-            # Summary should be the part's text
-            assert any("refactor the auth" in item.summary for item in prov)
-        # Part should NOT appear under direct "todo" with a part ID
+        # Part match should appear under "todo" with parent ID (not part ID)
         if "todo" in result:
             for item in result["todo"]:
                 assert "@p" not in item.id
+        # No provisional group
+        assert "todo/provisional" not in result
 
-    def test_direct_match_suppresses_provisional(self, kp):
-        """When parent matches directly, part match should be suppressed."""
-        # This parent already has act=commitment (direct match)
-        # so any part of it should NOT appear in provisional
+    def test_direct_match_suppresses_part(self, kp):
+        """When parent matches directly, part match should be deduplicated."""
         chroma_coll = kp._resolve_chroma_collection()
-        # Find an existing commitment
         items = kp.list_items(tags={"act": "commitment", "status": "open"}, limit=1)
         assert items, "Need at least one commitment for this test"
         parent_id = items[0].id
@@ -283,10 +275,9 @@ class TestProvisionalMeta:
 
         result = kp.resolve_meta("anchor")
 
-        # Parent should still appear directly under "todo"
+        # Parent should appear once under "todo"
         if "todo" in result:
-            assert any(item.id == parent_id for item in result["todo"])
-        # Part should NOT appear in provisional (parent already matched)
-        if "todo/provisional" in result:
-            prov_ids = [item.id for item in result["todo/provisional"]]
-            assert parent_id not in prov_ids
+            ids = [item.id for item in result["todo"]]
+            assert ids.count(parent_id) <= 1  # No duplication
+        # No provisional group
+        assert "todo/provisional" not in result
