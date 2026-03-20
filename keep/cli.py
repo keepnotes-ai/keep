@@ -3774,6 +3774,11 @@ def pending_cmd(
             "Daemon started (pid=%d) keep-skill=%s python=%s store=%s",
             os.getpid(), _ver, sys.executable, kp._store_path,
         )
+        # Write version file so future callers can compare
+        try:
+            (kp._store_path / ".processor.version").write_text(_ver)
+        except Exception:
+            pass
         # Release leases held by previous daemon instances that exited
         # without completing their work items.
         wq = kp._get_work_queue()
@@ -3835,9 +3840,34 @@ def pending_cmd(
             if total_removed:
                 _daemon_logger.info("Cleaned up %d temp directories", total_removed)
 
+        # Version-aware restart: if a newer version of keep-skill wrote
+        # .processor.version, exec-restart to pick up new code.
+        _version_file = kp._store_path / ".processor.version"
+
+        def _check_version_restart():
+            """Exec-restart if a newer version is expected."""
+            try:
+                if not _version_file.exists():
+                    return
+                requested = _version_file.read_text().strip()
+                if requested and requested != _ver:
+                    _daemon_logger.info(
+                        "Version changed (%s → %s), restarting daemon",
+                        _ver, requested,
+                    )
+                    # Clean up before exec
+                    try:
+                        kp.close()
+                    except Exception:
+                        pass
+                    os.execv(sys.executable, [sys.executable] + sys.argv)
+            except Exception as e:
+                _daemon_logger.debug("Version check failed: %s", e)
+
         try:
             pid_path.write_text(str(os.getpid()))
             while not shutdown_requested:
+                _check_version_restart()
                 flow_result = kp.process_pending_work(
                     limit=1,
                     worker_id=flow_worker_id,

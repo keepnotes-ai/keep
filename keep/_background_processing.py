@@ -256,6 +256,12 @@ class BackgroundProcessingMixin:
             dispatched = True
 
         if dispatched:
+            # Write version file so the daemon can detect upgrades
+            try:
+                from . import __version__
+                (self._store_path / ".processor.version").write_text(__version__)
+            except Exception:
+                pass
             self._spawn_processor()
 
     def _load_after_write_state_doc(self) -> Optional["StateDoc"]:
@@ -1176,6 +1182,15 @@ class BackgroundProcessingMixin:
             subprocess.Popen(cmd, env=env, **kwargs)
             self._last_spawn_time = time.monotonic()
             logger.info("Spawned background processor")
+
+            # Write current version so the daemon can detect upgrades
+            # and exec-restart itself with the new code.
+            try:
+                from . import __version__
+                (self._store_path / ".processor.version").write_text(__version__)
+            except Exception:
+                pass
+
             return True
 
         except Exception as e:
