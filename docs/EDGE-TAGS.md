@@ -76,12 +76,32 @@ When you add `_inverse` to an existing tagdoc, keep automatically backfills edge
 
 ## Bundled edge tags
 
+### General
+
 | Tag | `_inverse` | Example | Meaning |
 |-----|-----------|---------|---------|
-| `speaker` | `said` | `speaker: Deborah` on a turn | `get Deborah` → `said:` entries in `tags:` |
-| `informs` | `informed_by` | `informs: auth-decision` on a URL | `get auth-decision` → `informed_by:` entries in `tags:` |
-| `references` | `referenced_by` | `references: other-note` via link extraction | `get other-note` → `referenced_by:` entries in `tags:` |
-| `duplicates` | `duplicates` | `duplicates: notes-v1` on a duplicate | Symmetric: both sides show `duplicates:` entries |
+| `speaker` | `said` | `speaker: Deborah` on a turn | `get Deborah` → `said:` entries |
+| `informs` | `informed_by` | `informs: auth-decision` on a URL | `get auth-decision` → `informed_by:` entries |
+| `references` | `referenced_by` | `references: other-note` via link extraction | `get other-note` → `referenced_by:` entries |
+| `duplicates` | `duplicates` | `duplicates: notes-v1` on a duplicate | Symmetric: both sides show `duplicates:` |
+| `author` | `authored` | `author: alice@example.com` on a git commit | `get alice@example.com` → `authored:` entries |
+
+### Email
+
+| Tag | `_inverse` | Example | Meaning |
+|-----|-----------|---------|---------|
+| `from` | `sender_of` | `from: alice@example.com` on an email | `get alice@example.com` → `sender_of:` entries |
+| `to` | `recipient_of` | `to: bob@example.com` on an email | `get bob@example.com` → `recipient_of:` entries |
+| `cc` | `cc_recipient_of` | `cc: carol@example.com` on an email | `get carol@example.com` → `cc_recipient_of:` entries |
+| `bcc` | `bcc_recipient_of` | `bcc: dave@example.com` on an email | `get dave@example.com` → `bcc_recipient_of:` entries |
+| `in-reply-to` | `has_reply` | `in-reply-to: <msg-id>` on a reply | `get <parent>` → `has_reply:` entries |
+| `attachment` | `has_attachment` | `attachment: email-id` on an attachment | `get email-id` → `has_attachment:` entries |
+
+### Git
+
+| Tag | `_inverse` | Example | Meaning |
+|-----|-----------|---------|---------|
+| `git_commit` | `git_file` | `git_commit: git://repo#abc` on a file | `get git://repo#abc` → `git_file:` entries |
 
 ## Rules
 
