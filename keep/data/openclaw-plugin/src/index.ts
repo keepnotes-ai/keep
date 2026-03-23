@@ -112,7 +112,12 @@ function formatTurn(messages: any[], maxInlineLength: number): string {
 
 export default function register(api: any) {
   if (!keepAvailable()) {
-    api.logger?.warn("[keep] keep CLI not found, plugin inactive");
+    api.logger?.warn(
+      "[keep] keep CLI not found — plugin inactive. " +
+      "Install with: uv pip install keep-skill[local]  " +
+      "(requires Python 3.13 and uv). " +
+      "Then restart the gateway: openclaw gateway restart"
+    );
     return;
   }
 
@@ -355,7 +360,7 @@ export default function register(api: any) {
                     unavailable: true,
                     error: "keep MCP not connected",
                     warning: "Memory search is unavailable because keep is not running.",
-                    action: "Check keep installation and restart the gateway.",
+                    action: "Verify keep is installed (uv pip install keep-skill[local]) and restart: openclaw gateway restart",
                   }),
                 }],
               };
