@@ -71,6 +71,11 @@ def main() -> None:
     print("\nRunning uv lock ...")
     subprocess.run(["uv", "lock"], cwd=ROOT, check=True)
 
+    # Rebuild the OpenClaw plugin so dist/index.js matches the new version.
+    plugin_dir = ROOT / "keep" / "data" / "openclaw-plugin"
+    print("\nRebuilding OpenClaw plugin ...")
+    subprocess.run(["node", "build.mjs"], cwd=plugin_dir, check=True)
+
 
 if __name__ == "__main__":
     main()
