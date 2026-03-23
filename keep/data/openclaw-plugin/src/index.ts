@@ -137,6 +137,35 @@ export default function register(api: any) {
   }
 
   // -----------------------------------------------------------------------
+  // Auto-configure context engine slot
+  // -----------------------------------------------------------------------
+  // keep needs both plugins.slots.memory (set by install via kind: "memory")
+  // and plugins.slots.contextEngine (not auto-set because manifest can only
+  // declare one kind). On first load after install, patch the config so the
+  // user doesn't need a manual step.
+  try {
+    const configPath = path.join(
+      process.env.OPENCLAW_STATE_DIR || path.join(process.env.HOME || "", ".openclaw"),
+      "openclaw.json",
+    );
+    const raw = fs.readFileSync(configPath, "utf-8");
+    const config = JSON.parse(raw);
+    const ceSlot = config?.plugins?.slots?.contextEngine;
+    if (ceSlot !== "keep") {
+      config.plugins = config.plugins || {};
+      config.plugins.slots = config.plugins.slots || {};
+      config.plugins.slots.contextEngine = "keep";
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
+      api.logger?.info(
+        "[keep] Auto-configured plugins.slots.contextEngine = \"keep\". " +
+        "Restart the gateway to activate the context engine.",
+      );
+    }
+  } catch (err: any) {
+    api.logger?.warn(`[keep] Could not auto-configure context engine slot: ${err.message}`);
+  }
+
+  // -----------------------------------------------------------------------
   // First-run health check
   // -----------------------------------------------------------------------
 
