@@ -360,6 +360,19 @@ def migrate_system_documents(keeper: "Keeper", progress=None) -> dict:
             else:
                 stats["created"] += 1
                 logger.info("Created system doc: %s", new_id)
+
+            # Handle replaces: tag — clean up the old ID this doc supersedes.
+            # The replaces value is the full old document ID (e.g., ".state/get-context").
+            replaces = tags.get("replaces")
+            if isinstance(replaces, str) and replaces.strip():
+                old_id = replaces.strip()
+                try:
+                    if keeper._document_store.get(doc_coll, old_id):
+                        keeper._document_store.delete(doc_coll, old_id)
+                        stats["cleaned"] += 1
+                        logger.info("Cleaned replaced system doc: %s (replaced by %s)", old_id, new_id)
+                except Exception:
+                    pass
         except FileNotFoundError:
             pass
 

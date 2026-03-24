@@ -37,7 +37,7 @@ PROTOCOL_BLOCK = """\
 
 ```
 keep_prompt(name="reflect")                                                               # The practice
-keep_flow(state="get-context", params={item_id: "now"}, token_budget=2000)                # Current intentions
+keep_flow(state="get", params={item_id: "now"}, token_budget=2000)                        # Current intentions
 keep_flow(state="query-resolve", params={query: "topic"}, token_budget=2000)              # What do I know?
 keep_flow(state="put", params={content: "what's true now", id: "now"})                    # Update intentions
 keep_flow(state="put", params={content: "learning", tags: {type: "learning"}})            # Capture insight

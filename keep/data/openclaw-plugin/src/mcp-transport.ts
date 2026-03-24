@@ -308,8 +308,7 @@ export class KeepMcpTransport {
 
     switch (state) {
       // Hot path — agent is waiting
-      case "openclaw-assemble":
-      case "get-context":
+      case "get":
       case "find-deep":
       case "stats":
         return ASSEMBLE_TIMEOUT_MS;

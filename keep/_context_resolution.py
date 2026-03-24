@@ -213,12 +213,14 @@ class ContextResolutionMixin:
         if offset == 0:
             if include_similar or include_meta or include_parts:
                 flow_result = self._run_read_flow(
-                    "get-context",
+                    "get",
                     {
                         "item_id": id,
                         "similar_limit": similar_limit if include_similar else 0,
                         "meta_limit": meta_limit if include_meta else 0,
                         "parts_limit": parts_limit if include_parts else 0,
+                        "edges_limit": 5,
+                        "versions_limit": 3,
                     },
                 )
                 if flow_result.status == "done":

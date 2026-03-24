@@ -4408,7 +4408,7 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
         (seeded by system doc migration).
 
         Args:
-            state: Name of the starting state doc (e.g. "get-context").
+            state: Name of the starting state doc (e.g. "get").
             params: Caller-supplied parameters.
             budget: Maximum ticks before forced stop.
             query_embedding: Optional embedding vector for semantic

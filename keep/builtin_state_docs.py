@@ -97,10 +97,11 @@ post:
     # -----------------------------------------------------------------
     # Read path: context assembly
     # -----------------------------------------------------------------
-    "get-context": """\
+    "get": """\
 match: all
 rules:
   - id: similar
+    when: "!has(params.prompt) || params.prompt == ''"
     do: find
     with:
       similar_to: "{params.item_id}"
@@ -366,6 +367,27 @@ rules:
     with:
       item_id: "{params.item_id}"
       tag: duplicates
+""",
+    },
+    "get": {
+        "openclaw": """\
+order: before:similar
+rules:
+  - id: search
+    when: "has(params.prompt) && params.prompt != ''"
+    do: find
+    with:
+      query: "{params.prompt}"
+      bias: { "now": 0 }
+      limit: 7
+  - id: intentions
+    do: get
+    with:
+      id: "now"
+  - id: session
+    do: get
+    with:
+      id: "{params.item_id}"
 """,
     },
 }

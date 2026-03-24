@@ -132,8 +132,7 @@ const DEFAULT_CALL_TIMEOUT_MS = 10_000;
 function timeoutForState(state?: string): number {
   if (!state) return DEFAULT_CALL_TIMEOUT_MS;
   switch (state) {
-    case "openclaw-assemble":
-    case "get-context":
+    case "get":
     case "find-deep":
     case "stats":
       return ASSEMBLE_TIMEOUT_MS;
@@ -389,8 +388,7 @@ describe("detectInflection", () => {
 
 describe("timeoutForState", () => {
   it("returns fast timeout for assemble", () => {
-    assert.equal(timeoutForState("openclaw-assemble"), 8_000);
-    assert.equal(timeoutForState("get-context"), 8_000);
+    assert.equal(timeoutForState("get"), 8_000);
   });
 
   it("returns write timeout for mutations", () => {

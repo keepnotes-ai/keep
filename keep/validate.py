@@ -580,7 +580,7 @@ def _check_action_name(result: ValidationResult, name: str, loc: str) -> None:
 # Entry points: which state docs are reachable from which caller paths.
 _STATE_ENTRY_POINTS: dict[str, str] = {
     "after-write": "put()",
-    "get-context": "get()",
+    "get": "get()",
     "find-deep": "find(deep)",
     "query-resolve": "query",
 }

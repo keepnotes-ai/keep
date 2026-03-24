@@ -47,18 +47,22 @@ For deeper conversation analysis, use `keep_prompt(name="conversation")`.
 
 Kammassakomhi, kammadāyādo, kammayoni, kammabandhu, kammapaṭisaraṇo.
 
-- What patterns are forming through these actions?
-- What should I exercise restraint about going forward?
+Past actions brought us to this state.
+Future success depends on what we do now.
 
 ### 5. Update
 
 生死事大 無常迅速 各宜醒覚 慎勿放逸
 
-`now` is a briefing for your future self. The next session starts here — with only this and what search can retrieve. Write what future-you needs to act skillfully: what is in progress, what must be paid attention to, what commitments are open, what assumptions were revealed.
+* What Questions do you have, to which you have no answers?
+* What Assessments do you have, or want to make?  How might they be grounded, or ungrounded?
+* What Requests do you arrive with?
+* What Offers are you in a condition to make?
+* What are your Conditions of Satisfaction for this moment?
 
-- Capture learnings with appropriate tags.
-- Track commitments with speech-act tags.
-- If a thread of work is complete or the conversation is shifting, move the history to make room for what's next.
+Track your commitments, learnings, and actions.  Do this work now.
+
+`keep_flow(state="put", params={id: "now", content: "...", tags: {...}})`
 
 The value is in the reflection itself, not in lengthy output.
 

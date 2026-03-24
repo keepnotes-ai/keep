@@ -44,7 +44,7 @@ Append the selector to any ID: `%a1b2c3@V{1}`
 | `@P{1}` | First part (1-indexed) |
 | `@P{N}` | Nth part |
 
-Parts appear independently in search results. Retrieve with: `keep_flow(state="get-context", params={item_id:"DOC_ID@P{1}")`
+Parts appear independently in search results. Retrieve with: `keep_flow(state="get", params={item_id:"DOC_ID@P{1}")`
 
 ---
 
@@ -207,11 +207,11 @@ Item summary or content here
 
 **Examples:**
 ```
-keep_flow(state="get-context", params={item_id:"now")              # current working context
-keep_flow(state="get-context", params={item_id:"%a1b2c3")          # specific item
-keep_flow(state="get-context", params={item_id:"%a1b2c3@V{1}")    # previous version
-keep_flow(state="get-context", params={item_id:"%a1b2c3@P{1}")    # first structural part
-keep_flow(state="get-context", params={item_id:".tag/act")         # tag description doc
+keep_flow(state="get", params={item_id:"now")              # current working context
+keep_flow(state="get", params={item_id:"%a1b2c3")          # specific item
+keep_flow(state="get", params={item_id:"%a1b2c3@V{1}")    # previous version
+keep_flow(state="get", params={item_id:"%a1b2c3@P{1}")    # first structural part
+keep_flow(state="get", params={item_id:".tag/act")         # tag description doc
 ```
 
 ---
@@ -228,7 +228,7 @@ Implemented via `put(id="now", ...)`, so it creates a version when content chang
 
 **Returns:** `"Context updated: now"`
 
-To **read** current context, use `keep_flow(state="get-context", params={item_id:"now")`.
+To **read** current context, use `keep_flow(state="get", params={item_id:"now")`.
 
 **Examples:**
 ```
@@ -361,7 +361,7 @@ keep_prompt(name="reflect", text="deployment", since="P3D")
 ### Session lifecycle
 ```
 keep_prompt(name="session-start")                      # 1. orient
-keep_flow(state="get-context", params={item_id:"now")                                     # 2. check intentions
+keep_flow(state="get", params={item_id:"now")                                     # 2. check intentions
 # ... do work ...
 keep_flow(state="put", params={content:"Completed X. Next: Y.")              # 3. update context
 keep_prompt(name="reflect")                            # 4. reflect
@@ -371,7 +371,7 @@ keep_prompt(name="reflect")                            # 4. reflect
 ```
 keep_flow(state="put", params={content:"insight text", tags={"type": "learning", "topic": "auth"})
 keep_flow(state="query-resolve", params={query:"authentication insights")
-keep_flow(state="get-context", params={item_id:"%returned_id")
+keep_flow(state="get", params={item_id:"%returned_id")
 ```
 
 ### Track commitments

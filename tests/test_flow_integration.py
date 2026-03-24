@@ -82,7 +82,7 @@ class TestGetContextFlow:
         kp._run_read_flow = tracking_flow
         kp.get_context("arch1")
 
-        assert "get-context" in calls, \
+        assert "get" in calls, \
             "get_context() should invoke the get-context state-doc flow"
 
     def test_get_context_returns_similar_items(self, kp):
@@ -522,7 +522,7 @@ class TestRunFlowCommand:
     def test_run_stored_state_doc(self, kp):
         """run_flow_command with a built-in state doc name."""
         result = kp.run_flow_command(
-            "get-context",
+            "get",
             params={"id": "nonexistent"},
             budget=1,
         )
@@ -841,7 +841,7 @@ class TestFlowWorkItemExecution:
         kp.put("Test content for flow", id="flow-test-1")
 
         result = _execute_flow_item(kp, {
-            "state": "get-context",
+            "state": "get",
             "params": {
                 "item_id": "flow-test-1",
                 "similar_limit": 3,

@@ -27,13 +27,13 @@ Background task that automatically analyzes the supernodes to maintain a useful 
 
 Score = `fan_in × (1 + new_refs)` where `new_refs` = refs created after `_supernode_reviewed` timestamp.
 
-(TODO review this strategy, we must avoid processing "new git commit" supernode that has content and lots of inbound refs - it already has content! refs are new but only because the supernode itself is new! nothing to do here!)
-
 This single condition handles every case:
 - Stub with no content, never reviewed → all refs are "new" → eligible
 - Git commit with content, no new refs → `new_refs = 0` → skipped forever
 - User note that became a hub, 5 new refs → eligible (new evidence)
 - Previously-reviewed supernode, nothing changed → skipped
+
+> TODO review this strategy, we must avoid processing "new git commit" supernode that has content and lots of inbound refs - it already has content! refs are new but only because the supernode itself is new! nothing to do here!
 
 ### Prompt-driven eligibility
 

@@ -17,7 +17,7 @@ This guide assumes familiarity with the reflective practice in [SKILL.md](../SKI
 - What kind of conversation is this? (Action? Possibility? Clarification?)
 - What do I already know?
 ```
-keep_flow(state="get-context", params={item_id: "now"}, token_budget=2000)
+keep_flow(state="get", params={item_id: "now"}, token_budget=2000)
 keep_flow(state="query-resolve", params={query: "this situation"}, token_budget=2000)
 ```
 
@@ -43,7 +43,7 @@ Use the nowdoc as a scratchpad to track where you are in the work. This isn't en
 
 ```
 # 1. Starting work — check context and intentions
-keep_flow(state="get-context", params={item_id: "now"}, token_budget=2000)
+keep_flow(state="get", params={item_id: "now"}, token_budget=2000)
 
 # 2. Update context as work evolves
 keep_flow(state="put", params={content: "Diagnosing flaky test in auth module", id: "now", tags: {project: "myapp", topic: "testing"}})
@@ -61,7 +61,7 @@ keep_flow(state="put", params={content: "Flaky timing fix: mock time instead of 
 
 **Starting a session:**
 ```
-keep_flow(state="get-context", params={item_id: "now"}, token_budget=2000)
+keep_flow(state="get", params={item_id: "now"}, token_budget=2000)
 keep_flow(state="query-resolve", params={query: "recent work", since: "P1D"}, token_budget=1500)
 ```
 

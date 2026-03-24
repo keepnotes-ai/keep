@@ -40,7 +40,7 @@ Converged two parallel flow systems into one:
 
 ```
 put()  ──→  _put_direct()  ──→  _dispatch_after_write_flow()  ──→  work_queue
-get()  ──→  _run_read_flow("get-context")  ──→  state_doc_runtime
+get()  ──→  _run_read_flow("get")  ──→  state_doc_runtime
 find() ──→  _run_read_flow("find-deep")    ──→  state_doc_runtime
 keep flow ──→  run_flow_command()           ──→  state_doc_runtime
 

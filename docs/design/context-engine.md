@@ -71,7 +71,7 @@ Lifecycle:
       },
       "assembleStateDoc": {
         "type": "string",
-        "default": "openclaw-assemble"
+        "default": "get"
       },
       "compactStateDoc": {
         "type": "string",
@@ -133,10 +133,10 @@ calls unless they're short.
 **Practice moment: Surface what matters**
 
 Replaces the current `keep now -n 10` shell-out. Uses a custom state
-doc (`.state/openclaw-assemble`) that runs five parallel queries:
+doc (`.state/get`) that runs five parallel queries:
 
 ```yaml
-# .state/openclaw-assemble
+# .state/get
 match: all
 rules:
   - id: intentions
@@ -184,7 +184,7 @@ Returns:
 ```
 
 The state doc is editable in the store. Users customize what context
-surfaces by editing `.state/openclaw-assemble` — no TypeScript changes.
+surfaces by editing `.state/get` — no TypeScript changes.
 
 ### afterTurn(sessionId, messages, prePromptMessageCount)
 
@@ -246,7 +246,7 @@ Split:
 
 ## State Docs (ship as system docs in keep)
 
-### .state/openclaw-assemble
+### .state/get
 Context assembly for agent turns. Five parallel queries.
 Editable by the user to customize what context surfaces.
 

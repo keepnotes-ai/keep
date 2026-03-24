@@ -91,7 +91,7 @@ are resolved inline by the caller.
 
 ```python
 result = run_flow(
-    "get-context",
+    "get",
     {
         "item_id": item_id,
         "similar_limit": 3,
