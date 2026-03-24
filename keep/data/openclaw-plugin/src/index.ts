@@ -170,7 +170,7 @@ function registerBootstrapContextEngine(api: any, mode: "install" | "configure")
       info: {
         id: "keep",
         name: "keep (setup required)",
-        version: "0.108.0",
+        version: "0.109.0",
         ownsCompaction: false,
       },
       async assemble(params: { messages: any[]; tokenBudget?: number }) {

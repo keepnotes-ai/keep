@@ -1,4 +1,4 @@
-# Supernode Review — Background Agent Task
+# Supernode Review — Background Daemon Task
 
 ## Problem
 
@@ -17,23 +17,25 @@ High-cardinality nodes ("supernodes") accumulate inbound references over time �
 
 ### Core idea
 
-Background task that automatically analyzes the supernodes to maintain a useful summary and identify important changes.
+Background task that automatically analyzes supernodes to maintain useful summaries. `put` a new version of the supernode's content, synthesized from its inbound references. Previous content preserved as a version.
 
-`put` a new version of the supernode's content, synthesized from its inbound references. Previous content preserved as a version. Same mechanism as parts-analysis but outward instead of inward.
+### Selection
 
-### Selection: one rule
-
-**Only review items with new inbound references since last review.**
+**Only review items that are stubs or have new inbound references since last review.**
 
 Score = `fan_in × (1 + new_refs)` where `new_refs` = refs created after `_supernode_reviewed` timestamp.
 
-This single condition handles every case:
-- Stub with no content, never reviewed → all refs are "new" → eligible
-- Git commit with content, no new refs → `new_refs = 0` → skipped forever
-- User note that became a hub, 5 new refs → eligible (new evidence)
-- Previously-reviewed supernode, nothing changed → skipped
+**Guard against overwriting real content:** Only eligible if:
+- Item is a stub (`_source=link` or `_source=auto-vivify`), OR
+- Item has been previously reviewed (`_supernode_reviewed` tag exists)
 
-> TODO review this strategy, we must avoid processing "new git commit" supernode that has content and lots of inbound refs - it already has content! refs are new but only because the supernode itself is new! nothing to do here!
+This prevents reviewing freshly-ingested items that already have meaningful content (e.g., git commits with many inbound refs). Items with real authored content are never overwritten by a factsheet.
+
+Cases:
+- Stub with no content, never reviewed → all refs are "new" → eligible (stub guard passes)
+- Git commit with content, never reviewed → skipped (has real content, not a stub)
+- User note that became a hub, previously reviewed, 5 new refs → eligible (reviewed guard passes)
+- Previously-reviewed supernode, nothing changed → `new_refs = 0` → skipped
 
 ### Prompt-driven eligibility
 
@@ -54,15 +56,13 @@ This single condition handles every case:
 
 ### Two separate concerns
 
-**1. Context surfacing (meta resolution):** "Show me supernodes relevant to what I'm looking at." This is a regular meta-doc — embedding/FTS search filtered to supernodes. Supernodes make excellent context because their factsheets are dense summaries.
+**1. Context surfacing (meta resolution):** "Show me supernodes relevant to what I'm looking at." A regular `.meta/*` state doc using `find` with `similar_to` + tags. Cheap, inline, no side effects.
 
-**2. Review scheduling:** "Find supernodes that need refreshing and queue the work." Based on new edges since `_supernode_reviewed`. This is *not* meta resolution — it's a separate trigger that produces work queue tasks.
-
-These are different concerns with different triggers, different costs, and different outputs.
+**2. Review scheduling (daemon-driven):** "Find supernodes that need refreshing and queue the work." Based on new edges since `_supernode_reviewed`. Runs in the daemon's processing loop, not triggered by meta resolution.
 
 ### Context surfacing
 
-A regular meta-doc. Uses `find` with tag/embedding search, like any other `.meta/*` doc:
+A regular meta-doc state doc:
 
 ```yaml
 # .meta/supernodes
@@ -76,140 +76,115 @@ rules:
       limit: "{params.limit}"
 ```
 
-This surfaces supernodes whose factsheets are semantically relevant to the current item. Cheap, inline, no side effects.
+Surfaces supernodes whose factsheets are semantically relevant to the current item. Note: tag wildcard matching (`"*"`) may need a tag-exists filter in the `find` action rather than literal value matching.
 
-### Review scheduling
+### Review trigger: daemon queue replenishment
 
-The review is triggered by the work queue heuristic: **if the queue has no pending supernode-review tasks, try to find candidates. If there are none, queue a task to check again later.**
+The daemon already runs a processing loop. Supernode review slots in as a **low-priority queue replenishment check**:
 
-This is a **general principle for state-doc flows**: when a sequence hits an expensive action (like `generate` or `put`), everything from that point onward is enqueued as background work. The read path stays fast; the write path runs on the daemon. This delegation boundary applies consistently to `generate`, `put`, etc.
+1. Daemon checks: are there any pending `supernode_review` tasks in the work queue?
+2. If no → run `find_supernodes(min_fan_in=5, limit=5)` to discover candidates
+3. If candidates found → enqueue each as a `supernode_review` work item (priority 8)
+4. If no candidates → do nothing (or schedule a delayed re-check)
+5. Daemon processes each item: get → traverse → generate → put
+
+This is cheap — step 2 is one SQL query. The expensive LLM work only happens in step 5, within the normal work queue processing loop.
+
+**Why separate from meta resolution:**
+- Meta resolution is a read path — no side effects
+- Review scheduling runs even when no agent is active (daemon-driven)
+- The two use the same data differently: meta finds *relevant* supernodes, review finds *stale* ones
 
 ### Two-tier processing
 
 **Background LLM (daemon)** produces structured factsheets — mechanical extraction within a 4B model.
 
-**Agent sees deltas** via `.meta/ongoing` — "person@gmail.com has 8 new refs about governance topics." Agent decides whether to engage further.
+**Agent sees results** via `.meta/supernodes` — relevant factsheets surface in context. Agent decides whether to engage further.
 
 ### State-doc flow
 
-The flow has two phases separated by the delegation boundary:
+Each work item processes a single candidate:
 
 ```yaml
 # .state/review-supernodes
 match: sequence
 rules:
-  # --- inline phase (runs during meta resolution) ---
-  - id: discover
-    do: find_supernodes
-    with:
-      min_fan_in: "{params.min_fan_in}"
-      limit: "{params.limit}"
-  - when: "discover.count == 0"
-    return: done
-
-  # --- delegated phase (enqueued to work queue) ---
   - id: target
     do: get
     with:
-      id: "{discover.results[0].id}"
+      id: "{params.item_id}"
   - id: inbound
     do: traverse
     with:
-      items: ["{discover.results[0].id}"]
+      items: ["{params.item_id}"]
       limit: "20"
   - id: description
-    do: generate                    # expensive — triggers delegation
+    do: generate
     with:
       prompt: "supernode"
-      id: "{discover.results[0].id}"
+      id: "{params.item_id}"
   - id: updated
     do: put
     with:
-      id: "{discover.results[0].id}"
+      id: "{params.item_id}"
       content: "{description.text}"
       tags:
         _supernode_reviewed: "{now}"
   - return: done
 ```
 
-The delegation boundary is determined by the action: `generate` is marked expensive, so when the flow runtime encounters it, it enqueues the remaining sequence as a work item and returns the bindings accumulated so far (i.e., `discover` results) to the caller.
-
-This delegation boundary is exactly the same for "put", etc - not new.  But consistent.
-
-Usage: `keep_flow(state="review-supernodes", params={min_fan_in: 5, limit: 5}, budget=3)`
-
-### Review trigger: work queue heuristic
-
-The daemon already runs a processing loop. The supernode review slots in as a **low-priority queue replenishment check**:
-
-1. Daemon checks: are there any pending `supernode_review` tasks in the work queue?
-2. If no → run `find_supernodes(min_fan_in=5, limit=5)` to discover candidates
-3. If candidates found → enqueue each as a `supernode_review` work item (priority 8)
-4. If no candidates → do nothing (or schedule a delayed re-check)
-5. Daemon processes `supernode_review` items like any other work: get → traverse → generate → put
-
-This is cheap — step 2 is one SQL query. The expensive LLM work only happens in step 5, within the normal work queue processing loop.
-
-**Why separate from meta resolution:**
-- Meta resolution is a read path — it should never enqueue work or have side effects
-- Review scheduling needs to run even when no agent is active (daemon-driven)
-- The two use the same data differently: meta finds *relevant* supernodes, review finds *stale* ones
+The daemon enqueues one work item per candidate with `params.item_id` set. The flow runs with `foreground=False` (daemon context), so `generate` (async) executes inline. The `put` creates a new version — previous content is preserved in version history.
 
 ## Edge cases
 
 ### After-write loop from `put`
-The review `put` updates the supernode's content, which fires `_dispatch_after_write_flow`. This enqueues summarize, auto_tag, etc. for the supernode. This is **fine** — the factsheet is real content worth indexing. But we must ensure:
-- `extract_links` doesn't fire on the factsheet and auto-vivify new stubs (the `_source=link` guard blocks this, and factsheets won't be markdown)
+The review `put` updates the supernode's content, which fires `_dispatch_after_write_flow`. This enqueues summarize, auto_tag, etc. for the supernode. This is **fine** — the factsheet is real content worth indexing. But:
+- `extract_links` doesn't fire on the factsheet (the `_source=link` guard blocks this, and factsheets won't be markdown)
 - `analyze` only fires if factsheet > 500 chars (the content-length guard handles this)
-- The `put` doesn't trigger *another* supernode review (it's an update to the target, not a new inbound ref — the scoring won't see it as new evidence)
+- The `put` doesn't trigger *another* supernode review — the scoring only looks for *new inbound refs* since `_supernode_reviewed`, and updating the supernode itself doesn't create new inbound refs
 
 ### Self-referential loops
 Item A references item B, and item B references item A. Both are supernodes. Reviewing A mentions B, reviewing B mentions A. This is fine — the content is factual ("referenced by B") and the scoring prevents re-review unless genuinely new refs arrive.
 
 ### Very high fan-in items
-`discuss@example.com` with fan_in=207. The `traverse` limit of 20 means we only sample recent refs. The factsheet says "207 references, most recent 20 shown." Over successive reviews, different samples produce different versions — the version history captures this naturally. Not a bug, a feature.
+`discuss@example.com` with fan_in=207. The `traverse` limit of 20 means we only sample recent refs. The factsheet says "207 references, most recent 20 shown." Over successive reviews, different samples produce different versions — the version history captures this naturally.
 
 ### Orphaned supernodes
-A supernode whose referencing items get deleted. Fan-in drops, eventually below min_fan_in threshold. No longer selected. The old factsheet remains as content — stale but harmless. A future "stale-notes" ongoing task could surface these.
+A supernode whose referencing items get deleted. Fan-in drops, eventually below min_fan_in threshold. No longer selected. The old factsheet remains as content — stale but harmless.
 
 ### Concurrent reviews
-Two daemon workers process the same supernode simultaneously (race condition in work queue claim). The `supersede_key` mechanism in the work queue prevents this — only one worker claims each item.
+Two daemon workers process the same supernode simultaneously. The `supersede_key` mechanism in the work queue prevents this — only one worker claims each item.
 
 ### LLM hallucination in factsheets
-The small model invents details not in the evidence. Mitigated by:
+Mitigated by:
 - Tight prompts ("only state what the evidence supports")
 - Structured output format (harder to hallucinate in Name/Role/Topics format)
 - Version history — bad factsheets get overwritten on next review
 - Agent sees the factsheet in context and can correct
 
 ### Cost runaway
-Store with 10,000 supernodes, all with new_refs > 0 after a bulk import. Each review costs one LLM call. Mitigated by:
-- `budget` parameter caps reviews per invocation
+Store with 10,000 supernodes, all with new_refs > 0 after a bulk import. Mitigated by:
+- `budget` parameter caps reviews per daemon cycle
 - `min_fan_in` threshold filters low-value nodes
 - Work queue priority 8 (low) — runs after all other tasks
 - Daemon processes one at a time, never starves real work
-- No work is enqueued until an agent actually queries — bulk imports don't trigger a flood
+- Queue replenishment is rate-limited by the daemon's processing loop
 
-## Related: data-driven provenance via `_mutation_source`
+## Future: data-driven provenance via `_mutation_source`
 
-Today `_source` is set ad-hoc by each action (`link`, `auto-vivify`, etc.) and after-write guards hardcode exclusions. A cleaner pattern: **state docs declare `_mutation_source`**, and the flow runtime propagates it into every mutation:
-
-```yaml
-# .state/review-supernodes
-tags:
-  _mutation_source: supernode-review
-```
-
-The runtime injects `_source=supernode-review` into every `put` the flow produces. After-write guards become data-driven — no hardcoding in action code.
-
-This unifies all provenance: `extract_links` doesn't hardcode `_source=link` in its mutations; the after-write fragment that dispatches it declares `_mutation_source: extract-links`. Not urgent — current hardcoded guards work — but it's the path to fully configurable after-write dispatch.
+Today `_source` is set ad-hoc by each action (`link`, `auto-vivify`, etc.) and after-write guards hardcode exclusions. A cleaner future pattern: **state docs declare `_mutation_source`**, and the flow runtime propagates it into every mutation. After-write guards become data-driven — no hardcoding in action code. Not urgent — current guards work and the supernode loop is broken by scoring, not provenance.
 
 ## Implementation
 
-1. **`find_supernodes` action** — edge table query; returns items with `new_refs > 0` matching a `.prompt/supernode/*` scope, scored by `fan_in × (1 + new_refs)`
-2. **`_resolve_prompt_doc` extension** — add scope-glob matching against item ID
+**Done (v0.107–v0.108):**
+- [x] Flow runtime: async action delegation via cursor (v0.107.0)
+- [x] After-write dispatch via single flow work item (v0.107.0)
+- [x] Meta-docs as state docs with `find(similar_to=..., tags=...)` (v0.108.0)
+
+**Remaining:**
+1. **`find_supernodes` action** — edge table query; returns items with `new_refs > 0` matching a `.prompt/supernode/*` scope, scored by `fan_in × (1 + new_refs)`, guarded against overwriting real content
+2. **`_resolve_prompt_doc` extension** — scope-glob matching against item ID
 3. **`.prompt/supernode/*` system docs** — ship default + email + url
-4. **`review-supernodes` state doc** — get → traverse → generate → put (processes a single candidate)
-5. **Daemon queue replenishment** — low-priority check: if no pending `supernode_review` work, run `find_supernodes` and enqueue candidates
-6. **`.meta/supernodes`** — regular meta-doc for context surfacing: find relevant supernodes by embedding similarity, filtered to reviewed items
-7. **Flow runtime: expensive-action delegation** — when the flow runner encounters an action marked expensive (e.g., `generate`, `put`), enqueue the remaining sequence to the work queue and return accumulated bindings. General mechanism, not supernode-specific.
+4. **`review-supernodes` state doc** — get → traverse → generate → put (single candidate)
+5. **Daemon queue replenishment** — low-priority check in daemon loop
+6. **`.meta/supernodes`** — regular meta-doc for context surfacing

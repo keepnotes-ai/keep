@@ -84,7 +84,7 @@ stage of the agent lifecycle:
 | Lifecycle method | What keep does |
 |-----------------|----------------|
 | **bootstrap** | Mark session for first-assemble enrichment |
-| **assemble** | Render the `openclaw-assemble` prompt template — retrieves intentions, similar items, meta, edges, and session history via state-doc bindings |
+| **assemble** | Render the `openclaw-assemble` prompt template — retrieves intentions, similar items, meta, edges, and session history via the `.state/get` state doc (with openclaw fragment) |
 | **afterTurn** | Ingest each new user/assistant message as a version of the session item; detect inflection points (topic shifts, commitments, substantial work); trigger background reflection; set up workspace watches |
 | **compact** | Advisory only — logs diagnostics (OpenClaw manages its own compaction) |
 | **prepareSubagentSpawn** | Link child session to parent via tags, write spawn marker as first version of child item |
@@ -97,7 +97,7 @@ The agent doesn't need to do anything — context flows in automatically.
 The agent also has voluntary access to keep via MCP tools:
 
 ```
-keep_flow(state="get-context", params={item_id: "now"})          # Current intentions
+keep_flow(state="get", params={item_id: "now"})          # Current intentions
 keep_flow(state="query-resolve", params={query: "topic"})        # Semantic search
 keep_flow(state="put", params={content: "insight", tags: {type: "learning"}})  # Capture
 keep_prompt(name="reflect")                                       # Full reflection

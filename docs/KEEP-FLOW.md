@@ -23,7 +23,7 @@ by name:
 keep flow after-write --target %abc123
 
 # Assemble display context
-keep flow get-context --target myproject
+keep flow get --target myproject
 
 # Deep search with tag-edge traversal
 keep flow find-deep -p query="OAuth2 design" -p limit=10

@@ -36,7 +36,7 @@ System notes (IDs starting with `.`) skip analysis, tagging, and link extraction
 
 ---
 
-## .state/get-context
+## .state/get
 
 **Trigger:** `get()` and `now()` calls.
 **Mode:** `match: all` — all queries run in parallel.

@@ -28,7 +28,7 @@ Most flows are invisible. When you run `keep put "meeting notes"`, the runtime s
 
 ```
 put("my note")           →  store  →  .state/after-write   (background)
-get("myproject")         →  .state/get-context             (immediate)
+get("myproject")         →  .state/get             (immediate)
 find("auth", deep=True)  →  .state/find-deep               (immediate)
 find("auth patterns")    →  .state/query-resolve            (immediate)
 ```
@@ -82,7 +82,7 @@ stateDiagram-v2
 
 There are two groups:
 
-**Single-step flows** run one tick and return immediately. `after-write` fires all applicable processors in parallel. `get-context` assembles display context. `find-deep` searches then traverses edges from results. These never transition to other states.
+**Single-step flows** run one tick and return immediately. `after-write` fires all applicable processors in parallel. `get` assembles display context. `find-deep` searches then traverses edges from results. These never transition to other states.
 
 **Multi-step query resolution** is where the state machine shines. `query-resolve` is the entry point: it searches, evaluates the results, and routes based on confidence signals. If the results are clear, it returns immediately. If they're ambiguous, it transitions to `query-branch` (parallel faceted search) or `query-explore` (wider search). Those states can loop back to `query-resolve` if budget remains, creating an iterative refinement loop that stops when results are good enough or budget is exhausted.
 

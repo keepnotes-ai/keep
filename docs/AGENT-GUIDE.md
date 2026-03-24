@@ -157,7 +157,7 @@ The full original document is not stored. Summaries are contextual — tags shap
 
 ## System Documents
 
-Bundled system docs provide patterns and conventions, accessible via `get-context`:
+Bundled system docs provide patterns and conventions, accessible via `get`:
 
 | ID | What it provides |
 |----|------------------|

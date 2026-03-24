@@ -48,22 +48,22 @@ A prompt doc can reference a state doc via a `state` tag. When present, the stat
 
 ### Example
 
-Given a state doc `.state/openclaw-assemble` that produces bindings `intentions`, `similar`, `meta`, `edges`, `recent`:
+Given the `.state/get` state doc (with its openclaw fragment) that produces bindings `intentions`, `similar`, `meta`, `edges`, `session`:
 
 ```bash
 keep put "$(cat <<'EOF'
 ## Prompt
 {intentions}
 {similar}
-{recent}
+{session}
 
 Question: {text}
 Answer precisely using the context above.
 EOF
-)" --id .prompt/agent/my-query -t state=openclaw-assemble -t context=prompt
+)" --id .prompt/agent/my-query -t state=get -t context=prompt
 ```
 
-Now `keep prompt my-query "auth flow"` runs the `openclaw-assemble` state doc and renders its bindings into the template.
+Now `keep prompt my-query "auth flow"` runs the `get` state doc and renders its bindings into the template.
 
 Each binding is rendered by type:
 - **find results** (`{results: [...]}`) — token-budgeted search results with summaries

@@ -14,7 +14,7 @@ and exercised by tests. They implement the core behaviors.
 | State doc | Entry for | Wired in |
 |-----------|-----------|----------|
 | `.state/after-write` | `put` | `api.py:_dispatch_after_write_flow()` |
-| `.state/get-context` | `get` (display) | `api.py:_run_read_flow()` via `get_context()` |
+| `.state/get` | `get` (display) | `api.py:_run_read_flow()` via `get_context()` |
 | `.state/find-deep` | `find(deep)` | `api.py:_run_read_flow()` via `_deep_follow_via_flow()` |
 
 Users can fork or override any of them by creating a `.state/*`
@@ -81,7 +81,7 @@ taxonomy. See STATE-ACTIONS.md §tag for details.
 
 ---
 
-## 3) Read path: get-context
+## 3) Read path: get
 
 Context assembly for `keep get`. Gathers similar items, parts,
 and meta-doc sections in parallel. Edges and version navigation
@@ -104,10 +104,10 @@ result = run_flow(
 # Version nav computed inline (versions_limit=5)
 ```
 
-### .state/get-context
+### .state/get
 
 ```yaml
-# .state/get-context
+# .state/get
 # match: all
 rules:
   - id: similar
@@ -203,7 +203,7 @@ and available as `{id}.*` bindings in state doc predicates:
 | `top_facet_tags` | dict | Tags from top discriminative facet |
 
 These statistics are computed today for every `find` action in a
-flow. They are consumed by `get-context` (via enrichment on the
+flow. They are consumed by `get` (via enrichment on the
 `similar` binding) but not yet used for decision-making predicates
 like `when: "search.margin > 0.18"`.
 
@@ -214,7 +214,7 @@ like `when: "search.margin > 0.18"`.
 | State doc | Actions | Match | Status |
 |-----------|---------|-------|--------|
 | `.state/after-write` | summarize, tag, ocr, analyze | all | live |
-| `.state/get-context` | find, resolve_meta | all | live |
+| `.state/get` | find, resolve_meta | all | live |
 | `.state/find-deep` | find, traverse | sequence | live |
 
 ## 7) Resolved questions

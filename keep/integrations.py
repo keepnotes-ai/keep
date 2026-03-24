@@ -46,7 +46,7 @@ keep_flow(state="tag", params={id: "item", tags: {reviewed: "true"}})           
 keep_help(topic="flow-actions")                                                            # Action reference
 ```
 
-**No MCP?** Every flow has a CLI equivalent: `keep flow get-context -p item_id=now`, `keep flow query-resolve -p query=X`, `keep flow put -p content=X`. Use Bash to run them.
+**No MCP?** Every flow has a CLI equivalent: `keep flow get -p item_id=now`, `keep flow query-resolve -p query=X`, `keep flow put -p content=X`. Use Bash to run them.
 
 **Protocol:** Reflect using `keep` tools — before, during, and after action. Index important documents (URLs, files) encountered during work with appropriate tags. When writing a plan, incorporate this practice into the plan itself. If the practice is unclear, use `keep_help(topic="index")`.
 """

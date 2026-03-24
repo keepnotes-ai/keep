@@ -15,7 +15,7 @@ Converged two parallel flow systems into one:
 - **Kept:** State doc runtime (`state_doc_runtime.py`) — lightweight
   synchronous runtime with YAML-driven rules, inline action execution,
   and self-contained cursors. Handles all flow logic: read paths
-  (get-context, find-deep, query-resolve) and write-capable actions
+  (get, find-deep, query-resolve) and write-capable actions
   (summarize, tag, analyze, put).
 
 - **Replaced:** Background task dispatch now uses `work_queue.py` +

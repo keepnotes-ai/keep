@@ -177,7 +177,7 @@ keep_flow(state="query-resolve", params={query:"architecture decisions", deep=tr
 
 ---
 
-### get-context (state doc)
+### get (state doc)
 
 Retrieve one item with full context: similar items, meta sections, structural parts, and version history.
 

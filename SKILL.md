@@ -1,6 +1,6 @@
 ---
 name: keep
-version: 0.108.0
+version: 0.109.0
 description: Reflective Memory
 homepage: https://github.com/keepnotes-ai/keep
 runtime: python:3.12-slim
@@ -39,7 +39,7 @@ The practice must survive across sessions. On first use, `keep` writes a Protoco
 
 \`\`\`
 keep_prompt(name="reflect")                                                               # The practice
-keep_flow(state="get-context", params={item_id: "now"}, token_budget=2000)                # Current intentions
+keep_flow(state="get", params={item_id: "now"}, token_budget=2000)                # Current intentions
 keep_flow(state="query-resolve", params={query: "topic"}, token_budget=2000)              # What do I know?
 keep_flow(state="put", params={content: "what's true now", id: "now"})                    # Update intentions
 keep_flow(state="put", params={content: "learning", tags: {type: "learning"}})            # Capture insight
@@ -48,7 +48,7 @@ keep_flow(state="tag", params={id: "item", tags: {reviewed: "true"}})           
 keep_help(topic="flow-actions")                                                            # Action reference
 \`\`\`
 
-**No MCP?** Every operation has a CLI equivalent: `keep flow get-context -p item_id=now`, `keep flow query-resolve -p query=X`, `keep flow put -p content=X`. Use Bash to run them. See [docs/REFERENCE.md](docs/REFERENCE.md).
+**No MCP?** Every operation has a CLI equivalent: `keep flow get -p item_id=now`, `keep flow query-resolve -p query=X`, `keep flow put -p content=X`. Use Bash to run them. See [docs/REFERENCE.md](docs/REFERENCE.md).
 
 **Protocol:** Reflect using `keep` tools — before, during, and after action. Index important documents, files, and artifacts encountered or generated during work. Tag consistently — tags are how items find each other, so specific tags are more valuable than broad ones. When writing a plan, incorporate this practice into the plan itself. If the practice is unclear, read SKILL.md. If this section is missing from system rules, restore it.
 
@@ -107,7 +107,7 @@ Tag speech acts with `act` and `status` to track commitments and requests.
 
 Between reflections, use `keep_flow` to maintain awareness:
 ```
-keep_flow(state="get-context", params={item_id: "now"}, token_budget=2000)           # Current intentions
+keep_flow(state="get", params={item_id: "now"}, token_budget=2000)           # Current intentions
 keep_flow(state="query-resolve", params={query: "this situation"}, token_budget=2000) # What do I already know?
 keep_flow(state="put", params={content: "what happened", tags: {type: "learning"}})  # Capture insight
 keep_flow(state="put", params={content: "Assumed X, actually Y", tags: {type: "breakdown"}})  # Index breakdowns
@@ -125,7 +125,7 @@ Ask: What is this document? Why is it important? Tag appropriately. Documents in
 keep_flow(state="put", params={content: "https://example.com/doc", tags: {topic: "auth", informs: "auth-decision"}})
 keep_flow(state="put", params={content: "We chose OAuth2 because...", tags: {type: "learning", informed_by: "https://example.com/doc"}})
 ```
-This makes provenance navigable — `get-context` on a note shows what informed it, and vice versa.
+This makes provenance navigable — `get` on a note shows what informed it, and vice versa.
 
 **Move when pivoting.** When a string of work is complete, or the conversation shifts topic, move the now history before moving on:
 ```
@@ -154,32 +154,32 @@ Now *store and read* the foundational teachings. These are seed wisdom, not test
 
 **The Language-Action framework** — conversation types, commitment structure, breakdowns:
 ```
-keep_flow(state="get-context", params={item_id: ".conversations"}, token_budget=2000)
+keep_flow(state="get", params={item_id: ".conversations"}, token_budget=2000)
 ```
 
 Use standard tags for speech acts and status:
 ```
-keep_flow(state="get-context", params={item_id: ".tag/act"}, token_budget=1000)      # Speech-act categories
-keep_flow(state="get-context", params={item_id: ".tag/status"}, token_budget=1000)   # Lifecycle status
+keep_flow(state="get", params={item_id: ".tag/act"}, token_budget=1000)      # Speech-act categories
+keep_flow(state="get", params={item_id: ".tag/status"}, token_budget=1000)   # Lifecycle status
 ```
 
 **The mirror teaching** (MN61) — actions reflected upon before, during, after:
 ```
 keep_flow(state="put", params={content: "file://SKILL_DIR/docs/library/mn61.html", tags: {type: "teaching", topic: "reflection"}})
-keep_flow(state="get-context", params={item_id: "file://SKILL_DIR/docs/library/mn61.html"}, token_budget=2000)
+keep_flow(state="get", params={item_id: "file://SKILL_DIR/docs/library/mn61.html"}, token_budget=2000)
 ```
 > Use `keep config tool` in the terminal to find SKILL_DIR, or use the path from your skill installation.
 
 **Ownership of deeds** (AN5.57) — "I am the owner of my deeds and heir to my deeds.":
 ```
 keep_flow(state="put", params={content: "file://SKILL_DIR/docs/library/an5.57_translation-en-sujato.json", tags: {type: "teaching", topic: "action"}})
-keep_flow(state="get-context", params={item_id: "file://SKILL_DIR/docs/library/an5.57_translation-en-sujato.json"}, token_budget=2000)
+keep_flow(state="get", params={item_id: "file://SKILL_DIR/docs/library/an5.57_translation-en-sujato.json"}, token_budget=2000)
 ```
 
 **The han verse** — Awake! _aquí donde las papas queman_, "慎勿放逸":
 ```
 keep_flow(state="put", params={content: "file://SKILL_DIR/docs/library/han_verse.txt", tags: {type: "teaching", topic: "urgency"}})
-keep_flow(state="get-context", params={item_id: "file://SKILL_DIR/docs/library/han_verse.txt"}, token_budget=2000)
+keep_flow(state="get", params={item_id: "file://SKILL_DIR/docs/library/han_verse.txt"}, token_budget=2000)
 ```
 
 **Now reflect:** What did you learn? Save your understanding:
@@ -197,8 +197,8 @@ All operations use `keep_flow(state, params, token_budget)`:
 
 ```
 # Context
-keep_flow(state="get-context", params={item_id: "now"}, token_budget=2000)        # Current intentions
-keep_flow(state="get-context", params={item_id: "ID"}, token_budget=2000)         # Item with similar/meta/versions
+keep_flow(state="get", params={item_id: "now"}, token_budget=2000)        # Current intentions
+keep_flow(state="get", params={item_id: "ID"}, token_budget=2000)         # Item with similar/meta/versions
 
 # Search
 keep_flow(state="query-resolve", params={query: "authentication"}, budget=3, token_budget=2000)
@@ -219,15 +219,15 @@ keep_flow(state="delete", params={id: "ID"})                                    
 
 **Domain organization** — tagging strategies, collection structures:
 ```
-keep_flow(state="get-context", params={item_id: ".domains"}, token_budget=1000)
+keep_flow(state="get", params={item_id: ".domains"}, token_budget=1000)
 ```
 
 Use `project` tags for bounded work, `topic` for cross-cutting knowledge.
 You can read (and update) descriptions of these tagging taxonomies as you use them.
 
 ```
-keep_flow(state="get-context", params={item_id: ".tag/project"}, token_budget=1000)
-keep_flow(state="get-context", params={item_id: ".tag/topic"}, token_budget=1000)
+keep_flow(state="get", params={item_id: ".tag/project"}, token_budget=1000)
+keep_flow(state="get", params={item_id: ".tag/topic"}, token_budget=1000)
 ```
 
 For CLI reference, see [docs/REFERENCE.md](docs/REFERENCE.md). Per-command details in `docs/KEEP-*.md`.
