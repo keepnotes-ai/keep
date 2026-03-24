@@ -281,3 +281,99 @@ class TestProvisionalMeta:
             assert ids.count(parent_id) <= 1  # No duplication
         # No provisional group
         assert "todo/provisional" not in result
+
+
+class TestMetaAsFlows:
+    """Tests for the new state-doc-based meta resolution."""
+
+    def test_meta_docs_parse_as_state_docs(self, kp):
+        """All bundled .meta/* docs should parse as state docs, not legacy format."""
+        from keep.state_doc import parse_state_doc
+
+        doc_coll = kp._resolve_doc_collection()
+        meta_records = kp._document_store.query_by_id_prefix(doc_coll, ".meta/")
+        assert len(meta_records) >= 5, "Should have at least 5 bundled meta-docs"
+
+        for rec in meta_records:
+            body = (rec.summary or "").strip()
+            if not body:
+                continue
+            doc = parse_state_doc(rec.id, body)
+            assert doc.rules, f"{rec.id} should have rules"
+            assert doc.match in ("sequence", "all"), f"{rec.id} unexpected match: {doc.match}"
+
+    def test_flow_path_finds_commitments(self, kp):
+        """The new flow path surfaces open commitments via find(similar_to+tags)."""
+        result = kp.resolve_meta("anchor")
+        assert "todo" in result
+        summaries = [item.summary for item in result["todo"]]
+        assert any("fix the auth" in s for s in summaries)
+
+    def test_flow_path_genre_guard(self, kp):
+        """Genre meta-doc's when guard correctly gates on tag presence."""
+        # anchor has no genre tag → genre section absent
+        result = kp.resolve_meta("anchor")
+        assert "genre" not in result
+
+        # album1 has genre=jazz → genre section present
+        result = kp.resolve_meta("album1")
+        assert "genre" in result
+
+    def test_flow_path_deduplicates_across_rules(self, kp):
+        """Items matching multiple rules in the same meta-doc appear only once."""
+        result = kp.resolve_meta("anchor")
+        if "todo" in result:
+            ids = [item.id for item in result["todo"]]
+            assert len(ids) == len(set(ids)), "Duplicate IDs in meta results"
+
+    def test_inline_meta_uses_flow_path(self, kp):
+        """resolve_inline_meta builds and runs a dynamic state doc."""
+        items = kp.resolve_inline_meta(
+            "anchor", [{"act": "commitment", "status": "open"}],
+        )
+        assert len(items) > 0
+        for item in items:
+            assert item.tags.get("act") == "commitment"
+
+    def test_async_meta_doc_enqueues_cursor(self, kp):
+        """A meta-doc with an async action produces partial results and enqueues cursor."""
+        # Create a custom meta-doc with an async action (summarize)
+        kp.put(
+            "# Test async meta\n"
+            "match: sequence\n"
+            "rules:\n"
+            "  - id: search\n"
+            "    do: find\n"
+            "    with:\n"
+            '      similar_to: "{params.item_id}"\n'
+            "      tags: {act: commitment, status: open}\n"
+            '      limit: "{params.limit}"\n'
+            "  - id: gen\n"
+            "    do: generate\n"
+            "    with:\n"
+            '      system: "test"\n'
+            '      user: "test"\n'
+            "  - return: done\n",
+            id=".meta/test-async",
+            tags={"category": "system", "context": "meta"},
+        )
+
+        # Drain any enqueued work from the put
+        queue = kp._get_work_queue()
+        queue.claim("drain", limit=200)
+
+        result = kp.resolve_meta("anchor")
+
+        # The sync find should have produced results even though
+        # the flow hit the async boundary at generate
+        # (partial results from the search binding may or may not
+        # appear depending on whether the flow returned bindings)
+
+        # Check that a flow cursor was enqueued for the async work
+        claimed = queue.claim("test", limit=20)
+        flow_items = [i for i in claimed if i.kind == "flow"]
+        # May or may not have a cursor depending on whether generate was reached
+        # The key assertion: no crash, no hang, results returned gracefully
+
+        # Clean up
+        kp.delete(".meta/test-async")

@@ -135,8 +135,11 @@ item's stored embedding.
 **Parts** (`find` with `prefix`): lists decomposition parts by
 ID prefix convention (`id@p{N}`).
 
-**Meta** (`resolve_meta`): resolves `.meta/*` document definitions
-against the item's tags. See STATE-ACTIONS.md §resolve_meta.
+**Meta** (`resolve_meta`): resolves `.meta/*` documents — which are
+themselves state docs — against the item's context. Each meta-doc is
+evaluated as a flow using `find(similar_to=..., tags=...)` for
+context-relevant ranking. See STATE-ACTIONS.md §resolve_meta and
+META-TAGS.md for the user-facing documentation.
 
 **Edges** are resolved inline by the caller — they require direct
 database queries (inverse edges, explicit edge-tag lookup) that the

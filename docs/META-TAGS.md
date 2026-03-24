@@ -1,6 +1,6 @@
 # Meta-Tags
 
-Meta-tags are system documents stored at `.meta/*` that define **contextual queries** — tag-based rules that surface relevant items when you view context with `keep now` or `keep get`. They answer: *what else should I be aware of right now?*
+Meta-tags are system documents stored at `.meta/*` that define **contextual queries** — flow-based rules that surface relevant items when you view context with `keep now` or `keep get`. They answer: *what else should I be aware of right now?*
 
 Meta docs are user-editable on purpose. They are your "attention policy" — the control surface for what gets surfaced during reflection and planning.
 
@@ -11,6 +11,8 @@ Meta docs are user-editable on purpose. They are your "attention policy" — the
 If your workflow changes, edit these docs so the system behavior changes with it.
 
 ## How they work
+
+Meta-docs are **state docs** — the same `match`/`rules`/`do`/`with` format used by all other keep flows. Each rule typically calls the `find` action with `similar_to` (for context-relevant ranking) and `tags` (for filtering).
 
 When you run `keep now` while working on a project tagged `project=myapp`:
 
@@ -31,19 +33,21 @@ meta/learnings:
 Working on auth flow refactor
 ```
 
-The `meta/todo:` section appeared because you previously captured commitments tagged with `project=myapp`:
+The `meta/todo:` section appeared because you previously captured commitments tagged with `act=commitment` and `status=open`:
 
 ```bash
 keep put "validate redirect URIs" -t act=commitment -t status=open -t project=myapp
 ```
 
+The results are **ranked by semantic similarity** to the item you're viewing — so auth-related commitments surface first when you're looking at auth work.
+
 ## Meta vs edge: choosing the right tool
 
 Use **meta docs** when you want dynamic, contextual surfacing:
 
-- Project/topic-scoped reminders (`project=`, `topic=`)
-- Prerequisite-gated context (`genre=*`, `artist=*`)
-- Ranked context windows (similarity + recency)
+- Open commitments, requests, and blocked work
+- Past learnings and breakdowns relevant to current work
+- Items sharing a tag value (genre, artist, album)
 
 Use **edge tags** when you want explicit relationship navigation:
 
@@ -62,59 +66,67 @@ keep ships with five `.meta/*` documents:
 
 ### `.meta/todo` — Open Loops
 
-Surfaces unresolved commitments, requests, offers, and blocked work.
-
-**Queries:** `act=commitment status=open`, `act=request status=open`, `act=offer status=open`, `status=blocked`
-**Context keys:** `project=`, `topic=`
+Surfaces unresolved commitments, requests, offers, and blocked work. Uses `match: all` with four `find` rules, each filtering by a specific speech-act type.
 
 ### `.meta/learnings` — Experiential Priming
 
-Surfaces past learnings, breakdowns, and gotchas before you start work.
-
-**Queries:** `type=learning`, `type=breakdown`, `type=gotcha`
-**Context keys:** `project=`, `topic=`
+Surfaces past learnings, breakdowns, and gotchas before you start work. Uses `match: all` with three `find` rules for each type.
 
 ### `.meta/genre` — Same Genre
 
-Groups media items by genre. Only activates for items with a `genre` tag.
-
-**Prerequisites:** `genre=*`
-**Context keys:** `genre=`
+Groups media items by genre. Uses a `when` guard to skip items without a `genre` tag — equivalent to the old `genre=*` prerequisite.
 
 ### `.meta/artist` — Same Artist
 
-Groups media items by artist. Only activates for items with an `artist` tag.
-
-**Prerequisites:** `artist=*`
-**Context keys:** `artist=`
+Groups media items by artist. Same guard pattern as genre.
 
 ### `.meta/album` — Same Album
 
-Groups tracks from the same release. Only activates for items with an `album` tag.
+Groups tracks from the same release. Same guard pattern as genre.
 
-**Prerequisites:** `album=*`
-**Context keys:** `album=`
+## State-doc format
 
-## Query structure
+Meta-docs use the standard state-doc syntax:
 
-A `.meta/*` document contains prose (for humans and LLMs) plus structured lines:
+```yaml
+# Comments explain the document's purpose (ignored by parser)
+match: all
+rules:
+  - id: commitments
+    do: find
+    with:
+      similar_to: "{params.item_id}"
+      tags: {act: commitment, status: open}
+      limit: "{params.limit}"
+  - id: requests
+    do: find
+    with:
+      similar_to: "{params.item_id}"
+      tags: {act: request, status: open}
+      limit: "{params.limit}"
+```
 
-- **Query lines** like `act=commitment status=open` — each `key=value` pair is an AND filter; multiple query lines are OR'd together
-- **Context-match lines** like `project=` — a bare key whose value is filled from the current item's tags
-- **Prerequisite lines** like `genre=*` — the current item must have this tag or the entire query is skipped
+### Key concepts
 
-Context matching is what makes these queries contextual. If the current item has `project=myapp`, then `act=commitment status=open` combined with context key `project=` becomes `act=commitment status=open project=myapp` — scoped to the current project.
+- **`match: all`**: All matching rules fire independently (for OR-style queries). Use `match: sequence` when you need guards or short-circuiting.
+- **`do: find`**: Calls the `find` action, which supports tag filtering and similarity ranking.
+- **`similar_to: "{params.item_id}"`**: Ranks results by semantic similarity to the item being viewed. This replaces the old separate ranking step.
+- **`tags: {key: value}`**: Filters results to items matching all specified tags.
+- **`when` guards**: Replace the old prerequisite (`key=*`) syntax. Example: `when: "!(has(params.genre) && params.genre != '')"` returns early if the viewed item has no `genre` tag.
 
-Prerequisites act as gates. A query with `genre=*` only activates for items that have a `genre` tag — items without one skip it entirely.
+### Available params
 
-## Ranking
+Meta resolution injects these params from the viewed item:
 
-Results are ranked by:
+| Param | Source |
+|-------|--------|
+| `params.item_id` | ID of the item being viewed |
+| `params.limit` | Max results per rule (default: 3) |
+| `params.*` | All non-underscore tags from the viewed item (e.g., `params.project`, `params.topic`) |
 
-1. **Embedding similarity** to the current item — semantically related items rank higher
-2. **Recency decay** — recent items get a boost
+### Async actions
 
-Each contextual query returns up to 3 items. Sections with no matches are omitted.
+Meta-docs can use any action, including expensive ones that require the daemon (e.g., `generate`, `summarize`). If a meta-doc flow hits an async action, the sync portion completes immediately and returns partial results. The remainder is delegated to the work queue for background execution. Next time the meta-doc is evaluated, the results from the background work are available.
 
 ## Viewing definitions
 
@@ -122,6 +134,46 @@ Each contextual query returns up to 3 items. Sections with no matches are omitte
 keep get .meta/todo        # See the todo query definition
 keep get .meta/learnings   # See the learnings query definition
 keep list .meta            # All contextual query definitions
+```
+
+## Creating custom meta-docs
+
+Create a `.meta/*` document using the state-doc format:
+
+```bash
+keep put '
+match: all
+rules:
+  - id: recent_bugs
+    do: find
+    with:
+      similar_to: "{params.item_id}"
+      tags: {type: bug, status: open}
+      limit: "{params.limit}"
+' -t category=system -t context=meta --id .meta/bugs
+```
+
+This creates a meta-doc that surfaces open bugs relevant to whatever you're looking at.
+
+### Gated meta-docs
+
+To create a meta-doc that only activates for items with a specific tag:
+
+```yaml
+match: sequence
+rules:
+  - when: "!(has(params.language) && params.language != '')"
+    return: done
+  - id: same_language
+    do: find
+    with:
+      similar_to: "{params.item_id}"
+      tags: {language: "{params.language}"}
+      limit: "{params.limit}"
+  - return:
+      status: done
+      with:
+        same_language: "{same_language}"
 ```
 
 ## Feeding the loop

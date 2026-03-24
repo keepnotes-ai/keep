@@ -4,20 +4,33 @@ tags:
   context: meta
 ---
 # .meta/learnings — Experiential Priming
-
-Past learnings, breakdowns, and gotchas. Before starting work,
-check what went wrong or was hard-won last time. The goal isn't
-caution — it's not re-learning things the hard way.
-
-## Injection
-
-Meta docs are query patterns, not prompts. Each query line below matches items by tag. Matching items are surfaced during `keep now` and `keep get` as contextual information. Lines with trailing `=` (e.g., `project=`) scope results to the viewed item's value for that tag.
-
-Meta docs currently drive query-based surfacing, not LLM prompt construction.
-
-type=learning
-type=breakdown
-type=gotcha
-
-project=
-topic=
+#
+# Past learnings, breakdowns, and gotchas. Before starting work,
+# check what went wrong or was hard-won last time. The goal isn't
+# caution — it's not re-learning things the hard way.
+#
+# Each rule finds items of a specific type, ranked by semantic
+# similarity to the item being viewed. If you're looking at an
+# auth-related item, auth-related learnings surface first.
+#
+# Available params: see .meta/todo for the full list.
+match: all
+rules:
+  - id: learnings
+    do: find
+    with:
+      similar_to: "{params.item_id}"
+      tags: {type: learning}
+      limit: "{params.limit}"
+  - id: breakdowns
+    do: find
+    with:
+      similar_to: "{params.item_id}"
+      tags: {type: breakdown}
+      limit: "{params.limit}"
+  - id: gotchas
+    do: find
+    with:
+      similar_to: "{params.item_id}"
+      tags: {type: gotcha}
+      limit: "{params.limit}"

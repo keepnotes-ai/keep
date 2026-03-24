@@ -539,10 +539,16 @@ class ContextResolutionMixin:
     ) -> dict[str, list[Item]]:
         """Resolve all .meta/* docs against an item's tags.
 
-        Meta-docs define tag-based queries that surface contextually relevant
-        items — open commitments, past learnings, decisions to revisit.
-        Results are ranked by similarity to the current item + recency decay,
-        so the most relevant matches surface first.
+        Meta-docs are state docs evaluated via ``run_flow()``. Each rule
+        typically uses ``find`` with ``similar_to`` for context-relevant
+        ranking and ``tags`` for filtering.
+
+        If a meta-doc contains an async action, the flow produces a cursor
+        that is enqueued for daemon execution; partial results (from sync
+        actions that completed before the async boundary) are returned.
+
+        Falls back to the legacy line-based parser for old-format meta-docs
+        during migration.
 
         Args:
             item_id: ID of the item whose tags provide context
@@ -564,61 +570,160 @@ class ContextResolutionMixin:
             return {}
         current_tags = current.tags
 
+        # Build params for meta flows: item_id, limit, + all user tags
+        flow_params: dict[str, Any] = {
+            "item_id": item_id,
+            "limit": limit_per_doc,
+        }
+        for k, v in current_tags.items():
+            if not k.startswith("_"):
+                flow_params[k] = v
+
+        # Create env/loader/runner once for all meta-doc flows
+        from .flow_env import LocalFlowEnvironment
+        from .state_doc_runtime import make_action_runner, make_state_doc_loader
+        env = LocalFlowEnvironment(self)
+        loader = make_state_doc_loader(env)
+        runner = make_action_runner(env)
+
         result: dict[str, list[Item]] = {}
 
         for rec in meta_records:
             meta_id = rec.id
             short_name = meta_id.split("/", 1)[1] if "/" in meta_id else meta_id
-
-            query_lines, context_keys, prereq_keys = _parse_meta_doc(rec.summary)
-            if not query_lines and not context_keys:
+            body = (rec.summary or "").strip()
+            if not body:
                 continue
 
-            matches = self._resolve_meta_queries(
-                item_id, current_tags, query_lines, context_keys, prereq_keys, limit_per_doc,
+            matches = self._run_meta_flow(
+                short_name, body, flow_params, loader=loader, runner=runner,
             )
-            if not matches:
-                continue
 
-            result[short_name] = matches
+            # Legacy fallback: try old line-based format
+            if matches is None:
+                matches = self._resolve_meta_legacy(
+                    item_id, current_tags, body, limit_per_doc,
+                )
+
+            if matches:
+                result[short_name] = matches
 
         return result
 
-    def resolve_inline_meta(
+    def _run_meta_flow(
         self,
-        item_id: str,
-        queries: list[dict[str, str]],
-        context_keys: list[str] | None = None,
-        prereq_keys: list[str] | None = None,
+        name: str,
+        body: str,
+        params: dict[str, Any],
         *,
-        limit: int = 3,
-    ) -> list[Item]:
-        """Resolve an inline meta query against an item's tags.
+        loader: Any = None,
+        runner: Any = None,
+    ) -> list[Item] | None:
+        """Run a meta-doc as a state-doc flow.
 
-        Like resolve_meta() but with ad-hoc queries instead of persistent
-        .meta/* documents. Queries use the same tag-based syntax.
-
-        Args:
-            item_id: ID of the item whose tags provide context
-            queries: List of tag-match dicts, each {key: value} for AND queries;
-                     multiple dicts are OR (union)
-            context_keys: Tag keys to expand from the current item's tags
-            prereq_keys: Tag keys the current item must have (or return empty)
-            limit: Max results
-
-        Returns:
-            List of matching Items, ranked by similarity + recency.
+        Returns a list of matching Items, or None if the body does not
+        parse as a state doc (triggering legacy fallback).
         """
-        current = self.get(item_id)
-        if current is None:
-            return []
+        from .state_doc import parse_state_doc
+        from .state_doc_runtime import run_flow
 
-        return self._resolve_meta_queries(
-            item_id, current.tags,
-            queries, context_keys or [], prereq_keys or [], limit,
+        try:
+            doc = parse_state_doc(name, body)
+        except (ValueError, RuntimeError):
+            return None  # Not a state doc — legacy fallback
+
+        # Create env/loader/runner if not provided (e.g. from inline meta)
+        if loader is None or runner is None:
+            from .flow_env import LocalFlowEnvironment
+            from .state_doc_runtime import make_action_runner, make_state_doc_loader
+            env = LocalFlowEnvironment(self)
+            if loader is None:
+                loader = make_state_doc_loader(env)
+            if runner is None:
+                runner = make_action_runner(env)
+
+        # Provide the parsed doc directly via an inline loader
+        base_loader = loader
+
+        def _meta_loader(doc_name: str):
+            if doc_name == name:
+                return doc
+            return base_loader(doc_name)
+
+        flow_result = run_flow(
+            name,
+            params,
+            budget=1,
+            load_state_doc=_meta_loader,
+            run_action=runner,
+            foreground=True,
         )
 
-    def _resolve_meta_queries(
+        # If the flow hit an async action, enqueue cursor for daemon
+        if flow_result.status == "async" and flow_result.cursor:
+            try:
+                self._enqueue_flow_cursor(
+                    state=name,
+                    cursor_token=flow_result.cursor,
+                    params=params,
+                )
+            except Exception:
+                logger.debug("Failed to enqueue async meta flow cursor for %s", name)
+
+        # Collect Items from flow bindings
+        return self._collect_items_from_bindings(flow_result.bindings)
+
+    def _collect_items_from_bindings(
+        self,
+        bindings: dict[str, dict[str, Any]],
+    ) -> list[Item]:
+        """Extract Items from flow bindings, deduplicating by ID."""
+        seen_ids: set[str] = set()
+        items: list[Item] = []
+
+        for _rule_id, binding in bindings.items():
+            if not isinstance(binding, dict):
+                continue
+            results = binding.get("results")
+            if not isinstance(results, list):
+                continue
+            for r in results:
+                if not isinstance(r, dict):
+                    continue
+                item_id = r.get("id", "")
+                if not item_id or item_id in seen_ids:
+                    continue
+                seen_ids.add(item_id)
+                items.append(Item(
+                    id=item_id,
+                    summary=r.get("summary", ""),
+                    tags=r.get("tags", {}),
+                    score=r.get("score"),
+                ))
+
+        return items
+
+    def _resolve_meta_legacy(
+        self,
+        item_id: str,
+        current_tags: dict[str, str],
+        body: str,
+        limit: int,
+    ) -> list[Item]:
+        """Legacy meta-doc resolution using the line-based format.
+
+        Kept for backward compatibility during migration. Will be
+        removed after one version cycle.
+        """
+        query_lines, context_keys, prereq_keys = _parse_meta_doc(body)
+        if not query_lines and not context_keys:
+            return []
+
+        return self._resolve_meta_queries_legacy(
+            item_id, current_tags, query_lines, context_keys, prereq_keys, limit,
+        )
+
+    def _resolve_meta_queries_legacy(
         self,
         item_id: str,
         current_tags: dict[str, str],
@@ -627,7 +732,7 @@ class ContextResolutionMixin:
         prereq_keys: list[str],
         limit: int,
     ) -> list[Item]:
-        """Shared resolution logic for persistent and inline metadocs."""
+        """Legacy shared resolution logic for persistent and inline metadocs."""
         # Check prerequisites: current item must have all required tags
         if prereq_keys:
             if not all(current_tags.get(k) for k in prereq_keys):
@@ -647,26 +752,20 @@ class ContextResolutionMixin:
                 for ctx_key, ctx_val in context_values.items():
                     expanded.append({**query, ctx_key: ctx_val})
         elif context_values:
-            # Context-only (group-by): each context value becomes a query
             for ctx_key, ctx_val in context_values.items():
                 expanded.append({ctx_key: ctx_val})
         else:
-            # No context -> use query lines as-is
             expanded = list(query_lines)
 
-        # Run each expanded query, union results (fetch generously for ranking)
+        # Run each expanded query, union results
         seen_ids: set[str] = set()
         matches: list[Item] = []
         for query in expanded:
             try:
-                items = self.list_items(
-                    tags=query,
-                    limit=100,  # fetch all candidates for ranking
-                )
+                items = self.list_items(tags=query, limit=100)
             except (ValueError, Exception):
                 continue
             for item in items:
-                # Skip the current item, hidden system notes, and dupes
                 if item.id == item_id or _is_hidden(item) or item.id in seen_ids:
                     continue
                 seen_ids.add(item.id)
@@ -675,24 +774,18 @@ class ContextResolutionMixin:
         if not matches:
             return []
 
-        # Part-to-parent uplift: replace part hits with parent doc ID
-        # but keep the part's summary text for display.
-        doc_coll = self._resolve_doc_collection()
+        # Part-to-parent uplift
         direct_ids: set[str] = set()
         uplifted: list[Item] = []
-
-        # First pass: collect direct (non-part) IDs
         for item in matches:
             if not is_part_id(item.id):
                 direct_ids.add(item.id)
-
-        # Second pass: uplift parts, skip if parent already matched directly
         seen_parents: set[str] = set()
         for item in matches:
             if is_part_id(item.id):
                 parent_id = item.tags.get("_base_id", item.id.split("@")[0])
                 if parent_id in direct_ids or parent_id in seen_parents:
-                    continue  # Parent already matched directly, or another part did
+                    continue
                 seen_parents.add(parent_id)
                 uplifted.append(Item(
                     id=parent_id, summary=item.summary,
@@ -704,12 +797,116 @@ class ContextResolutionMixin:
         if not uplifted:
             return []
 
-        # Rank by similarity to current item + recency decay
+        # Rank by similarity + recency decay
         uplifted = self._rank_by_relevance(self._resolve_chroma_collection(), item_id, uplifted)
         return uplifted[:limit]
 
+    def resolve_inline_meta(
+        self,
+        item_id: str,
+        queries: list[dict[str, str]],
+        context_keys: list[str] | None = None,
+        prereq_keys: list[str] | None = None,
+        *,
+        limit: int = 3,
+    ) -> list[Item]:
+        """Resolve an inline meta query against an item's tags.
+
+        Builds a dynamic state doc from the query args and runs it as
+        a flow. Falls back to legacy resolution if flow execution fails.
+
+        Args:
+            item_id: ID of the item whose tags provide context
+            queries: List of tag-match dicts, each {key: value} for AND queries;
+                     multiple dicts are OR (union)
+            context_keys: Tag keys to expand from the current item's tags
+            prereq_keys: Tag keys the current item must have (or return empty)
+            limit: Max results
+
+        Returns:
+            List of matching Items, ranked by similarity.
+        """
+        current = self.get(item_id)
+        if current is None:
+            return []
+
+        current_tags = current.tags
+
+        # Build a dynamic state doc from the query args
+        import yaml
+
+        rules: list[dict[str, Any]] = []
+
+        # Prerequisite guards: use has() to handle missing keys safely
+        for key in (prereq_keys or []):
+            rules.append({
+                "when": f"!(has(params.{key}) && params.{key} != '')",
+                "return": "done",
+            })
+
+        # Build find rules from query dicts
+        effective_queries = list(queries)
+
+        # Context expansion: if context_keys provided, create additional
+        # queries from the current item's tag values
+        if context_keys:
+            for key in context_keys:
+                val = current_tags.get(key)
+                if val and not key.startswith("_"):
+                    # Context-only: just the tag value as a query
+                    if not queries:
+                        effective_queries.append({key: val})
+                    else:
+                        # Cross-product: add context key to each query
+                        for q in queries:
+                            effective_queries.append({**q, key: val})
+
+        for i, q in enumerate(effective_queries):
+            rules.append({
+                "id": f"q{i}",
+                "do": "find",
+                "with": {
+                    "similar_to": item_id,
+                    "tags": dict(q),
+                    "limit": limit,
+                },
+            })
+
+        if not rules:
+            return []
+
+        rules.append({"return": "done"})
+
+        # Use 'sequence' when there are prereq guards (need short-circuit),
+        # 'all' otherwise (independent find rules).
+        match_mode = "sequence" if (prereq_keys or []) else "all"
+
+        doc_body = yaml.dump(
+            {"match": match_mode, "rules": rules},
+            default_flow_style=False,
+        )
+
+        # Build params
+        flow_params: dict[str, Any] = {
+            "item_id": item_id,
+            "limit": limit,
+        }
+        for k, v in current_tags.items():
+            if not k.startswith("_"):
+                flow_params[k] = v
+
+        result = self._run_meta_flow("inline-meta", doc_body, flow_params)
+        if result is not None:
+            return result[:limit]
+
+        # Legacy fallback
+        return self._resolve_meta_queries_legacy(
+            item_id, current_tags,
+            queries, context_keys or [], prereq_keys or [], limit,
+        )
+
     # ------------------------------------------------------------------
-    # Relevance ranking
+    # Legacy relevance ranking (used by legacy meta resolution)
     # ------------------------------------------------------------------
 
     def _rank_by_relevance(
@@ -722,11 +919,13 @@ class ContextResolutionMixin:
 
         Uses stored embeddings — no re-embedding needed.
         Falls back to recency-only ranking if embeddings unavailable.
+
+        Legacy: used only by ``_resolve_meta_queries_legacy()``. New
+        meta-doc flows use ``find(similar_to=...)`` for native ranking.
         """
         if not candidates:
             return candidates
 
-        # Get anchor + candidate embeddings from store
         try:
             candidate_ids = [c.id for c in candidates]
             all_ids = [anchor_id] + candidate_ids
@@ -735,18 +934,15 @@ class ContextResolutionMixin:
             logger.debug("Embedding lookup failed, falling back to recency: %s", e)
             return self._apply_recency_decay(candidates)
 
-        # Build id -> embedding lookup
         emb_lookup: dict[str, list[float]] = {}
         for entry in entries:
             if entry.get("embedding") is not None:
                 emb_lookup[entry["id"]] = entry["embedding"]
 
-        # Extract anchor embedding
         anchor_emb = emb_lookup.get(anchor_id)
         if anchor_emb is None:
             return self._apply_recency_decay(candidates)
 
-        # Score each candidate: cosine similarity
         def _cosine_sim(a: list[float], b: list[float]) -> float:
             dot = sum(x * y for x, y in zip(a, b))
             norm_a = math.sqrt(sum(x * x for x in a))
@@ -761,9 +957,6 @@ class ContextResolutionMixin:
             sim = _cosine_sim(anchor_emb, emb) if emb is not None else 0.0
             scored.append(Item(id=item.id, summary=item.summary, tags=item.tags, score=sim))
 
-        # Apply recency decay to the similarity scores
         candidates = self._apply_recency_decay(scored)
-
-        # Sort by score descending
         candidates.sort(key=lambda x: x.score or 0.0, reverse=True)
         return candidates

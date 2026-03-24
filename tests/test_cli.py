@@ -81,8 +81,9 @@ class TestCliBasics:
         result = cli("get", ".meta/todo")
         assert result.returncode == 0
         # The meta-doc itself shouldn't show meta/ sections (it IS a meta-doc)
-        # but its content should have the query lines intact
-        assert "act=commitment" in result.stdout
+        # but its content should have the state-doc rules intact
+        assert "do: find" in result.stdout
+        assert "act: commitment" in result.stdout
 
     def test_command_help(self, cli):
         """Individual commands have help."""

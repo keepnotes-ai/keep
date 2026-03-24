@@ -228,7 +228,7 @@ class BackgroundProcessingMixin:
                 "has_uri": bool(uri),
                 "uri": uri or "",
                 "content_type": content_type or "",
-                "is_system_note": False,
+                "is_system_note": item_id.startswith("."),
                 "tags": all_tags,
                 "has_media_content": bool(
                     content_type and not content_type.startswith("text/")

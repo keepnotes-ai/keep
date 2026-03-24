@@ -18,6 +18,8 @@ Three regex patterns, three concepts (`query`, `context`, `prereq`), one custom 
 
 ### Current meta-docs rewritten
 
+Use `similar_to` + `tags` for context-relevant ranking. The `find` action with `similar_to` returns results ranked by embedding similarity to the current item, filtered by tags — replacing the separate `_rank_by_relevance()` post-processing step.
+
 **`.meta/todo`** — open loops:
 ```yaml
 match: all
@@ -25,22 +27,26 @@ rules:
   - id: commitments
     do: find
     with:
-      tags: {act: commitment, status: open, project: "{params.project}"}
+      similar_to: "{params.item_id}"
+      tags: {act: commitment, status: open}
       limit: "{params.limit}"
   - id: requests
     do: find
     with:
-      tags: {act: request, status: open, project: "{params.project}"}
+      similar_to: "{params.item_id}"
+      tags: {act: request, status: open}
       limit: "{params.limit}"
   - id: offers
     do: find
     with:
-      tags: {act: offer, status: open, project: "{params.project}"}
+      similar_to: "{params.item_id}"
+      tags: {act: offer, status: open}
       limit: "{params.limit}"
   - id: blocked
     do: find
     with:
-      tags: {status: blocked, topic: "{params.topic}"}
+      similar_to: "{params.item_id}"
+      tags: {status: blocked}
       limit: "{params.limit}"
 ```
 
@@ -51,17 +57,20 @@ rules:
   - id: learnings
     do: find
     with:
-      tags: {type: learning, project: "{params.project}"}
+      similar_to: "{params.item_id}"
+      tags: {type: learning}
       limit: "{params.limit}"
   - id: breakdowns
     do: find
     with:
-      tags: {type: breakdown, topic: "{params.topic}"}
+      similar_to: "{params.item_id}"
+      tags: {type: breakdown}
       limit: "{params.limit}"
   - id: gotchas
     do: find
     with:
-      tags: {type: gotcha, project: "{params.project}"}
+      similar_to: "{params.item_id}"
+      tags: {type: gotcha}
       limit: "{params.limit}"
 ```
 
@@ -74,6 +83,7 @@ rules:
   - id: same_genre
     do: find
     with:
+      similar_to: "{params.item_id}"
       tags: {genre: "{params.genre}"}
       limit: "{params.limit}"
 ```
@@ -174,8 +184,12 @@ When a param is empty string and used in `tags: {project: "{params.project}"}`, 
 3. Legacy parser emits a deprecation warning in debug log
 4. Remove legacy parser after one version cycle
 
+## Resolved questions
+
+- **Ranking**: Use `similar_to: "{params.item_id}"` on every `find` call. This gives embedding-based ranking filtered by tags in a single action — replaces the separate `_rank_by_relevance()` post-processing. No custom ranking step needed.
+- **Part-to-parent uplift**: Handled by the `find` action itself (which calls `api.find()`, which already does uplift with `_focus_part` tags). The meta-specific uplift in `_resolve_meta_queries()` becomes redundant and goes away. Cross-rule deduplication (same parent from multiple queries) is a trivial set-union by ID in `resolve_meta()`.
+
 ## Open questions
 
-- **Ranking**: Current meta resolution applies embedding similarity + recency decay across all results. With flow-based resolution, each action returns its own results. Where does cross-result ranking happen — in a `post` block, in the `resolve_meta()` wrapper, or in a dedicated ranking action?
-- **Empty params**: Should `find` with `tags: {project: ""}` mean "no filter on project" or "match items where project is empty string"? The former is more useful for meta-docs, but might surprise in other contexts. Could use a sentinel like `tags: {project: "{params.project|skip_empty}"}` but that's new template syntax.
-- **Budget**: Meta resolution runs during `get`/`now` — how much budget should meta flows get? Currently `get-context` uses `budget=5`. Each meta-doc flow consumes from that same budget, or gets its own?
+- **Empty params**: Should `find` with `tags: {project: ""}` mean "no filter on project" or "match items where project is empty string"? The former is more useful for meta-docs, but might surprise in other contexts. Note: with `similar_to` ranking, explicit project/topic filtering is less critical — semantic similarity naturally surfaces same-project items. May not need to solve this at all.
+- **Budget for `match: all` parallelism**: Budget is shared — meta flows run inside the `get-context` flow's budget. Each meta-doc is a single `match: all` evaluation (1 tick) with multiple action calls. This works today since `match: all` is sequential. If it becomes truly parallel, the budget model needs revisiting — but that's not meta-specific.

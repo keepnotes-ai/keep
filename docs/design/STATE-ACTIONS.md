@@ -309,9 +309,11 @@ items grouped by meta-doc name.
 | `item_id` | str | required | Item to resolve meta-docs for |
 | `limit` | int | 3 | Max items per meta-doc section |
 
-The action finds all `.meta/*` documents, parses their tag-query
-definitions, checks prerequisites against the target item's tags,
-and runs matching queries. Results are grouped by meta-doc name.
+The action finds all `.meta/*` documents and evaluates each as a
+state-doc flow. Meta-docs use the standard `match`/`rules` syntax
+with `find(similar_to=..., tags=...)` for context-relevant ranking.
+Results are grouped by meta-doc name. Falls back to the legacy
+line-based format for old-format docs during migration.
 
 **Output**:
 

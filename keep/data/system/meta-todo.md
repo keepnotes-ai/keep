@@ -4,22 +4,45 @@ tags:
   context: meta
 ---
 # .meta/todo — Open Loops
-
-Open loops: unresolved commitments, requests, and blocked work.
-Surface during `now` and `get` because untracked commitments
-erode trust. These are things someone said they'd do, or asked
-for, that aren't resolved yet.
-
-## Injection
-
-Meta docs are query patterns, not prompts. Each query line below (e.g., `act=commitment status=open`) matches items by tag. Matching items are surfaced during `keep now` and `keep get` as contextual information. Lines with trailing `=` (e.g., `project=`) match the viewed item's value for that tag, scoping results to the same project/topic.
-
-Meta docs currently drive query-based surfacing, not LLM prompt construction.
-
-act=commitment status=open
-act=request status=open
-act=offer status=open
-status=blocked
-
-project=
-topic=
+#
+# Surfaces unresolved commitments, requests, offers, and blocked work
+# during `keep now` and `keep get`.
+#
+# This is a state doc. Each rule uses `find` with `similar_to` to rank
+# results by relevance to the item being viewed, and `tags` to filter
+# to a specific speech-act type. Results are already ranked by semantic
+# similarity — no separate ranking step needed.
+#
+# Available params (injected by resolve_meta):
+#   params.item_id  — ID of the item being viewed
+#   params.limit    — max results per rule
+#   params.*        — all non-underscore tags from the viewed item
+#
+# To customize: edit this doc or create your own .meta/* docs using
+# the same match/rules/do/with syntax.
+match: all
+rules:
+  - id: commitments
+    do: find
+    with:
+      similar_to: "{params.item_id}"
+      tags: {act: commitment, status: open}
+      limit: "{params.limit}"
+  - id: requests
+    do: find
+    with:
+      similar_to: "{params.item_id}"
+      tags: {act: request, status: open}
+      limit: "{params.limit}"
+  - id: offers
+    do: find
+    with:
+      similar_to: "{params.item_id}"
+      tags: {act: offer, status: open}
+      limit: "{params.limit}"
+  - id: blocked
+    do: find
+    with:
+      similar_to: "{params.item_id}"
+      tags: {status: blocked}
+      limit: "{params.limit}"

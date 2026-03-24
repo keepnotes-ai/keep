@@ -537,17 +537,17 @@ class TestSystemDocs:
             assert not doc_id.startswith("_"), f"{doc_id} uses old underscore prefix"
             assert doc_id == doc_id.strip(), f"{doc_id} has whitespace"
 
-    def test_meta_docs_have_query_lines(self):
-        """Meta-docs must contain at least one parseable query or context line."""
+    def test_meta_docs_are_valid_state_docs(self):
+        """Meta-docs must be valid state docs with at least one rule."""
         from keep.system_docs import SYSTEM_DOC_IDS, SYSTEM_DOC_DIR, _load_frontmatter
-        from keep.utils import _parse_meta_doc
+        from keep.state_doc import parse_state_doc
         for filename, doc_id in SYSTEM_DOC_IDS.items():
             if not doc_id.startswith(".meta/"):
                 continue
             content, _ = _load_frontmatter(SYSTEM_DOC_DIR / filename)
-            queries, ctx, _ = _parse_meta_doc(content)
-            assert len(queries) > 0 or len(ctx) > 0, \
-                f"{doc_id} has no query or context lines — meta-doc would be inert"
+            doc = parse_state_doc(doc_id, content)
+            assert len(doc.rules) > 0, \
+                f"{doc_id} has no rules — meta-doc would be inert"
 
     def test_tag_docs_have_structure(self):
         """.tag/* docs should have documented structure (values, characteristics, or lifecycle)."""
