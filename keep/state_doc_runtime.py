@@ -562,6 +562,12 @@ class _EnvActionContext:
     def get_db_connection(self) -> Any:
         return self._env.get_db_connection()
 
+    def get_document_store(self) -> Any:
+        fn = getattr(self._env, "get_document_store", None)
+        if fn is not None:
+            return fn()
+        return None
+
     def get_collection(self) -> str:
         return self._env.get_collection()
 
@@ -588,12 +594,14 @@ class _EnvActionContext:
             raise NotImplementedError("delete not available in read-only flow context")
         self._env.delete(id)
 
-    def resolve_prompt(self, prefix: str, doc_tags: dict[str, Any] | None = None) -> str | None:
+    def resolve_prompt(
+        self, prefix: str, doc_tags: dict[str, Any] | None = None, *, item_id: str | None = None,
+    ) -> str | None:
         """Resolve a prompt doc matching tags (e.g. .prompt/summarize/*)."""
         resolve = getattr(self._env, "resolve_prompt", None)
         if resolve is None:
             return None
-        return resolve(prefix, doc_tags or {})
+        return resolve(prefix, doc_tags or {}, item_id=item_id)
 
     def resolve_provider(self, kind: str, name: str | None = None) -> Any:
         if not self._writable:

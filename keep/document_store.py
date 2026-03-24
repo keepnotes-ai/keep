@@ -3463,6 +3463,90 @@ class DocumentStore:
         ).fetchall()
         return [(r["predicate"], r["target_id"], r["created"]) for r in rows]
 
+    def find_supernode_candidates(
+        self,
+        collection: str,
+        *,
+        min_fan_in: int = 5,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        """Find items with high inbound edge counts (supernodes).
+
+        Returns items scored by ``fan_in × (1 + new_refs)`` where
+        ``new_refs`` is the count of edges created after the item's
+        ``_supernode_reviewed`` timestamp (or all edges if never reviewed).
+
+        Each result dict has: ``id``, ``fan_in``, ``new_refs``, ``score``,
+        ``last_reviewed`` (or None if never reviewed).
+        """
+        # Single query: join edges with documents to get fan-in counts
+        # and the _supernode_reviewed timestamp from tags.
+        rows = self._execute(
+            """
+            SELECT
+                e.target_id AS id,
+                COUNT(1) AS fan_in,
+                d.tags_json
+            FROM edges e
+            JOIN documents d
+                ON d.collection = e.collection AND d.id = e.target_id
+            WHERE e.collection = ?
+            GROUP BY e.target_id
+            HAVING fan_in >= ?
+            ORDER BY fan_in DESC
+            LIMIT ?
+            """,
+            (collection, min_fan_in, limit * 3),  # overfetch for scoring
+        ).fetchall()
+
+        import json as _json
+
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            item_id = row["id"]
+            fan_in = int(row["fan_in"])
+            tags_raw = row["tags_json"]
+            tags: dict[str, Any] = {}
+            if tags_raw:
+                try:
+                    tags = _json.loads(tags_raw)
+                except Exception:
+                    pass
+
+            last_reviewed = tags.get("_supernode_reviewed")
+            if isinstance(last_reviewed, list):
+                last_reviewed = last_reviewed[0] if last_reviewed else None
+
+            # Count new refs since last review
+            if last_reviewed:
+                new_row = self._execute(
+                    """
+                    SELECT COUNT(1) AS c FROM edges
+                    WHERE collection = ? AND target_id = ? AND created > ?
+                    """,
+                    (collection, item_id, str(last_reviewed)),
+                ).fetchone()
+                new_refs = int(new_row["c"]) if new_row else 0
+            else:
+                new_refs = fan_in  # never reviewed — all refs are new
+
+            if new_refs == 0:
+                continue  # nothing new since last review
+
+            score = fan_in * (1 + new_refs)
+            results.append({
+                "id": item_id,
+                "fan_in": fan_in,
+                "new_refs": new_refs,
+                "score": score,
+                "last_reviewed": last_reviewed,
+                "source": tags.get("_source"),
+            })
+
+        # Sort by score descending, limit
+        results.sort(key=lambda r: r["score"], reverse=True)
+        return results[:limit]
+
     def find_edge_targets(
         self, collection: str, query: str,
     ) -> list[str]:

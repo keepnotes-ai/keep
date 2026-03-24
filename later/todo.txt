@@ -1,6 +1,16 @@
 
-* supernode-analysis: 
-    - how is it actually triggered/queued?
+* edge limit in get frontmatter
+    - other sections (similar, meta, parts) have default limit + CLI param
+    - edges may not have a limit, or the limit may not be wired through
+    - check: does edges_limit param in state/get actually gate the output?
+
+* token budget for prompt rendering
+    - prompt {find} results have token-budgeted rendering
+    - do {edges}, {meta}, {similar} in prompts also respect token budget?
+    - should all prompt sections share a budget?
+    - unify watchers, supernode replenishment, TTL cleanup into one reporting section
+    - show: task name, interval, last run, next run, status
+    - replaces the current "watchers" section
 
 * claude-desktop mcpb (no local components at all, only remote MCP)
     - just ship this as a pre-built thing
@@ -297,3 +307,5 @@ x acp
 . git change detection when switch branch
 . remove 'provisional', they're not really useful
 . daemon restart if it's running an older version
+. supernode-analysis
+. pending --list show "timer events"

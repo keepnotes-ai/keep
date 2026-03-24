@@ -1087,6 +1087,86 @@ class BackgroundProcessingMixin:
         return queue
 
     # -------------------------------------------------------------------------
+    # Supernode queue replenishment
+    # -------------------------------------------------------------------------
+
+    def replenish_supernode_queue(
+        self,
+        *,
+        min_fan_in: int = 5,
+        limit: int = 5,
+    ) -> int:
+        """Check for supernode review candidates and enqueue them.
+
+        Called periodically by the daemon. Only runs if there are no
+        pending ``supernode_review`` work items in the queue.
+
+        Returns the number of candidates enqueued.
+        """
+        wq = self._get_work_queue()
+        if wq is None:
+            return 0
+
+        # Skip if there's already pending supernode work
+        counts = wq.count_by_kind()
+        if counts.get("flow", 0) > 0:
+            # Check if any pending flows are supernode reviews
+            pending = wq.list_pending(limit=50)
+            has_supernode = any(
+                p.get("input", {}).get("state") == "review-supernodes"
+                for p in pending
+                if p.get("kind") == "flow"
+            )
+            if has_supernode:
+                return 0
+
+        # Find candidates
+        try:
+            doc_coll = self._resolve_doc_collection()
+            candidates = self._document_store.find_supernode_candidates(
+                doc_coll, min_fan_in=min_fan_in, limit=limit,
+            )
+        except Exception as exc:
+            logger.debug("Supernode candidate search failed: %s", exc)
+            return 0
+
+        if not candidates:
+            return 0
+
+        # Filter: only stubs or previously-reviewed items
+        _STUB_SOURCES = {"link", "auto-vivify"}
+        eligible = [
+            c for c in candidates
+            if c.get("source") in _STUB_SOURCES or c.get("last_reviewed")
+        ]
+
+        if not eligible:
+            return 0
+
+        # Enqueue each candidate as a flow work item
+        enqueued = 0
+        for c in eligible:
+            wq.enqueue(
+                "flow",
+                {
+                    "state": "review-supernodes",
+                    "params": {
+                        "item_id": c["id"],
+                        "fan_in": c["fan_in"],
+                        "new_refs": c["new_refs"],
+                    },
+                },
+                supersede_key=f"supernode:{c['id']}",
+                priority=8,
+            )
+            enqueued += 1
+
+        if enqueued:
+            logger.info("Enqueued %d supernode reviews", enqueued)
+
+        return enqueued
+
+    # -------------------------------------------------------------------------
     # Cluster 3: Process spawning
     # -------------------------------------------------------------------------
 

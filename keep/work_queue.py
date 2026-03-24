@@ -426,18 +426,31 @@ class WorkQueue:
         return {row["kind"]: int(row["c"]) for row in rows}
 
     def list_pending(self, limit: int = 50) -> list[dict]:
-        """List pending work items with their type and target."""
+        """List pending work items with their type, target, and input."""
+        import json as _json
         rows = self._conn.execute(
             """
-            SELECT work_id, kind, supersede_key, created_at, retry_after
+            SELECT work_id, kind, supersede_key, created_at, retry_after, input_json
             FROM continue_work
             WHERE status = 'requested'
-            ORDER BY created_at ASC
+            ORDER BY priority ASC, created_at ASC
             LIMIT ?
             """,
             (limit,),
         ).fetchall()
-        return [dict(r) for r in rows]
+        result = []
+        for r in rows:
+            d = dict(r)
+            raw = d.pop("input_json", None)
+            if raw:
+                try:
+                    d["input"] = _json.loads(raw)
+                except Exception:
+                    d["input"] = {}
+            else:
+                d["input"] = {}
+            result.append(d)
+        return result
 
     def has_superseding(
         self, work_id: str, supersede_key: str, created_at: str,

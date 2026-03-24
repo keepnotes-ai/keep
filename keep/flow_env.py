@@ -225,6 +225,9 @@ class LocalFlowEnvironment:
     def get_db_connection(self):
         return self._keeper._document_store._conn
 
+    def get_document_store(self):
+        return self._keeper._document_store
+
     def get_collection(self) -> str:
         return self._keeper._resolve_doc_collection()
 
@@ -475,10 +478,12 @@ class LocalFlowEnvironment:
             candidates=candidates,
         )
 
-    def resolve_prompt(self, prefix: str, doc_tags: dict[str, Any]) -> str | None:
+    def resolve_prompt(
+        self, prefix: str, doc_tags: dict[str, Any], *, item_id: str | None = None,
+    ) -> str | None:
         """Resolve a prompt doc (e.g. .prompt/summarize/default) matching tags."""
         try:
-            return self._keeper._resolve_prompt_doc(prefix, doc_tags)
+            return self._keeper._resolve_prompt_doc(prefix, doc_tags, item_id=item_id)
         except Exception:
             return None
 

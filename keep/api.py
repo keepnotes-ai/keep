@@ -566,6 +566,8 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
         self,
         prefix: str,
         doc_tags: dict[str, str],
+        *,
+        item_id: str | None = None,
     ) -> str | None:
         """Find a .prompt/* doc matching the given tags and return its prompt text.
 
@@ -573,14 +575,21 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
         from content (same DSL as .meta/* docs) and checks against doc_tags.
         Returns the ## Prompt section of the best match (most specific).
 
+        When ``item_id`` is provided, prompt docs with a ``scope`` tag
+        are matched as a glob against the item ID (e.g., ``scope: *@*``
+        matches email addresses).  More specific scopes win over less
+        specific ones.
+
         Args:
-            prefix: "analyze" or "summarize"
-            doc_tags: Tags of the document being analyzed/summarized
+            prefix: "analyze", "summarize", "supernode", etc.
+            doc_tags: Tags of the document being processed
+            item_id: Optional item ID for scope-glob matching
 
         Returns:
             Prompt text from the best-matching doc, or None.
         """
         from .analyzers import extract_prompt_section
+        from fnmatch import fnmatch
 
         doc_coll = self._resolve_doc_collection()
         prompt_docs = self._document_store.query_by_id_prefix(
@@ -598,6 +607,23 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
             prompt_text = extract_prompt_section(content)
             if not prompt_text:
                 continue
+
+            # Check scope tag (glob against item ID)
+            rec_tags = rec.tags if hasattr(rec, 'tags') else {}
+            scope = rec_tags.get("scope")
+            if isinstance(scope, list):
+                scope = scope[0] if scope else None
+            if scope and item_id:
+                if not fnmatch(item_id, str(scope)):
+                    continue  # scope doesn't match this item
+                # Scope specificity: non-wildcard chars count as more specific
+                scope_specificity = len(str(scope).replace("*", "").replace("?", ""))
+                if scope_specificity > best_specificity:
+                    best_specificity = scope_specificity
+                    best_prompt = prompt_text
+                continue
+            elif scope and not item_id:
+                continue  # scope requires item_id
 
             # Parse match rules from body (before ## Prompt)
             query_lines, _, _ = _parse_meta_doc(content)

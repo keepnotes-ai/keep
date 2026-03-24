@@ -3814,6 +3814,40 @@ def pending_cmd(
         _CLEANUP_INTERVAL = 86400  # 24 hours
         _CLEANUP_MAX_AGE = 86400   # delete files older than 24 hours
 
+        _REPLENISH_INTERVAL = 1800  # 30 minutes
+
+        # Initialize timer timestamps from persisted state so the daemon
+        # resumes schedules after restart instead of starting from zero.
+        try:
+            from .timer_state import read_timer_state
+            _saved_timers = read_timer_state(kp._store_path)
+            _last_replenish_ts = _saved_timers.get("supernode-replenish", {}).get("last_run", 0.0)
+        except Exception:
+            _last_replenish_ts = 0.0
+
+        def _replenish_supernodes():
+            nonlocal _last_replenish_ts
+            now = time.time()
+            if now - _last_replenish_ts < _REPLENISH_INTERVAL:
+                return
+            _last_replenish_ts = now
+            try:
+                enqueued = kp.replenish_supernode_queue()
+                detail = f"{enqueued} enqueued" if enqueued else "no candidates"
+                if enqueued > 0:
+                    _daemon_logger.info("Replenished %d supernode review(s)", enqueued)
+            except Exception as exc:
+                detail = f"error: {exc}"
+                _daemon_logger.debug("Supernode replenishment error: %s", exc)
+            try:
+                from .timer_state import write_timer_event
+                write_timer_event(
+                    kp._store_path, "supernode-replenish",
+                    interval=_REPLENISH_INTERVAL, detail=detail,
+                )
+            except Exception as _te:
+                _daemon_logger.warning("Failed to write timer state: %s", _te)
+
         def _cleanup_temp_files():
             nonlocal _last_cleanup_ts
             now = time.time()
@@ -3892,6 +3926,9 @@ def pending_cmd(
                 # TTL cleanup (self-throttled to once per day)
                 _cleanup_temp_files()
 
+                # Supernode queue replenishment (self-throttled)
+                _replenish_supernodes()
+
                 _daemon_logger.info(
                     "Daemon batch: processed=%d failed=%d delegated=%d flow_processed=%d flow_failed=%d",
                     result["processed"], result["failed"], delegated,
@@ -3922,11 +3959,27 @@ def pending_cmd(
                         time.sleep(5)
                         continue
 
-                    # Active watches keep the daemon alive
-                    if has_active_watches(kp):
-                        delay = next_check_delay(load_watches(kp))
-                        delay = max(1.0, min(delay, 30.0))
-                        _daemon_logger.debug("Sleeping %.1fs (next watch check)", delay)
+                    # Timer events keep the daemon alive: watches, supernodes, etc.
+                    _has_timers = has_active_watches(kp)
+                    if not _has_timers:
+                        # Keep alive if supernode replenishment hasn't had a chance
+                        # to run yet (never run, or next run is within 2× interval).
+                        # After replenishment runs and finds nothing, it sets detail
+                        # to "no candidates" and the daemon can eventually exit.
+                        _has_timers = (
+                            _last_replenish_ts == 0  # never run — give it a chance
+                            or (time.time() - _last_replenish_ts) < _REPLENISH_INTERVAL
+                        )
+
+                    if _has_timers:
+                        if has_active_watches(kp):
+                            delay = next_check_delay(load_watches(kp))
+                        else:
+                            # Next timer event: check how long until replenish fires
+                            _time_to_replenish = max(0, _REPLENISH_INTERVAL - (time.time() - _last_replenish_ts))
+                            delay = min(_time_to_replenish, 60.0)
+                        delay = max(1.0, min(delay, 60.0))
+                        _daemon_logger.debug("Sleeping %.1fs (timer events pending)", delay)
                         time.sleep(delay)
                         continue
 
@@ -4029,41 +4082,90 @@ def pending_cmd(
             if flow_items:
                 if items:
                     typer.echo()
-                # Full breakdown by kind, sorted by processing priority
+                # Break down flow items by state name for visibility
                 wq = kp._get_work_queue()
-                by_kind = wq.count_by_kind()  # pre-sorted by priority
+                by_kind = wq.count_by_kind()
                 for kind, count in by_kind.items():
-                    typer.echo(f"  {kind:20s} {count}")
+                    if kind != "flow":
+                        typer.echo(f"  {kind:20s} {count}")
+                # Show flow items grouped by state
+                flow_by_state: dict[str, list] = {}
+                for fi in flow_items:
+                    if fi.get("kind") != "flow":
+                        continue
+                    inp = fi.get("input") or {}
+                    state = inp.get("state", "unknown")
+                    flow_by_state.setdefault(state, []).append(fi)
+                for state, state_items in sorted(flow_by_state.items()):
+                    if len(state_items) <= 3:
+                        for si in state_items:
+                            inp = si.get("input") or {}
+                            target = inp.get("item_id") or inp.get("params", {}).get("item_id", "")
+                            if target:
+                                typer.echo(f"  flow:{state:16s} {target}")
+                            else:
+                                typer.echo(f"  flow:{state}")
+                    else:
+                        typer.echo(f"  flow:{state:16s} ({len(state_items)} items)")
             if failed:
                 typer.echo(f"\nFailed ({len(failed)}):")
                 for item in failed[:10]:
                     error = item.get("last_error", "unknown")
                     typer.echo(f"  {item['task_type']:15s} {item['id']}: {error}")
-        # Show watches
+        # Show timer events (watchers, replenishment, cleanup)
         try:
             from .watches import list_watches
             watches = list_watches(kp)
+        except Exception:
+            watches = []
+        try:
+            from .timer_state import format_timer_events, read_timer_state
+            timer_state = read_timer_state(kp._store_path)
+        except Exception:
+            timer_state = {}
+        # Also check for known timers (even if never fired)
+        from .timer_state import KNOWN_TIMERS
+        has_timer_info = watches or timer_state or KNOWN_TIMERS
+        if has_timer_info:
+            typer.echo("\nTimer events:")
+            # Show watches with schedule info
             if watches:
-                active = [w for w in watches if not w.stale]
-                stale = [w for w in watches if w.stale]
-                label = f"{len(active)} active"
-                if stale:
-                    label += f", {len(stale)} stale"
-                typer.echo(f"\nWatches ({label}):")
+                from .timer_state import _format_ago, _format_until
+                from datetime import datetime, timezone
+                _now_ts = time.time()
                 for w in watches:
                     suffix = " [stale]" if w.stale else ""
-                    detail = ""
-                    if w.kind == "directory":
-                        parts = []
-                        if w.recurse:
-                            parts.append("recurse")
-                        if w.exclude:
-                            parts.append(f"{len(w.exclude)} excludes")
-                        if parts:
-                            detail = f" ({', '.join(parts)})"
-                    typer.echo(f"  {w.kind:12s} {w.source}{detail}{suffix}")
-        except Exception:
-            pass
+                    name = f"watch:{w.kind}"
+                    # Parse last_checked and interval
+                    ago_str = "never"
+                    next_str = ""
+                    if w.last_checked:
+                        try:
+                            _lc = datetime.fromisoformat(w.last_checked)
+                            _lc_ts = _lc.replace(tzinfo=timezone.utc).timestamp()
+                            ago_str = _format_ago(_now_ts - _lc_ts)
+                            # Parse ISO duration for interval
+                            from .watches import parse_duration
+                            _dur = parse_duration(w.interval)
+                            _next_ts = _lc_ts + _dur.total_seconds() - _now_ts
+                            next_str = _format_until(_next_ts)
+                        except Exception:
+                            pass
+                    source = w.source
+                    if len(source) > 40:
+                        source = "..." + source[-37:]
+                    parts_line = f"  {name:24s} last: {ago_str:>8s}"
+                    if next_str:
+                        parts_line += f"  next: {next_str}"
+                    parts_line += f"  {source}{suffix}"
+                    typer.echo(parts_line)
+            # Show persisted + known timer events
+            try:
+                lines = format_timer_events(kp._store_path)
+                for line in lines:
+                    typer.echo(line)
+            except Exception:
+                pass
         kp.close()
         return
 
@@ -4076,7 +4178,30 @@ def pending_cmd(
     failed_count = queue_stats.get("failed", 0)
     processing_count = queue_stats.get("processing", 0)
 
-    if pending_count == 0 and processing_count == 0 and flow_pending_count == 0:
+    # Check for timer events that need a daemon (watches, supernodes)
+    _has_timer_events = False
+    try:
+        from .watches import has_active_watches
+        _has_timer_events = has_active_watches(kp)
+    except Exception:
+        pass
+    if not _has_timer_events:
+        try:
+            from .timer_state import KNOWN_TIMERS, read_timer_state
+            _timer_state = read_timer_state(kp._store_path)
+            # Timer events need a daemon if any haven't run recently
+            import time as _time
+            for name, info in KNOWN_TIMERS.items():
+                saved = _timer_state.get(name, {})
+                last_run = saved.get("last_run", 0)
+                interval = info.get("interval", 0)
+                if interval and (_time.time() - last_run) >= interval:
+                    _has_timer_events = True
+                    break
+        except Exception:
+            pass
+
+    if pending_count == 0 and processing_count == 0 and flow_pending_count == 0 and not _has_timer_events:
         if failed_count:
             typer.echo(f"Nothing pending. {failed_count} failed (use --retry to requeue).", err=True)
             # Show first few failed items
@@ -4091,7 +4216,10 @@ def pending_cmd(
         kp.close()
         return
 
-    typer.echo(_queue_status_line(kp, queue_stats), err=True)
+    if pending_count > 0 or processing_count > 0 or flow_pending_count > 0:
+        typer.echo(_queue_status_line(kp, queue_stats), err=True)
+    elif _has_timer_events:
+        typer.echo("No work queued, but timer events need servicing.", err=True)
 
     # Ensure daemon is running
     if not kp._is_processor_running():
