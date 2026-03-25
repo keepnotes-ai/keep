@@ -120,10 +120,9 @@ class FlowRuntimeEnv(Protocol):
     def resolve_prompt(self, prefix: str, doc_tags: dict[str, Any]) -> str | None: ...
 
     def get_default_summarization_provider(self) -> Any: ...
-    def get_default_document_provider(self) -> Any: ...
-    def get_default_tagging_provider(self) -> Any: ...
     def get_default_analyzer_provider(self) -> Any: ...
     def get_default_content_extractor_provider(self) -> Any: ...
+    def get_default_media_provider(self) -> Any: ...
 
     def run_local_task_workflow(
         self,
@@ -490,20 +489,14 @@ class LocalFlowEnvironment:
     def get_default_summarization_provider(self) -> Any:
         return self._keeper._get_summarization_provider()
 
-    def get_default_document_provider(self) -> Any:
-        return self._keeper._document_provider
-
-    def get_default_tagging_provider(self) -> Any:
-        from .providers.base import get_registry
-
-        registry = get_registry()
-        return registry.create_tagging("noop")
-
     def get_default_analyzer_provider(self) -> Any:
         return self._keeper._get_analyzer()
 
     def get_default_content_extractor_provider(self) -> Any:
         return self._keeper._get_content_extractor()
+
+    def get_default_media_provider(self) -> Any:
+        return self._keeper._get_media_describer()
 
     def run_local_task_workflow(
         self,
