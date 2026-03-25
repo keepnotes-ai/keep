@@ -119,10 +119,31 @@ class TestGetCommits:
         assert len(new_commits) == 1
         assert "readme" in new_commits[0]["subject"].lower()
 
-    def test_body_included(self, git_repo):
+    def test_message_is_subject(self, git_repo):
         commits = get_commits_since(git_repo)
         initial = commits[-1]  # oldest
-        assert "project structure" in initial["message"].lower()
+        # message = subject only (body excluded to avoid --name-only parse corruption)
+        assert initial["message"] == "Initial commit"
+
+    def test_multiline_body_not_in_files(self, git_repo):
+        """Regression: multi-line commit bodies must not leak into file lists."""
+        (git_repo / "src" / "main.py").write_text("print('updated')\n")
+        subprocess.run(
+            ["git", "add", "."], cwd=str(git_repo), check=True, capture_output=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "Refactor main\n\nShould not modify the host's config files.\nAlso fixes edge case."],
+            cwd=str(git_repo), check=True, capture_output=True,
+            env={**os.environ, "GIT_AUTHOR_NAME": "Test", "GIT_AUTHOR_EMAIL": "t@t.com",
+                 "GIT_COMMITTER_NAME": "Test", "GIT_COMMITTER_EMAIL": "t@t.com"},
+        )
+        commits = get_commits_since(git_repo)
+        newest = commits[0]
+        assert newest["subject"] == "Refactor main"
+        # Body lines must NOT appear in the file list
+        for f in newest["files"]:
+            assert "config" not in f.lower(), f"Body text leaked into files: {f}"
+        assert "src/main.py" in newest["files"]
 
 
 class TestGetTags:

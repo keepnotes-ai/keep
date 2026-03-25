@@ -2208,7 +2208,7 @@ def now(
     )] = None,
     limit: Annotated[int, typer.Option(
         "--limit", "-n",
-        help="Max similar/meta notes to show (default 3)"
+        help="Max items per section: similar, meta, edges (default 3)"
     )] = 3,
 ):
     """Get or set the current working intentions.
@@ -2314,7 +2314,7 @@ def now(
         kp.set_now(new_content, scope=scope, tags=parsed_tags or None)
 
         # Surface context (occasion for reflection)
-        ctx = kp.get_context(doc_id, similar_limit=limit, meta_limit=limit)
+        ctx = kp.get_context(doc_id, similar_limit=limit, meta_limit=limit, edges_limit=limit)
         typer.echo(render_context(ctx, as_json=_get_json_output()))
     else:
         # Get current intentions (or search version history if tags specified)
@@ -2328,10 +2328,10 @@ def now(
             typer.echo(render_context(ItemContext(item=item), as_json=_get_json_output()))
         else:
             # Standard: get current with version navigation and similar items
-            ctx = kp.get_context(doc_id, similar_limit=limit, meta_limit=limit)
+            ctx = kp.get_context(doc_id, similar_limit=limit, meta_limit=limit, edges_limit=limit)
             if ctx is None:
                 kp.get_now(scope=scope)  # force-create
-                ctx = kp.get_context(doc_id, similar_limit=limit, meta_limit=limit)
+                ctx = kp.get_context(doc_id, similar_limit=limit, meta_limit=limit, edges_limit=limit)
             typer.echo(render_context(ctx, as_json=_get_json_output()))
 
 
@@ -2702,7 +2702,7 @@ def get(
     )] = None,
     limit: Annotated[int, typer.Option(
         "--limit", "-n",
-        help="Max notes for --history, --similar, or --meta (default: 10)"
+        help="Max items per section: similar, meta, edges, parts, versions (default: 10)"
     )] = 10,
     store: StoreOption = None,
 ):
@@ -2956,7 +2956,11 @@ def _get_one(
 
     # Default + --history + --parts: frontmatter with expanded sections
     selector = effective_version if effective_version is not None else None
-    ctx = kp.get_context(actual_id, version=selector)
+    ctx = kp.get_context(
+        actual_id, version=selector,
+        similar_limit=limit, meta_limit=limit, edges_limit=limit,
+        parts_limit=limit, versions_limit=min(limit, 5),
+    )
     if ctx is None:
         if selector is not None:
             typer.echo(f"Version not found: {actual_id}@V{{{selector}}}", err=True)

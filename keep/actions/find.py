@@ -31,6 +31,8 @@ class Find:
         include_hidden = bool(params.get("include_hidden", False))
         order_by = str(params.get("order_by") or "updated")
         limit = int(params.get("limit", 10))
+        if limit <= 0:
+            return {"results": [], "count": 0}
         limit = max(limit, 1)
 
         # Bias: {id: weight} — score multiplier. 0=exclude, <1=demote, 1=neutral, >1=boost

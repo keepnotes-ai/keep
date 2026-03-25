@@ -111,6 +111,29 @@ class ContextResolutionMixin:
             ))
         return refs
 
+    @staticmethod
+    def _map_flow_edges(binding: dict) -> dict:
+        """Map resolve_edges action output to {predicate: [EdgeRef]} dict."""
+        result: dict[str, list] = {}
+        edges = binding.get("edges", {})
+        if not isinstance(edges, dict):
+            return result
+        for pred, entries in edges.items():
+            if not isinstance(entries, list):
+                continue
+            refs = []
+            for e in entries:
+                if not isinstance(e, dict):
+                    continue
+                refs.append(EdgeRef(
+                    source_id=e.get("id", ""),
+                    date=e.get("date", ""),
+                    summary=e.get("summary", ""),
+                ))
+            if refs:
+                result[pred] = refs
+        return result
+
     # ------------------------------------------------------------------
     # Display context assembly
     # ------------------------------------------------------------------
@@ -122,8 +145,9 @@ class ContextResolutionMixin:
         version: int | None = None,
         similar_limit: int = 3,
         meta_limit: int = 3,
-        parts_limit: int = 100,
-        versions_limit: int = 5,
+        parts_limit: int = 10,
+        edges_limit: int = 5,
+        versions_limit: int = 3,
         include_similar: bool = True,
         include_meta: bool = True,
         include_parts: bool = True,
@@ -175,7 +199,7 @@ class ContextResolutionMixin:
         next_refs: list[VersionRef] = []
         if include_versions:
             if offset == 0:
-                nav = self.get_version_nav(id, None)
+                nav = self.get_version_nav(id, None, limit=versions_limit)
                 for i, v in enumerate(nav.get("prev", [])[:versions_limit]):
                     prev_refs.append(VersionRef(
                         offset=i + 1,
@@ -219,26 +243,34 @@ class ContextResolutionMixin:
                         "similar_limit": similar_limit if include_similar else 0,
                         "meta_limit": meta_limit if include_meta else 0,
                         "parts_limit": parts_limit if include_parts else 0,
-                        "edges_limit": 5,
-                        "versions_limit": 3,
+                        "edges_limit": edges_limit,
+                        "versions_limit": versions_limit if include_versions else 0,
                     },
                 )
                 if flow_result.status == "done":
                     bindings = flow_result.bindings
                     if include_similar:
                         similar_refs = self._map_flow_similar(bindings.get("similar", {}))
+                        similar_refs = similar_refs[:similar_limit]
                     if include_meta:
                         meta_refs = self._map_flow_meta(bindings.get("meta", {}))
+                        # Cap each meta section to meta_limit
+                        for key in list(meta_refs.keys()):
+                            meta_refs[key] = meta_refs[key][:meta_limit]
                     if include_parts:
                         part_refs = self._map_flow_parts(bindings.get("parts", {}))
+                        part_refs = part_refs[:parts_limit]
+                    edge_refs = self._map_flow_edges(bindings.get("edges", {}))
+                    # Cap each edge predicate to edges_limit
+                    for key in list(edge_refs.keys()):
+                        edge_refs[key] = edge_refs[key][:edges_limit]
                 else:
                     logger.warning(
                         "get-context flow returned %s for %r: %s",
                         flow_result.status, id, flow_result.data,
                     )
-
-            # Edge resolution (inline — structural edge queries)
-            edge_refs = self._resolve_edge_refs(item, id)
+                    # Fallback: inline edge resolution when flow fails
+                    edge_refs = self._resolve_edge_refs(item, id)
 
         return ItemContext(
             item=item,

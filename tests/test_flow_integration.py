@@ -99,6 +99,155 @@ class TestGetContextFlow:
             similar_ids = {s.id for s in similar}
             assert "py2" in similar_ids or len(similar) > 0
 
+    def test_similar_limit_exact_conformance(self, kp):
+        """similar_limit=2 returns exactly 2 when 8 similar items exist."""
+        for i in range(8):
+            kp.put(f"Python concurrency pattern number {i}", id=f"pycon-{i}")
+
+        # Unconstrained: should find several
+        ctx_all = kp.get_context("pycon-0", similar_limit=8)
+        assert ctx_all is not None
+        all_count = len(ctx_all.similar or [])
+        assert all_count >= 4, f"Need at least 4 similar items to test, got {all_count}"
+
+        # Constrained: exactly 2
+        ctx = kp.get_context("pycon-0", similar_limit=2)
+        assert ctx is not None
+        assert len(ctx.similar) == 2, f"Expected exactly 2 similar, got {len(ctx.similar)}"
+
+    def test_meta_limit_exact_conformance(self, kp):
+        """meta_limit=1 returns exactly 1 item per section even when multiple rules match.
+
+        .meta/todo has 4 find rules (commitments, requests, offers, blocked).
+        With enough data each rule finds items. meta_limit must cap the
+        *total* per section, not per rule.
+        """
+        anchor = kp.put("Working on auth flow", tags={"project": "test"})
+        # Create items matching different todo rules
+        for i in range(4):
+            kp.put(f"I will fix bug {i}", tags={
+                "act": "commitment", "status": "open",
+            })
+        for i in range(3):
+            kp.put(f"Please review PR {i}", tags={
+                "act": "request", "status": "open",
+            })
+
+        # Verify unconstrained has multiple (rules produce independent results)
+        ctx_all = kp.get_context(anchor.id, meta_limit=10)
+        assert ctx_all is not None
+        todo_all = ctx_all.meta.get("todo", []) if ctx_all.meta else []
+        assert len(todo_all) >= 3, f"Need at least 3 todo items to test, got {len(todo_all)}"
+
+        # Constrained: exactly 1 per section (not per rule!)
+        ctx = kp.get_context(anchor.id, meta_limit=1)
+        for section_name, items in (ctx.meta or {}).items():
+            assert len(items) <= 1, \
+                f"meta/{section_name} has {len(items)} items, expected <= 1"
+
+    def test_edges_limit_exact_conformance(self, kp):
+        """edges_limit=2 returns exactly 2 refs when 6 inbound edges exist."""
+        kp.put("Alice", id="alice-edges")
+        for i in range(6):
+            kp.put(f"Message from Alice #{i}", id=f"msg-a-{i}",
+                   tags={"from": "alice-edges"})
+
+        # Verify unconstrained has all 6
+        ctx_all = kp.get_context("alice-edges", edges_limit=10)
+        assert ctx_all is not None
+        all_refs = []
+        for refs in (ctx_all.edges or {}).values():
+            all_refs.extend(refs)
+        assert len(all_refs) >= 5, f"Need at least 5 edge refs to test, got {len(all_refs)}"
+
+        # Constrained: exactly 2 per predicate
+        ctx = kp.get_context("alice-edges", edges_limit=2)
+        for pred, refs in (ctx.edges or {}).items():
+            assert len(refs) == 2, \
+                f"Expected exactly 2 refs for '{pred}', got {len(refs)}"
+
+    def test_parts_limit_exact_conformance(self, kp):
+        """parts_limit=2 returns exactly 2 when 5 parts exist."""
+        kp.put("Document with many structural parts " * 50, id="parts-lim")
+        chroma_coll = kp._resolve_chroma_collection()
+        embed = kp._get_embedding_provider()
+        doc_coll = kp._resolve_doc_collection()
+        for i in range(5):
+            from keep.document_store import PartInfo
+            from keep.types import utc_now
+            part = PartInfo(
+                part_num=i + 1,
+                summary=f"Part {i + 1} about topic {i + 1}",
+                content=f"Content of part {i + 1}",
+                tags={"_base_id": "parts-lim"},
+                created_at=utc_now(),
+            )
+            kp._document_store.upsert_single_part(doc_coll, "parts-lim", part)
+            embedding = embed.embed(part.summary)
+            kp._store.upsert_part(
+                chroma_coll, "parts-lim", i + 1, embedding,
+                part.summary, {"_base_id": "parts-lim", "_part_num": str(i + 1)},
+            )
+
+        # Verify unconstrained returns all 5
+        ctx_all = kp.get_context("parts-lim", parts_limit=10)
+        assert ctx_all is not None
+        assert len(ctx_all.parts or []) >= 4, \
+            f"Need at least 4 parts to test, got {len(ctx_all.parts or [])}"
+
+        # Constrained: exactly 2
+        ctx = kp.get_context("parts-lim", parts_limit=2)
+        assert len(ctx.parts or []) == 2, \
+            f"Expected exactly 2 parts, got {len(ctx.parts or [])}"
+
+    def test_versions_limit_exact_conformance(self, tmp_path):
+        """versions_limit=2 returns exactly 2 prev refs when 6 versions exist.
+
+        Uses a real DocumentStore (not mocked) because versioning requires
+        actual SQLite version tracking.
+        """
+        from unittest.mock import patch as _patch
+        with _patch.object(Keeper, "_spawn_processor", return_value=False):
+            kp = Keeper(store_path=tmp_path / "ver-test-store")
+            kp._get_embedding_provider()
+
+            for i in range(6):
+                kp.put(f"Version {i} of the evolving document", id="ver-lim")
+
+            # Verify unconstrained returns multiple prev refs
+            ctx_all = kp.get_context("ver-lim", versions_limit=5)
+            assert ctx_all is not None
+            prev_all = ctx_all.prev or []
+            assert len(prev_all) >= 3, \
+                f"Need at least 3 prev versions to test, got {len(prev_all)}"
+
+            # Constrained: exactly 2
+            ctx = kp.get_context("ver-lim", versions_limit=2)
+            prev = ctx.prev or []
+            assert len(prev) == 2, f"Expected exactly 2 prev versions, got {len(prev)}"
+
+            kp.close()
+
+    def test_zero_limit_suppresses_all(self, kp):
+        """Limit of 0 produces no results in each section."""
+        # Create enough data to have results without limits
+        anchor = kp.put("Zero limit test anchor", id="zero-lim")
+        for i in range(5):
+            kp.put(f"Related to zero limit {i}", id=f"zero-r-{i}")
+        for i in range(3):
+            kp.put(f"Commitment {i}", tags={
+                "act": "commitment", "status": "open",
+            })
+
+        ctx = kp.get_context(
+            "zero-lim",
+            similar_limit=0, meta_limit=0, edges_limit=0,
+        )
+        assert ctx is not None
+        assert len(ctx.similar or []) == 0, f"similar should be empty, got {len(ctx.similar or [])}"
+        assert not ctx.meta or all(len(v) == 0 for v in ctx.meta.values()), \
+            f"meta should be empty, got {ctx.meta}"
+
 
 # ---------------------------------------------------------------------------
 # Read path: find(deep=True) uses state-doc flow

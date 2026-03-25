@@ -14,9 +14,10 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
-# git log format: sha\x00author_name\x00author_email\x00date\x00subject\x00body
-_LOG_FORMAT = "%H%x00%an%x00%ae%x00%aI%x00%s%x00%b"
-_LOG_SEP = "\x1e"  # record separator
+# git log format: sha\x00author_name\x00author_email\x00date\x00subject
+# Note: %b (body) is intentionally excluded — it contains newlines that
+# corrupt --name-only file list parsing.
+_LOG_FORMAT = "%H%x00%an%x00%ae%x00%aI%x00%s"
 
 
 def _repo_name(repo_dir: Path) -> str:
@@ -126,7 +127,6 @@ def _parse_commits(raw: str, repo_dir: Path) -> list[dict[str, Any]]:
         author_email = parts[2].strip().lower()
         date = parts[3]
         subject = parts[4]
-        body = parts[5] if len(parts) > 5 else ""
         i += 1
 
         # Skip blank line between header and file list
@@ -140,9 +140,6 @@ def _parse_commits(raw: str, repo_dir: Path) -> list[dict[str, Any]]:
             i += 1
 
         sha_short = sha[:10]
-        message = subject
-        if body.strip():
-            message = f"{subject}\n\n{body.strip()}"
 
         commits.append({
             "sha": sha,
@@ -150,7 +147,7 @@ def _parse_commits(raw: str, repo_dir: Path) -> list[dict[str, Any]]:
             "author_name": author_name,
             "author_email": author_email,
             "date": date,
-            "message": message,
+            "message": subject,
             "subject": subject,
             "files": files,
             "id": f"git://{repo}#{sha_short}",

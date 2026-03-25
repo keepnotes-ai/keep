@@ -11,7 +11,10 @@ class ResolveMeta:
         raw_item_id = params.get("item_id")
         if raw_item_id is None:
             raise ValueError("resolve_meta requires item_id")
-        limit = max(int(params.get("limit", 3)), 1)
+        limit = int(params.get("limit", 3))
+        if limit <= 0:
+            return {"sections": {}, "count": 0}
+        limit = max(limit, 1)
         sections_raw = context.resolve_meta(str(raw_item_id), limit_per_doc=limit)
         sections: dict[str, list[dict[str, Any]]] = {}
         total = 0
