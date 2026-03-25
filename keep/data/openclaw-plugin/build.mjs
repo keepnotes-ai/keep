@@ -40,6 +40,8 @@ await build({
     "perf_hooks",
     "async_hooks",
     "diagnostics_channel",
+    // OpenClaw plugin SDK — resolved by jiti at runtime
+    "openclaw/*",
   ],
   // Banner for source identification
   banner: {

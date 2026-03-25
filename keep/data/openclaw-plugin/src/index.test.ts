@@ -76,8 +76,7 @@ function formatTurn(messages: any[], maxInlineLength: number): string {
     const text = extractText(msg.content);
     if (!text.trim()) continue;
 
-    const limit = role === "user" ? 500 : maxInlineLength;
-    parts.push(`[${role}] ${truncate(text, limit)}`);
+    parts.push(`[${role}] ${truncate(text, maxInlineLength)}`);
   }
   return parts.join("\n\n");
 }
@@ -295,12 +294,12 @@ describe("formatTurn", () => {
     assert.ok(result.includes("[assistant] hi"));
   });
 
-  it("truncates user messages at 500 chars", () => {
+  it("truncates user messages at maxInlineLength", () => {
     const longContent = "x".repeat(600);
     const msgs = [{ role: "user", content: longContent }];
-    const result = formatTurn(msgs, 2000);
-    // [user] prefix + 500 chars + ellipsis
-    assert.ok(result.length < 520);
+    const result = formatTurn(msgs, 200);
+    // [user] prefix + 200 chars + ellipsis
+    assert.ok(result.length < 220);
     assert.ok(result.endsWith("…"));
   });
 

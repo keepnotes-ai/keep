@@ -11,6 +11,7 @@
 import { execFileSync } from "child_process";
 import path from "node:path";
 import fs from "node:fs";
+import { delegateCompactionToRuntime } from "openclaw/plugin-sdk/core";
 import { KeepMcpTransport } from "./mcp-transport.js";
 
 // ---------------------------------------------------------------------------
@@ -170,13 +171,14 @@ function registerBootstrapContextEngine(api: any, mode: "install" | "configure")
       info: {
         id: "keep",
         name: "keep (setup required)",
-        version: "0.111.1",
+        version: "0.111.2",
         ownsCompaction: false,
       },
       async assemble(params: { messages: any[]; tokenBudget?: number }) {
         return {
           messages: params.messages,
           systemPromptAddition: message,
+          estimatedTokens: 0,
         };
       },
     };
@@ -492,10 +494,7 @@ export default function register(api: any) {
                   const startLine = parseInt(tags._focus_start_line, 10) || 1;
                   const endLine = parseInt(tags._focus_end_line, 10) || startLine;
 
-                  // Source: memory for memory/ files
-                  const source = relPath.startsWith("memory/") || relPath === "MEMORY.md"
-                    ? "memory"
-                    : "memory";
+                  const source = "memory";
 
                   return {
                     path: relPath,
@@ -626,7 +625,7 @@ export default function register(api: any) {
       info: {
         id: "keep",
         name: "keep reflective memory",
-        version: "0.108.0",
+        version: "0.111.2",
         ownsCompaction: false,
       },
 
@@ -771,6 +770,8 @@ export default function register(api: any) {
         sessionKey?: string;
         messages: any[];
         tokenBudget?: number;
+        model?: string;
+        prompt?: string;
       }) {
         const conversationTokens = params.messages.reduce((sum: number, m: any) => {
           return sum + estimateTokens(extractText(m.content));
@@ -788,12 +789,11 @@ export default function register(api: any) {
         try {
           const cfg = getConfig();
 
-          const lastUser = [...params.messages]
-            .reverse()
-            .find((m: any) => m.role === "user");
-          const prompt = lastUser
-            ? truncate(extractText(lastUser.content), 500)
-            : "";
+          const prompt = params.prompt
+            ?? (() => {
+              const lastUser = [...params.messages].reverse().find((m: any) => m.role === "user");
+              return lastUser ? truncate(extractText(lastUser.content), 500) : "";
+            })();
 
           const totalBudget = params.tokenBudget || 8000;
           const keepBudget = Math.floor(totalBudget * cfg.contextBudgetRatio);
@@ -930,7 +930,7 @@ export default function register(api: any) {
       },
 
       // -------------------------------------------------------------------
-      // compact: advisory (ownsCompaction=false)
+      // compact: delegate to runtime (ownsCompaction=false)
       // -------------------------------------------------------------------
       async compact(params: {
         sessionId: string;
@@ -943,15 +943,13 @@ export default function register(api: any) {
         customInstructions?: string;
         runtimeContext?: Record<string, unknown>;
       }) {
-        if (params.currentTokenCount) {
-          api.logger?.debug(
-            `[keep] compact advisory: ${params.currentTokenCount} tokens, ` +
-              `target=${params.compactionTarget || "budget"}, ` +
-              `budget=${params.tokenBudget}`,
-          );
-        }
+        api.logger?.debug(
+          `[keep] compact: delegating to runtime (tokens=${params.currentTokenCount}, ` +
+            `target=${params.compactionTarget || "budget"}, ` +
+            `budget=${params.tokenBudget})`,
+        );
 
-        return { ok: true, compacted: false, reason: "advisory" };
+        return delegateCompactionToRuntime(params);
       },
 
       // -------------------------------------------------------------------
@@ -1015,7 +1013,7 @@ export default function register(api: any) {
       // -------------------------------------------------------------------
       async onSubagentEnded(params: {
         childSessionKey: string;
-        reason: string;
+        reason: "deleted" | "completed" | "swept" | "released";
       }) {
         sessionFirstAssemble.delete(params.childSessionKey);
         api.logger?.debug(

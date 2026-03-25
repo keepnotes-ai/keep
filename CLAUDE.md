@@ -22,9 +22,21 @@ If you accidentally stage private content, stop and alert the user before commit
 
 ## Release process
 
-1. `python scripts/bump_version.py X.Y.Z`
+```bash
+scripts/release.sh patch    # 0.111.1 → 0.111.2
+scripts/release.sh minor    # 0.111.1 → 0.112.0
+scripts/release.sh 0.112.0  # explicit version
+```
+
+The script handles: version bump, commit, tag, build, push, PyPI upload, GitHub release.
+
+- **Patch**: bug fixes, contract alignment, dependency updates. Release notes are the commit body (bullet list).
+- **Minor**: new features, behavioral changes. Release notes use `## What's new` with commit log since last minor.
+
+Manual steps (when needed):
+1. `python scripts/bump_version.py X.Y.Z` — bump all version strings
 2. Commit, tag `vX.Y.Z`, push with `--tags`
-3. `python -m build && twine upload dist/keep_skill-X.Y.Z*`
+3. `python -m build && uvx twine upload dist/keep_skill-X.Y.Z*`
 4. `gh release create vX.Y.Z`
 
 Both `keep-skill` and `langchain-keep` go to PyPI.

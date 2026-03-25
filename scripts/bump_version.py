@@ -15,12 +15,13 @@ ROOT = Path(__file__).resolve().parent.parent
 
 # Every file that carries a version string, with a regex whose group(1) is
 # the prefix to preserve and whose match is the full "prefix + old version".
+# The optional third element is count (default 1); use 0 for "replace all".
 TARGETS = [
     ("pyproject.toml",                                 r'(version\s*=\s*)"[^"]+"'),
     ("SKILL.md",                                       r'(version:\s*)\S+'),
     ("keep/data/openclaw-plugin/openclaw.plugin.json", r'("version":\s*)"[^"]+"'),
     ("keep/data/openclaw-plugin/package.json",         r'("version":\s*)"[^"]+"'),
-    ("keep/data/openclaw-plugin/src/index.ts",             r'(version:\s*)"[^"]+"'),
+    ("keep/data/openclaw-plugin/src/index.ts",             r'(version:\s*)"[^"]+"', 0),
     ("keep/data/openclaw-plugin/src/mcp-transport.ts",   r'(version:\s*)"[^"]+"'),
     ("claude-code-plugin/.claude-plugin/plugin.json",    r'("version":\s*)"[^"]+"'),
 ]
@@ -34,16 +35,17 @@ def current_version() -> str:
     return m.group(1)
 
 
-def bump_file(path: Path, pattern: str, new_version: str) -> None:
+def bump_file(path: Path, pattern: str, new_version: str, count: int = 1) -> int:
     text = path.read_text()
     if '"' in pattern:
         repl = rf'\g<1>"{new_version}"'
     else:
         repl = rf"\g<1>{new_version}"
-    new_text, n = re.subn(pattern, repl, text, count=1)
+    new_text, n = re.subn(pattern, repl, text, count=count)
     if n == 0:
         raise RuntimeError(f"Pattern not found in {path}")
     path.write_text(new_text)
+    return n
 
 
 def main() -> None:
@@ -59,10 +61,13 @@ def main() -> None:
         print(f"Already at {old}")
         return
 
-    for relpath, pattern in TARGETS:
+    for entry in TARGETS:
+        relpath, pattern = entry[0], entry[1]
+        count = entry[2] if len(entry) > 2 else 1
         path = ROOT / relpath
-        bump_file(path, pattern, new)
-        print(f"  {relpath}: {old} -> {new}")
+        n = bump_file(path, pattern, new, count)
+        suffix = f" ({n} occurrences)" if n > 1 else ""
+        print(f"  {relpath}: {old} -> {new}{suffix}")
 
     print(f"\nBumped {len(TARGETS)} files to {new}")
     print(f"(keep/__init__.py reads from package metadata — no edit needed)")
