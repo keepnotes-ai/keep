@@ -10,7 +10,6 @@ Usage:
     claude --mcp-server keep="keep mcp"   # Claude Code integration
 """
 
-import asyncio
 import json
 import os
 import signal
@@ -37,7 +36,6 @@ mcp = FastMCP(
 )
 
 _port: Optional[int] = None
-_lock = asyncio.Lock()
 
 
 def _ensure_daemon() -> int:
@@ -105,19 +103,18 @@ async def keep_flow(
     )] = None,
 ) -> str:
     """Run a state-doc flow."""
-    async with _lock:
-        body: dict = {
-            "state": state,
-            "params": params,
-            "budget": budget,
-            "cursor": cursor,
-            "state_doc_yaml": state_doc_yaml,
-        }
-        if token_budget and token_budget > 0:
-            body["token_budget"] = token_budget
-        status, resp = _post("/v1/flow", body)
-        if status != 200:
-            return f"Error: {resp.get('error', 'unknown')}"
+    body: dict = {
+        "state": state,
+        "params": params,
+        "budget": budget,
+        "cursor": cursor,
+        "state_doc_yaml": state_doc_yaml,
+    }
+    if token_budget and token_budget > 0:
+        body["token_budget"] = token_budget
+    status, resp = _post("/v1/flow", body)
+    if status != 200:
+        return f"Error: {resp.get('error', 'unknown')}"
 
     # Server-side rendered output (when token_budget was provided)
     if resp.get("rendered"):
@@ -182,32 +179,31 @@ async def keep_prompt(
     )] = None,
 ) -> str:
     """Render an agent prompt with injected context."""
-    async with _lock:
-        flow_params: dict[str, Any] = {}
-        if not name:
-            flow_params["list"] = True
-        else:
-            flow_params["name"] = name
-            if text:
-                flow_params["text"] = text
-            if id:
-                flow_params["id"] = id
-            if tags:
-                flow_params["tags"] = tags
-            if since:
-                flow_params["since"] = since
-            if until:
-                flow_params["until"] = until
-            if deep:
-                flow_params["deep"] = deep
-            if scope:
-                flow_params["scope"] = scope
-            if token_budget:
-                flow_params["token_budget"] = token_budget
+    flow_params: dict[str, Any] = {}
+    if not name:
+        flow_params["list"] = True
+    else:
+        flow_params["name"] = name
+        if text:
+            flow_params["text"] = text
+        if id:
+            flow_params["id"] = id
+        if tags:
+            flow_params["tags"] = tags
+        if since:
+            flow_params["since"] = since
+        if until:
+            flow_params["until"] = until
+        if deep:
+            flow_params["deep"] = deep
+        if scope:
+            flow_params["scope"] = scope
+        if token_budget:
+            flow_params["token_budget"] = token_budget
 
-        status, resp = _post("/v1/flow", {"state": "prompt", "params": flow_params})
-        if status != 200:
-            return f"Error: {resp.get('error', 'unknown')}"
+    status, resp = _post("/v1/flow", {"state": "prompt", "params": flow_params})
+    if status != 200:
+        return f"Error: {resp.get('error', 'unknown')}"
 
     flow_data = resp.get("data", {})
     flow_status = resp.get("status")

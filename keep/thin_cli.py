@@ -14,7 +14,7 @@ from urllib.parse import quote
 
 import typer
 
-from ._daemon_client import http_request as _http_raw, get_port as _daemon_get_port
+from ._daemon_client import http_request as _http, get_port as _daemon_get_port
 
 app = typer.Typer(
     name="keep",
@@ -32,10 +32,6 @@ def _q(id: str) -> str:
     """URL-encode an ID for path segments."""
     return quote(id, safe="")
 
-
-def _http(method: str, port: int, path: str, body: dict | None = None) -> tuple[int, dict]:
-    """Make an HTTP request to the daemon. Returns (status, json_body)."""
-    return _http_raw(method, port, path, body)
 
 
 def _get(port: int, path: str) -> dict:

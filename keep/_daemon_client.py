@@ -15,6 +15,24 @@ from pathlib import Path
 DEFAULT_PORT = 5337
 
 
+_auth_token: str = ""
+
+
+def _load_token(store_override: str | None = None) -> str:
+    """Read the daemon auth token from .daemon.token."""
+    global _auth_token
+    if _auth_token:
+        return _auth_token
+    store = resolve_store_path(store_override)
+    token_file = store / ".daemon.token"
+    if token_file.exists():
+        try:
+            _auth_token = token_file.read_text().strip()
+        except OSError:
+            pass
+    return _auth_token
+
+
 def http_request(
     method: str, port: int, path: str,
     body: dict | None = None, timeout: int = 30,
@@ -24,7 +42,9 @@ def http_request(
     Retries once on transient connection errors (daemon may be busy with
     initial setup when the first request arrives).
     """
-    headers = {}
+    headers: dict[str, str] = {}
+    if _auth_token:
+        headers["Authorization"] = f"Bearer {_auth_token}"
     data = None
     if body is not None:
         data = json.dumps({k: v for k, v in body.items() if v is not None})
@@ -76,26 +96,37 @@ def resolve_store_path(override: str | None = None) -> Path:
     return config_dir.resolve()
 
 
+_warnings_shown: bool = False
+
+
 def check_health(port: int) -> bool:
     """Check daemon health + setup in a single round-trip.
 
-    Returns True if healthy. Prints warnings to stderr.
+    Returns True if healthy. Prints warnings to stderr (once).
     Calls sys.exit(1) if setup is needed.
     """
+    global _warnings_shown
     try:
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
-        conn.request("GET", "/v1/health")
+        headers = {}
+        if _auth_token:
+            headers["Authorization"] = f"Bearer {_auth_token}"
+        conn.request("GET", "/v1/health", headers=headers)
         resp = conn.getresponse()
         raw = resp.read()
         conn.close()
+        if resp.status == 401:
+            return False  # stale token — daemon restarted
         if resp.status != 200:
             return False
         health = json.loads(raw)
         if health.get("needs_setup"):
             print("keep is not configured. Run: keep config --setup", file=sys.stderr)
             sys.exit(1)
-        for warning in health.get("warnings", []):
-            print(f"Warning: {warning}", file=sys.stderr)
+        if not _warnings_shown:
+            for warning in health.get("warnings", []):
+                print(f"Warning: {warning}", file=sys.stderr)
+            _warnings_shown = True
         return True
     except SystemExit:
         raise
@@ -118,9 +149,12 @@ def start_daemon(store_path: Path) -> None:
 
 
 def get_port(store_override: str | None = None) -> int:
-    """Get daemon port, auto-starting if needed."""
+    """Get daemon port, auto-starting if needed. Loads auth token."""
     store_path = resolve_store_path(store_override)
     port_file = store_path / ".daemon.port"
+
+    # Load auth token for subsequent HTTP requests
+    _load_token(store_override)
 
     # Try existing daemon
     if port_file.exists():
@@ -131,13 +165,19 @@ def get_port(store_override: str | None = None) -> int:
         except (ValueError, OSError):
             pass
 
-    # Auto-start daemon
+    # Auto-start daemon (generates new token)
+    global _auth_token
+    _auth_token = ""  # clear stale token
     print("Starting daemon...", file=sys.stderr)
     start_daemon(store_path)
 
     # Poll for readiness
     deadline = time.monotonic() + 15.0
+    token_loaded = False
     while time.monotonic() < deadline:
+        if not token_loaded:
+            _load_token(store_override)
+            token_loaded = bool(_auth_token)
         if port_file.exists():
             try:
                 port = int(port_file.read_text().strip())

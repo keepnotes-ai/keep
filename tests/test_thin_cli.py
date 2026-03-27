@@ -173,12 +173,14 @@ def daemon(mock_providers, tmp_path):
 
 def test_thin_cli_context_round_trip(daemon):
     """Put via HTTP, get context via /context, render."""
-    _, _, port = daemon
+    server, _, port = daemon
+    auth = {"Authorization": f"Bearer {server.auth_token}"}
 
     # Put
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
     body = json.dumps({"content": "round trip context test", "id": "rt-ctx"})
-    conn.request("POST", "/v1/notes", body, {"Content-Type": "application/json"})
+    h = {"Content-Type": "application/json", **auth}
+    conn.request("POST", "/v1/notes", body, h)
     resp = conn.getresponse()
     resp.read()
     conn.close()
@@ -186,7 +188,7 @@ def test_thin_cli_context_round_trip(daemon):
 
     # Get context
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-    conn.request("GET", "/v1/notes/rt-ctx/context?similar_limit=2")
+    conn.request("GET", "/v1/notes/rt-ctx/context?similar_limit=2", headers=auth)
     resp = conn.getresponse()
     data = json.loads(resp.read())
     conn.close()

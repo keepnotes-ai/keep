@@ -2814,7 +2814,9 @@ def pending_cmd(
         _daemon_server = DaemonServer(kp, port=_daemon_port)
         _actual_port = _daemon_server.start()
         _port_path = kp._store_path / ".daemon.port"
+        _token_path = kp._store_path / ".daemon.token"
         _port_path.write_text(str(_actual_port))
+        _token_path.write_text(_daemon_server.auth_token)
         _daemon_logger.info("Query server on 127.0.0.1:%d", _actual_port)
 
         def handle_signal(signum, frame):
@@ -3042,6 +3044,10 @@ def pending_cmd(
                 pass
             try:
                 _port_path.unlink()
+            except OSError:
+                pass
+            try:
+                _token_path.unlink()
             except OSError:
                 pass
             try:

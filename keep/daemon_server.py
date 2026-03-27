@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import TYPE_CHECKING, Any, Optional
@@ -83,11 +84,25 @@ class DaemonRequestHandler(BaseHTTPRequestHandler):
     """Routes requests to Keeper methods."""
 
     keeper: "Keeper"
+    auth_token: str = ""
 
     def log_message(self, format, *args):
         logger.debug("HTTP %s", format % args)
 
     def _dispatch(self, method: str):
+        # Host header check — reject DNS rebinding attempts
+        host = (self.headers.get("Host") or "").split(":")[0]
+        if host and host not in ("127.0.0.1", "localhost", "::1", ""):
+            self._json(403, {"error": "forbidden"})
+            return
+
+        # Auth token check
+        if DaemonRequestHandler.auth_token:
+            provided = (self.headers.get("Authorization") or "").removeprefix("Bearer ").strip()
+            if provided != DaemonRequestHandler.auth_token:
+                self._json(401, {"error": "unauthorized"})
+                return
+
         path = urlparse(self.path).path
         for route_method, pattern, handler_name in _COMPILED_ROUTES:
             if route_method != method:
@@ -99,9 +114,9 @@ class DaemonRequestHandler(BaseHTTPRequestHandler):
                     getattr(self, handler_name)(groups)
                 except Exception as e:
                     logger.warning("Handler %s error: %s", handler_name, e, exc_info=True)
-                    self._json(500, {"error": str(e)})
+                    self._json(500, {"error": "internal server error"})
                 return
-        self._json(404, {"error": f"Not found: {method} {path}"})
+        self._json(404, {"error": "not found"})
 
     def do_GET(self):
         self._dispatch("GET")
@@ -326,11 +341,14 @@ class DaemonRequestHandler(BaseHTTPRequestHandler):
             "cursor": result.cursor,
             "tried_queries": result.tried_queries,
         }
-        token_budget = body.get("token_budget")
-        if token_budget and int(token_budget) > 0:
+        try:
+            token_budget = int(body["token_budget"]) if "token_budget" in body else 0
+        except (ValueError, TypeError):
+            token_budget = 0
+        if token_budget > 0:
             from .cli import render_flow_response
             resp["rendered"] = render_flow_response(
-                result, token_budget=int(token_budget), keeper=self.keeper,
+                result, token_budget=token_budget, keeper=self.keeper,
             )
         self._json(200, resp)
 
@@ -391,10 +409,13 @@ class DaemonServer:
         self._preferred_port = port
         self._server: Optional[ThreadingHTTPServer] = None
         self._thread: Optional[threading.Thread] = None
+        self.auth_token: str = ""
 
     def start(self) -> int:
         """Start the HTTP server. Returns the actual bound port."""
+        self.auth_token = secrets.token_urlsafe(32)
         DaemonRequestHandler.keeper = self._keeper
+        DaemonRequestHandler.auth_token = self.auth_token
         try:
             self._server = ThreadingHTTPServer(
                 ("127.0.0.1", self._preferred_port), DaemonRequestHandler)
