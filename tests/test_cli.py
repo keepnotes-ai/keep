@@ -880,35 +880,6 @@ class TestStdinJsonTemplates:
         assert _has_templates("no templates") is False
         assert _has_templates(None) is False
 
-    def test_expand_stdin_templates_passthrough(self):
-        from keep.cli import _expand_stdin_templates
-        result = _expand_stdin_templates("no templates", "also plain")
-        assert result == ("no templates", "also plain")
-
-    def test_expand_stdin_tag_list_none(self):
-        from keep.cli import _expand_stdin_tag_list
-        assert _expand_stdin_tag_list(None) is None
-
-    def test_expand_stdin_tag_list_no_templates(self):
-        from keep.cli import _expand_stdin_tag_list
-        tags = ["key=value", "other=thing"]
-        assert _expand_stdin_tag_list(tags) is tags  # same object, not copied
-
-    def test_expand_stdin_tag_list_with_data(self):
-        from keep.cli import _expand_stdin_tag_list
-        tags = ["session=${.session_id}", "plain=value"]
-        result = _expand_stdin_tag_list(tags, data={"session_id": "s123"})
-        assert result == ["session=s123", "plain=value"]
-
-    def test_template_end_to_end(self):
-        """Template expansion produces correct content and tags for hooks."""
-        from keep.cli import _expand_template, _expand_stdin_tag_list
-        data = {"session_id": "test-sess-1", "prompt": "hello from hook"}
-        content = _expand_template("User prompt: ${.prompt:10}", data)
-        assert content == "User prompt: hello from"
-        tags = _expand_stdin_tag_list(["session=${.session_id}"], data=data)
-        assert tags == ["session=test-sess-1"]
-
     def test_template_regex_rejects_invalid(self):
         from keep.cli import _expand_template
         # Only top-level alphanumeric/underscore field names

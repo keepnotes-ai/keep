@@ -167,32 +167,6 @@ def _expand_template(s: str, data: dict) -> str:
     return _TEMPLATE_RE.sub(_replace, s)
 
 
-def _expand_stdin_templates(
-    *strings: str | None,
-) -> tuple[str | None, ...]:
-    """Expand ${.field} templates in one or more strings from stdin JSON."""
-    if not any(_has_templates(s) for s in strings):
-        return strings
-    data = _read_stdin_json()
-    return tuple(
-        _expand_template(s, data) if _has_templates(s) else s
-        for s in strings
-    )
-
-
-def _expand_stdin_tag_list(
-    tags: list[str] | None,
-    data: dict | None = None,
-) -> list[str] | None:
-    """Expand templates in a tag list.  Returns None if input is None."""
-    if not tags:
-        return tags
-    if not any(_has_templates(t) for t in tags):
-        return tags
-    if data is None:
-        data = _read_stdin_json()
-    return [_expand_template(t, data) if _has_templates(t) else t for t in tags]
-
 
 
 def _tag_display_value(value) -> str:
@@ -1114,30 +1088,8 @@ def main_callback(
         is_eager=True,
     )] = None,
 ):
-    """Reflective memory with semantic search."""
-    # If no subcommand provided, show the current intentions (now)
-    if ctx.invoked_subcommand is None:
-        # On first run, the wizard handles everything — exit after setup
-        from .paths import get_config_dir
-        from .setup_wizard import needs_wizard
-        override = _get_store_override()
-        if os.environ.get("KEEP_CONFIG"):
-            config_dir = get_config_dir()
-        elif override:
-            config_dir = Path(override).resolve()
-        else:
-            config_dir = get_config_dir()
-        if needs_wizard(config_dir):
-            _get_keeper(None)  # triggers wizard
-            return
-
-        from .api import NOWDOC_ID
-        kp = _get_keeper(None)
-        ctx_item = kp.get_context(NOWDOC_ID, similar_limit=3, meta_limit=3)
-        if ctx_item is None:
-            kp.get_now()  # force-create nowdoc
-            ctx_item = kp.get_context(NOWDOC_ID, similar_limit=3, meta_limit=3)
-        typer.echo(render_context(ctx_item, as_json=_get_json_output()))
+    """Reflective memory with semantic search (delegated commands)."""
+    pass
 
 
 # -----------------------------------------------------------------------------
@@ -1319,66 +1271,15 @@ See: https://github.com/keepnotes-ai/keep#installation
 """
 
 
-def _resolve_store_path(store: Optional[Path]) -> Path:
-    """Resolve the store path from CLI arg, env, or config — no Keeper init."""
-    actual = store if store is not None else _get_store_override()
-    if actual is not None:
-        return Path(actual).resolve()
-    from .paths import get_config_dir, get_default_store_path
-    from .config import load_or_create_config
-    config_dir = get_config_dir()
-    cfg = load_or_create_config(config_dir)
-    return get_default_store_path(cfg)
-
-
-def _read_daemon_port(store_path: Path) -> Optional[int]:
-    """Read .daemon.port file, return port or None."""
-    port_file = store_path / ".daemon.port"
-    if not port_file.exists():
-        return None
-    try:
-        return int(port_file.read_text().strip())
-    except (ValueError, OSError):
-        return None
-
-
-def _check_daemon_health(port: int) -> bool:
-    """Quick health check against daemon HTTP server (1s timeout)."""
-    import http.client
-    try:
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=1)
-        conn.request("GET", "/v1/health")
-        resp = conn.getresponse()
-        conn.close()
-        return resp.status == 200
-    except Exception:
-        return False
-
-
-def _try_daemon_connection(port: int, config) -> Optional["RemoteKeeper"]:
-    """Try connecting to daemon at given port. Returns client or None."""
-    if not _check_daemon_health(port):
-        return None
-    from .remote import RemoteKeeper
-    try:
-        return RemoteKeeper(
-            api_url=f"http://127.0.0.1:{port}",
-            api_key="",
-            config=config,
-        )
-    except Exception:
-        return None
-
-
 def _get_keeper(store: Optional[Path], *, _force_local: bool = False) -> Keeper:
     """Initialize memory, handling errors gracefully.
 
-    Returns a local Keeper or RemoteKeeper depending on config.
-    Both satisfy the same protocol — the CLI doesn't distinguish.
+    Returns a local Keeper or RemoteKeeper (cloud) depending on config.
+    Local daemon commands (put directory, get --resolve, pending, etc.)
+    always use a local Keeper — the thin CLI handles the daemon HTTP path.
 
-    When ``_force_local`` is True, skips the daemon HTTP client path
-    and always creates a local Keeper (used by ``keep pending`` which
-    manages the daemon itself).
+    When ``_force_local`` is True, skips the remote backend check
+    (used by ``keep pending`` which manages the daemon itself).
     """
     import atexit
 
@@ -1397,22 +1298,6 @@ def _get_keeper(store: Optional[Path], *, _force_local: bool = False) -> Keeper:
         except Exception as e:
             typer.echo(f"Error connecting to remote: {e}", err=True)
             raise typer.Exit(1)
-
-    # Try local daemon first (fast path — no model loading)
-    if not _force_local:
-        store_path = _resolve_store_path(store)
-        port = _read_daemon_port(store_path)
-    else:
-        port = None
-    if port is not None:
-        from .config import load_or_create_config
-        from .paths import get_config_dir
-        config_dir = get_config_dir()
-        config = load_or_create_config(config_dir)
-        client = _try_daemon_connection(port, config)
-        if client is not None:
-            atexit.register(client.close)
-            return client
 
     # Check global override from --store on main command
     actual_store = store if store is not None else _get_store_override()
@@ -1840,29 +1725,6 @@ def put(
     )
     typer.echo(render_context(ctx, as_json=_get_json_output()))
 
-
-@app.command("update", hidden=True)
-def update(
-    source: Annotated[Optional[str], typer.Argument(help="URI to fetch, text content, or '-' for stdin")] = None,
-    id: Annotated[Optional[str], typer.Option("--id", "-i")] = None,
-    store: StoreOption = None,
-    tags: Annotated[Optional[list[str]], typer.Option("--tag", "-t")] = None,
-    summary: Annotated[Optional[str], typer.Option("--summary")] = None,
-):
-    """Add or update a note (alias for 'put')."""
-    put(source=source, id=id, store=store, tags=tags, summary=summary)
-
-
-@app.command("add", hidden=True)
-def add(
-    source: Annotated[Optional[str], typer.Argument(help="URI to fetch, text content, or '-' for stdin")] = None,
-    id: Annotated[Optional[str], typer.Option("--id", "-i")] = None,
-    store: StoreOption = None,
-    tags: Annotated[Optional[list[str]], typer.Option("--tag", "-t")] = None,
-    summary: Annotated[Optional[str], typer.Option("--summary")] = None,
-):
-    """Add a note (alias for 'put')."""
-    put(source=source, id=id, store=store, tags=tags, summary=summary)
 
 
 def _render_binding(name: str, binding: dict, kp=None, token_budget: int = 4000) -> str:
@@ -3817,35 +3679,12 @@ def doctor(
     typer.echo()
 
 
-@app.command()
-def mcp(
-    store: StoreOption = None,
-):
-    """Start MCP stdio server for AI agent integration."""
-    if store is not None:
-        os.environ["KEEP_STORE_PATH"] = str(store)
-    elif _get_store_override() is not None:
-        os.environ["KEEP_STORE_PATH"] = str(_get_store_override())
-    from .mcp import main as mcp_main
-    mcp_main()
-
-
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Entry point (used by daemon subprocess: python -m keep.cli pending --daemon)
+# ---------------------------------------------------------------------------
 
 def main():
-    try:
-        app()
-    except SystemExit:
-        raise  # Let typer handle exit codes
-    except KeyboardInterrupt:
-        raise SystemExit(130)  # Standard exit code for Ctrl+C
-    except Exception as e:
-        # Log full traceback to file, show clean message to user
-        from .errors import log_exception
-        log_path = log_exception(e, context="keep CLI")
-        typer.echo(f"Error: {e}", err=True)
-        typer.echo(f"Details logged to {log_path}", err=True)
-        raise SystemExit(1)
+    app()
 
 
 if __name__ == "__main__":
