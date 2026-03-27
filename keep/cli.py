@@ -9,6 +9,7 @@ Usage:
 import importlib.metadata
 import importlib.resources
 import json
+import logging
 import os
 import platform
 import re
@@ -25,17 +26,8 @@ from typing import Any, Optional
 import typer
 from typing_extensions import Annotated
 
-# Pattern for version identifier suffix: @V{N} where N may be signed.
-# Public semantics:
-#   N >= 0: offset from current
-#   N < 0: ordinal from oldest archived (-1 oldest, -2 second-oldest, ...)
-VERSION_SUFFIX_PATTERN = re.compile(r'@V\{(-?\d+)\}$')
+logger = logging.getLogger(__name__)
 
-# Pattern for part identifier suffix: @P{N} where N is digits only
-PART_SUFFIX_PATTERN = re.compile(r'@P\{(\d+)\}$')
-
-# URI scheme pattern per RFC 3986: scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )
-# Used to distinguish URIs from plain text in the update command
 _URI_SCHEME_PATTERN = re.compile(r'^[a-zA-Z][a-zA-Z0-9+.-]*://')
 
 from .api import Keeper
@@ -72,7 +64,7 @@ def _is_filesystem_path(source: str) -> Optional[Path]:
     return None
 
 
-from .utils import _git_visible_files, _list_directory_files  # noqa: E402
+from .utils import _list_directory_files  # noqa: E402
 
 
 def _output_width() -> int:
@@ -124,49 +116,6 @@ def _has_stdin_data() -> bool:
 # Stdin JSON template expansion
 # ---------------------------------------------------------------------------
 # Hooks (e.g. Claude Code) pipe JSON on stdin.  Instead of requiring jq,
-# keep can expand ${.field} and ${.field:N} (truncate to N chars) directly.
-
-_STDIN_JSON_SENTINEL = object()
-_stdin_json_cache: Any = _STDIN_JSON_SENTINEL
-
-_TEMPLATE_RE = re.compile(r'\$\{\.([A-Za-z_][A-Za-z0-9_]*)(?::(\d+))?\}')
-
-
-def _read_stdin_json() -> dict:
-    """Read and cache JSON object from stdin.  Returns {} on failure."""
-    global _stdin_json_cache
-    if _stdin_json_cache is not _STDIN_JSON_SENTINEL:
-        return _stdin_json_cache  # type: ignore[return-value]
-    _stdin_json_cache = {}
-    if _has_stdin_data():
-        try:
-            raw = sys.stdin.read()
-            obj = json.loads(raw)
-            if isinstance(obj, dict):
-                _stdin_json_cache = obj
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            pass
-    return _stdin_json_cache
-
-
-def _has_templates(s: str | None) -> bool:
-    return s is not None and '${.' in s
-
-
-def _expand_template(s: str, data: dict) -> str:
-    """Expand ${.field} and ${.field:N} in *s* from *data*."""
-    def _replace(m: re.Match) -> str:
-        key, limit = m.group(1), m.group(2)
-        val = data.get(key)
-        if val is None:
-            return ''
-        result = str(val)
-        if limit:
-            result = result[:int(limit)]
-        return result
-    return _TEMPLATE_RE.sub(_replace, s)
-
-
 
 
 def _tag_display_value(value) -> str:
@@ -1106,60 +1055,6 @@ StoreOption = Annotated[
 ]
 
 
-LimitOption = Annotated[
-    int,
-    typer.Option(
-        "--limit", "-n",
-        help="Maximum results to return"
-    )
-]
-
-
-SinceOption = Annotated[
-    Optional[str],
-    typer.Option(
-        "--since",
-        help="Only notes updated since (ISO duration: P3D, P1W, PT1H; or date: 2026-01-15)"
-    )
-]
-
-UntilOption = Annotated[
-    Optional[str],
-    typer.Option(
-        "--until",
-        help="Only notes updated before (ISO duration: P3D, P1W, PT1H; or date: 2026-01-15)"
-    )
-]
-
-
-
-def _versions_to_items(doc_id: str, current: Item | None, versions: list) -> list[Item]:
-    """Convert current item + previous VersionInfo list into Items for _format_items."""
-    items: list[Item] = []
-    if current:
-        items.append(current)
-    for i, v in enumerate(versions, start=1):
-        tags = dict(v.tags)
-        tags["_version"] = str(i)
-        tags["_updated"] = v.created_at or ""
-        tags["_updated_date"] = (v.created_at or "")[:10]
-        items.append(Item(id=doc_id, summary=v.summary, tags=tags))
-    return items
-
-
-def _parts_to_items(doc_id: str, current: Item | None, parts: list) -> list[Item]:
-    """Convert current item + PartInfo list into Items for _format_items."""
-    items: list[Item] = []
-    if current:
-        items.append(current)
-    for p in parts:
-        tags = dict(p.tags)
-        tags["_part_num"] = str(p.part_num)
-        tags["_base_id"] = doc_id
-        tags["_updated"] = p.created_at or ""
-        items.append(Item(id=doc_id, summary=p.summary, tags=tags))
-    return items
-
 
 def _format_items(items: list[Item], as_json: bool = False, keeper=None, show_tags: bool = False) -> str:
     """Format multiple items for display.
@@ -1397,34 +1292,6 @@ def _parse_tags(tags: Optional[list[str]]) -> dict:
             parsed[key] = [existing, v]
     return parsed
 
-
-def _filter_by_tags(items: list, tags: list[str]) -> list:
-    """Filter items by tag specifications (AND logic).
-
-    Each tag can be:
-    - "key" - item must have this tag key (any value)
-    - "key=value" - item must have this exact tag
-    """
-    if not tags:
-        return items
-
-    result = items
-    for t in tags:
-        if "=" in t:
-            key, value = t.split("=", 1)
-            key = key.casefold()
-            result = [item for item in result
-                      if value in tag_values(item.tags, key)]
-        elif ":" in t:
-            # Colon separator — treat as key=value (common mistake)
-            key, value = t.split(":", 1)
-            key = key.casefold()
-            result = [item for item in result
-                      if value in tag_values(item.tags, key)]
-        else:
-            # Key only - check if key exists
-            result = [item for item in result if t.casefold() in item.tags]
-    return result
 
 
 def _parse_frontmatter(text: str) -> tuple[str, dict[str, str]]:
@@ -2148,7 +2015,8 @@ def pending_cmd(
     # --stop: send SIGTERM to the daemon (lightweight — no Keeper needed)
     if stop:
         from .model_lock import ModelLock
-        store_path = _resolve_store_path(store)
+        from ._daemon_client import resolve_store_path
+        store_path = resolve_store_path(str(store) if store else None)
         pid_path = store_path / "processor.pid"
         lock = ModelLock(store_path / ".processor.lock")
         if not lock.is_locked():

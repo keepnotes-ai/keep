@@ -596,14 +596,6 @@ class TestFindPartUplift:
 class TestCLIParts:
     """Test CLI @P{N} parsing and analyze command."""
 
-    def test_part_suffix_pattern(self):
-        """PART_SUFFIX_PATTERN matches @P{N} correctly."""
-        from keep.cli import PART_SUFFIX_PATTERN
-        assert PART_SUFFIX_PATTERN.search("doc:1@P{1}").group(1) == "1"
-        assert PART_SUFFIX_PATTERN.search("doc:1@P{42}").group(1) == "42"
-        assert PART_SUFFIX_PATTERN.search("doc:1") is None
-        assert PART_SUFFIX_PATTERN.search("doc:1@V{1}") is None
-
     def test_format_summary_line_with_part(self):
         """Summary line shows @P{N} for parts."""
         from keep.cli import _format_summary_line
