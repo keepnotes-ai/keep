@@ -334,6 +334,16 @@ def _is_full() -> bool:
     return _global_full
 
 
+def _version_callback(value: bool | None):
+    if value:
+        from importlib.metadata import version
+        try:
+            typer.echo(version("keep-skill"))
+        except Exception:
+            typer.echo("unknown")
+        raise typer.Exit()
+
+
 @app.callback(invoke_without_command=True)
 def default(
     ctx: typer.Context,
@@ -345,6 +355,10 @@ def default(
     full_output: Annotated[bool, typer.Option(
         "--full", "-F", help="Output full notes with context"
     )] = False,
+    version: Annotated[Optional[bool], typer.Option(
+        "--version", help="Show version and exit",
+        callback=_version_callback, is_eager=True,
+    )] = None,
 ):
     """keep — reflective memory for AI agents."""
     global _global_json, _global_ids, _global_full, _global_store
