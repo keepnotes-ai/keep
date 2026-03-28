@@ -240,7 +240,9 @@ class ContextResolutionMixin:
 
         if offset == 0:
             if include_similar or include_meta or include_parts:
-                with perf.timer("get_context", "read_flow", context_id=id):
+                from .tracing import get_tracer as _get_tracer
+                with perf.timer("get_context", "read_flow", context_id=id), \
+                     _get_tracer("keeper").start_as_current_span("get_context", attributes={"item_id": id}):
                     flow_result = self._run_read_flow(
                         "get",
                         {

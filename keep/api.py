@@ -62,6 +62,7 @@ from .types import (
 )
 from .context_cache import ContextCache
 from .flow_env import LocalFlowEnvironment
+from .tracing import get_tracer as _get_tracer
 from ._background_processing import BackgroundProcessingMixin
 from ._provider_lifecycle import ProviderLifecycleMixin
 from ._search_augmentation import SearchAugmentationMixin
@@ -1554,6 +1555,27 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
         queue_summarize: bool = True,
     ) -> Item:
         """Core upsert logic used by put()."""
+        with _get_tracer("keeper").start_as_current_span(
+            "keeper.put", attributes={"item_id": id},
+        ):
+            return self.__upsert_impl(
+                id, content, tags=tags, summary=summary,
+                system_tags=system_tags, created_at=created_at,
+                force=force, queue_summarize=queue_summarize,
+            )
+
+    def __upsert_impl(
+        self,
+        id: str,
+        content: str,
+        *,
+        tags: Optional[dict] = None,
+        summary: Optional[str] = None,
+        system_tags: dict[str, str],
+        created_at: Optional[str] = None,
+        force: bool = False,
+        queue_summarize: bool = True,
+    ) -> Item:
         # Wait for background reconciliation to finish before writing.
         # The reconcile thread and main thread both access the embedding
         # provider, ChromaDB, and SQLite — concurrent access causes hangs
@@ -1728,27 +1750,28 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
         # Local mode: compute embedding synchronously
         # If no embedding provider, write to document store only (data is safe;
         # embeddings are filled in by reconciliation when a provider appears).
+        _tracer = _get_tracer("keeper")
         _has_embeddings = self._config.embedding is not None
         embedding = None
         if _has_embeddings:
-            if content_unchanged:
-                embedding = self._store.get_embedding(chroma_coll, id)
-                if embedding is None:
-                    embedding = self._try_dedup_embedding(
-                        doc_coll, chroma_coll, new_hash, id, content,
-                    )
-                if embedding is None:
-                    embedding = self._get_embedding_provider().embed(final_summary)
-            else:
-                embedding = self._try_dedup_embedding(doc_coll, chroma_coll, new_hash, id, content)
-                if embedding is None:
-                    embedding = self._get_embedding_provider().embed(final_summary)
+            with _tracer.start_as_current_span("embed", attributes={"item_id": id}):
+                if content_unchanged:
+                    embedding = self._store.get_embedding(chroma_coll, id)
+                    if embedding is None:
+                        embedding = self._try_dedup_embedding(
+                            doc_coll, chroma_coll, new_hash, id, content,
+                        )
+                    if embedding is None:
+                        embedding = self._get_embedding_provider().embed(final_summary)
+                else:
+                    embedding = self._try_dedup_embedding(doc_coll, chroma_coll, new_hash, id, content)
+                    if embedding is None:
+                        embedding = self._get_embedding_provider().embed(final_summary)
 
         # Detect _inverse changes on tagdocs BEFORE storage overwrites old state
         if id.startswith(".tag/"):
             old_tagdoc_tags = existing_doc.tags if existing_doc else {}
             self._process_tagdoc_inverse_change(id, merged_tags, old_tagdoc_tags, doc_coll)
-            # Invalidate cached tagdoc for this key
             tag_key = id.removeprefix(".tag/").split("/")[0]
             self._tagdoc_cache.pop(tag_key, None)
 
@@ -1758,42 +1781,45 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
             old_embedding = self._store.get_embedding(chroma_coll, id)
 
         # Dual-write: document store (canonical) + ChromaDB (embedding index)
-        result, content_changed = self._document_store.upsert(
-            collection=doc_coll,
-            id=id,
-            summary=final_summary,
-            tags=merged_tags,
-            content_hash=new_hash,
-            content_hash_full=_content_hash_full(content),
-            created_at=created_at,
-        )
+        with _tracer.start_as_current_span("doc_store.upsert"):
+            result, content_changed = self._document_store.upsert(
+                collection=doc_coll,
+                id=id,
+                summary=final_summary,
+                tags=merged_tags,
+                content_hash=new_hash,
+                content_hash_full=_content_hash_full(content),
+                created_at=created_at,
+            )
 
         if _has_embeddings:
-            self._store.upsert(
-                collection=chroma_coll,
-                id=id,
-                embedding=embedding,
-                summary=final_summary,
-                tags=casefold_tags_for_index(merged_tags),
-            )
+            with _tracer.start_as_current_span("chroma.upsert"):
+                self._store.upsert(
+                    collection=chroma_coll,
+                    id=id,
+                    embedding=embedding,
+                    summary=final_summary,
+                    tags=casefold_tags_for_index(merged_tags),
+                )
 
             # If content changed and we archived a version, also store versioned embedding
             if existing_doc is not None and content_changed:
-                max_ver = self._document_store.max_version(doc_coll, id)
-                if max_ver > 0:
-                    if old_embedding is None:
-                        old_embedding = self._get_embedding_provider().embed(existing_doc.summary)
-                    self._store.upsert_version(
-                        collection=chroma_coll,
-                        id=id,
-                        version=max_ver,
-                        embedding=old_embedding,
-                        summary=existing_doc.summary,
-                        tags=casefold_tags_for_index(existing_doc.tags),
-                    )
+                with _tracer.start_as_current_span("chroma.upsert_version"):
+                    max_ver = self._document_store.max_version(doc_coll, id)
+                    if max_ver > 0:
+                        if old_embedding is None:
+                            old_embedding = self._get_embedding_provider().embed(existing_doc.summary)
+                        self._store.upsert_version(
+                            collection=chroma_coll,
+                            id=id,
+                            version=max_ver,
+                            embedding=old_embedding,
+                            summary=existing_doc.summary,
+                            tags=casefold_tags_for_index(existing_doc.tags),
+                        )
 
-        # Process tag-driven edges (_inverse on tagdocs)
-        self._process_edge_tags(id, merged_tags, existing_tags, doc_coll)
+        with _tracer.start_as_current_span("edge_tags"):
+            self._process_edge_tags(id, merged_tags, existing_tags, doc_coll)
 
         # .ignore update: purge items matching current patterns
         if id == ".ignore":
@@ -2267,14 +2293,14 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
 
             embedding = self._store.get_embedding(chroma_coll, similar_to)
             if embedding is None:
-                with perf.timer("find", "embed"):
+                with perf.timer("find", "embed"), _get_tracer("keeper").start_as_current_span("embed"):
                     embedding = self._get_embedding_provider().embed(item.summary)
             actual_limit = (limit + 1 if not include_self else limit) * 3
             if deep:
                 actual_limit = max(actual_limit, 30)
             if scope_ids is not None:
                 actual_limit = max(actual_limit, len(scope_ids))
-            with perf.timer("find", "semantic"):
+            with perf.timer("find", "semantic"), _get_tracer("keeper").start_as_current_span("chroma.query"):
                 results = self._store.query_embedding(chroma_coll, embedding, limit=actual_limit, where=where)
 
             if not include_self:
@@ -2287,7 +2313,7 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
             # Hybrid search: semantic + FTS5, fused with RRF.
             # Each list over-fetches independently so RRF can discover
             # items that rank well in one signal but poorly in the other.
-            with perf.timer("find", "embed"):
+            with perf.timer("find", "embed"), _get_tracer("keeper").start_as_current_span("embed"):
                 embedding = self._get_embedding_provider().embed(query)
             sem_fetch = max(limit * 10, 200)
             fts_fetch = max(limit * 10, 100)
@@ -2296,14 +2322,14 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
             if scope_ids is not None:
                 sem_fetch = max(sem_fetch, len(scope_ids))
 
-            with perf.timer("find", "semantic"):
+            with perf.timer("find", "semantic"), _get_tracer("keeper").start_as_current_span("chroma.query"):
                 sem_results = self._store.query_embedding(
                     chroma_coll, embedding, limit=sem_fetch, where=where,
                 )
             sem_items = [r.to_item() for r in sem_results]
             sem_items = self._apply_recency_decay(sem_items)
 
-            with perf.timer("find", "fts"):
+            with perf.timer("find", "fts"), _get_tracer("keeper").start_as_current_span("fts.query"):
                 if scope_ids is not None:
                     fts_rows = self._document_store.query_fts_scoped(
                         doc_coll, query, list(scope_ids),
@@ -2316,7 +2342,7 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
             fts_items = [Item(id=r[0], summary=r[1]) for r in fts_rows]
 
             if fts_items:
-                with perf.timer("find", "rrf"):
+                with perf.timer("find", "rrf"), _get_tracer("keeper").start_as_current_span("rrf"):
                     items = self._rrf_fuse(sem_items, fts_items)
             else:
                 # FTS unavailable or no matches — use semantic results as-is
@@ -2338,7 +2364,7 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
 
         # Hydrate search hits from canonical SQLite tags so user tags remain
         # available even when Chroma metadata stores marker fields only.
-        with perf.timer("find", "hydrate"):
+        with perf.timer("find", "hydrate"), _get_tracer("keeper").start_as_current_span("hydrate"):
             hydrated: list[Item] = []
             for item in items:
                 base_id = item.tags.get(

@@ -1986,6 +1986,8 @@ def run_pending_daemon(kp) -> None:
     """
     import logging
     from .model_lock import ModelLock
+    from .tracing import init_tracing
+    init_tracing(tree_log=True)
 
     _daemon_logger = logging.getLogger("keep.cli.daemon")
     pid_path = kp._processor_pid_path

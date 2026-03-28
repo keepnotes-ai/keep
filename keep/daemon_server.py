@@ -103,6 +103,9 @@ class DaemonRequestHandler(BaseHTTPRequestHandler):
                 self._json(401, {"error": "unauthorized"})
                 return
 
+        from .tracing import get_tracer
+        from opentelemetry.propagate import extract
+
         path = urlparse(self.path).path
         for route_method, pattern, handler_name in _COMPILED_ROUTES:
             if route_method != method:
@@ -110,11 +113,19 @@ class DaemonRequestHandler(BaseHTTPRequestHandler):
             m = pattern.match(path)
             if m:
                 groups = {k: unquote(v) for k, v in m.groupdict().items()}
-                try:
-                    getattr(self, handler_name)(groups)
-                except Exception as e:
-                    logger.warning("Handler %s error: %s", handler_name, e, exc_info=True)
-                    self._json(500, {"error": "internal server error"})
+                # Extract trace context from incoming headers (CLI → daemon)
+                ctx = extract(dict(self.headers))
+                tracer = get_tracer("http")
+                with tracer.start_as_current_span(
+                    f"{method} {path}",
+                    context=ctx,
+                    attributes={"http.method": method, "http.path": path},
+                ):
+                    try:
+                        getattr(self, handler_name)(groups)
+                    except Exception as e:
+                        logger.warning("Handler %s error: %s", handler_name, e, exc_info=True)
+                        self._json(500, {"error": "internal server error"})
                 return
         self._json(404, {"error": "not found"})
 

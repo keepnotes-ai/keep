@@ -464,16 +464,21 @@ def make_action_runner(
     )
 
     def _run(action_name: str, params: dict[str, Any]) -> dict[str, Any]:
-        if context_cache is not None:
-            cached = context_cache.check(action_name, params, ctx)
-            if cached is not None:
-                return cached
-        act = get_action(action_name)
-        output = act.run(params, ctx)
-        result = dict(output) if isinstance(output, dict) else {}
-        if context_cache is not None:
-            context_cache.store(action_name, params, result)
-        return result
+        from .tracing import get_tracer
+        _tracer = get_tracer("flow")
+        with _tracer.start_as_current_span(f"action:{action_name}") as _span:
+            if context_cache is not None:
+                cached = context_cache.check(action_name, params, ctx)
+                if cached is not None:
+                    _span.set_attribute("cache", "hit")
+                    return cached
+                _span.set_attribute("cache", "miss")
+            act = get_action(action_name)
+            output = act.run(params, ctx)
+            result = dict(output) if isinstance(output, dict) else {}
+            if context_cache is not None:
+                context_cache.store(action_name, params, result)
+            return result
 
     return _run
 

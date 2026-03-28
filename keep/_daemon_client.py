@@ -45,6 +45,12 @@ def http_request(
     headers: dict[str, str] = {}
     if _auth_token:
         headers["Authorization"] = f"Bearer {_auth_token}"
+    # Propagate trace context to daemon (W3C traceparent)
+    try:
+        from opentelemetry.propagate import inject
+        inject(headers)
+    except Exception:
+        pass
     data = None
     if body is not None:
         data = json.dumps({k: v for k, v in body.items() if v is not None})
