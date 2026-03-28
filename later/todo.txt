@@ -1,13 +1,9 @@
 
-* result cacheing
-
 * when get a system doc, don't get_context, just return it.
 
 * mcp "tried_queries" remove??
 
 * reranking (including a local provider)
-
-* mcp descriptions include simple examples
 
 * mcp prompts
 
@@ -325,3 +321,5 @@ x acp
 . pending --list show "timer events"
 . local http for daemon
 . rewrite the CLI and MCP to use local http -- no inproc impact
+. mcp description examples
+. observability and initial cacheing strategy

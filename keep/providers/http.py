@@ -18,3 +18,17 @@ def http_session() -> requests.Session:
         _session = requests.Session()
         _session.headers["User-Agent"] = user_agent()
     return _session
+
+
+def close_http_session() -> None:
+    """Close the shared session, interrupting any in-flight requests.
+
+    Called during shutdown to unblock threads stuck in socket reads.
+    """
+    global _session
+    if _session is not None:
+        try:
+            _session.close()
+        except Exception:
+            pass
+        _session = None

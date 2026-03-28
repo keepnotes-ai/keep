@@ -149,7 +149,7 @@ def check_health(port: int) -> bool:
 
 def start_daemon(store_path: Path) -> None:
     """Spawn daemon process."""
-    cmd = [sys.executable, "-m", "keep.cli", "pending", "--daemon", "--store", str(store_path)]
+    cmd = [sys.executable, "-m", "keep.daemon", "--store", str(store_path)]
     log_path = store_path / "keep-ops.log"
     store_path.mkdir(parents=True, exist_ok=True)
     with open(log_path, "a") as log_fd:

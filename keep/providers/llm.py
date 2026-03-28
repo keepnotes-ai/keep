@@ -244,7 +244,7 @@ class OllamaSummarization:
                 "options": {"num_ctx": self.context_length},
                 "keep_alive": "30m",
             },
-            timeout=(10, 300),  # (connect, read) — generation can be slow
+            timeout=(10, 120),  # (connect, read)
         )
         if not response.ok:
             detail = response.text[:200] if response.text else ""

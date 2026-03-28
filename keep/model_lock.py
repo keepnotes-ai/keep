@@ -72,6 +72,7 @@ class ModelLock:
                 return False
 
         # Blocking with timeout: poll with non-blocking flock
+        from .shutdown import is_shutting_down
         deadline = time.monotonic() + timeout
         interval = 0.1
         while True:
@@ -80,6 +81,10 @@ class ModelLock:
                 logger.debug("Acquired model lock: %s", self._lock_path.name)
                 return True
             except (OSError, BlockingIOError):
+                if is_shutting_down():
+                    os.close(self._fd)
+                    self._fd = None
+                    raise InterruptedError("shutdown requested")
                 if time.monotonic() >= deadline:
                     os.close(self._fd)
                     self._fd = None

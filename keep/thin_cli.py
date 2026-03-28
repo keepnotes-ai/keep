@@ -33,6 +33,83 @@ def _q(id: str) -> str:
     return quote(id, safe="")
 
 
+# ---------------------------------------------------------------------------
+# Stdin JSON template expansion
+# ---------------------------------------------------------------------------
+# Hooks pipe JSON on stdin.  ${.field} and ${.field:N} (truncate to N chars)
+# expand from that JSON, removing the jq dependency.
+
+import re
+
+_TEMPLATE_RE = re.compile(r'\$\{\.([A-Za-z_][A-Za-z0-9_]*)(?::(\d+))?\}')
+_STDIN_JSON_SENTINEL = object()
+_stdin_json_cache = _STDIN_JSON_SENTINEL
+
+
+def _has_stdin_data() -> bool:
+    try:
+        if sys.stdin.isatty():
+            return False
+        # Use select to avoid hanging on socket stdin (exec sandboxes)
+        import select
+        return bool(select.select([sys.stdin], [], [], 0)[0])
+    except Exception:
+        return False
+
+
+def _read_stdin_json() -> dict:
+    """Read and cache JSON object from stdin.  Returns {} on failure."""
+    global _stdin_json_cache
+    if _stdin_json_cache is not _STDIN_JSON_SENTINEL:
+        return _stdin_json_cache  # type: ignore[return-value]
+    _stdin_json_cache = {}
+    if _has_stdin_data():
+        try:
+            raw = sys.stdin.read()
+            obj = json.loads(raw)
+            if isinstance(obj, dict):
+                _stdin_json_cache = obj
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+            pass
+    return _stdin_json_cache
+
+
+def _has_templates(s: str | None) -> bool:
+    return s is not None and '${.' in s
+
+
+def _expand_template(s: str, data: dict) -> str:
+    """Expand ${.field} and ${.field:N} in *s* from *data*."""
+    def _replace(m: re.Match) -> str:
+        key, limit = m.group(1), m.group(2)
+        val = data.get(key)
+        if val is None:
+            return ''
+        result = str(val)
+        if limit:
+            result = result[:int(limit)]
+        return result
+    return _TEMPLATE_RE.sub(_replace, s)
+
+
+def _expand_stdin_templates(*strings: str | None) -> tuple[str | None, ...]:
+    """Expand ${.field} templates in strings from stdin JSON."""
+    if not any(_has_templates(s) for s in strings):
+        return strings
+    data = _read_stdin_json()
+    return tuple(
+        _expand_template(s, data) if _has_templates(s) else s
+        for s in strings
+    )
+
+
+def _expand_stdin_tag_list(tags: list[str] | None) -> list[str] | None:
+    """Expand templates in a tag list."""
+    if not tags or not any(_has_templates(t) for t in tags):
+        return tags
+    data = _read_stdin_json()
+    return [_expand_template(t, data) if _has_templates(t) else t for t in tags]
+
 
 def _get(port: int, path: str) -> dict:
     status, body = _http("GET", port, path)
@@ -714,6 +791,10 @@ def put(
         typer.echo("Error: --interval requires --watch", err=True)
         raise typer.Exit(1)
 
+    # Expand ${.field} templates from stdin JSON (hook support)
+    (source,) = _expand_stdin_templates(source)
+    tags = _expand_stdin_tag_list(tags)
+
     port = _get_port()
     parsed_tags = {}
     for t in (tags or []):
@@ -915,6 +996,10 @@ def now(
     With no arguments, displays the current intentions.
     With content, replaces them (previous version is preserved).
     """
+    # Expand ${.field} templates from stdin JSON (hook support)
+    (content,) = _expand_stdin_templates(content)
+    tags = _expand_stdin_tag_list(tags)
+
     port = _get_port()
     if content:
         parsed_tags, _ = _parse_tag_args(tags)
@@ -1034,6 +1119,9 @@ def prompt(
         keep prompt reflect "auth flow"           # With search context
         keep prompt reflect --since P7D           # Recent context only
     """
+    # Expand ${.field} templates from stdin JSON (hook support)
+    tag = _expand_stdin_tag_list(tag)
+
     port = _get_port()
 
     if list_prompts or not name:
@@ -1270,6 +1358,7 @@ def pending(
     """Process pending background tasks."""
     if stop:
         import signal
+        import time as _time
         from ._daemon_client import resolve_store_path
         store_path = resolve_store_path(_global_store)
         pid_file = store_path / "processor.pid"
@@ -1279,7 +1368,23 @@ def pending(
         try:
             pid = int(pid_file.read_text().strip())
             os.kill(pid, signal.SIGTERM)
-            typer.echo(f"Sent stop signal to daemon (pid {pid}).", err=True)
+            typer.echo(f"Stopping daemon (pid {pid})...", err=True)
+            # Wait up to 5s for graceful shutdown
+            deadline = _time.monotonic() + 10.0
+            while _time.monotonic() < deadline:
+                try:
+                    os.kill(pid, 0)  # check if still alive
+                except ProcessLookupError:
+                    break
+                _time.sleep(0.2)
+            else:
+                # Still alive — force kill
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                    typer.echo("Force-killed (was stuck in long operation).", err=True)
+                except ProcessLookupError:
+                    pass
+            pid_file.unlink(missing_ok=True)
         except ProcessLookupError:
             typer.echo("Daemon not running (stale PID file).", err=True)
             pid_file.unlink(missing_ok=True)
@@ -1287,6 +1392,15 @@ def pending(
             typer.echo(f"Error stopping daemon: {e}", err=True)
         (store_path / ".daemon.port").unlink(missing_ok=True)
         (store_path / ".daemon.token").unlink(missing_ok=True)
+        return
+
+    if list_items:
+        from .cli import print_pending_list_lightweight
+        from ._daemon_client import resolve_store_path, get_port
+        store_path = resolve_store_path(_global_store)
+        print_pending_list_lightweight(store_path)
+        # Ensure daemon is running so pending items get processed
+        get_port(_global_store)
         return
 
     from .api import Keeper
@@ -1324,11 +1438,6 @@ def pending(
         stats = kp.enqueue_reindex()
         typer.echo(f"Enqueued {stats['enqueued']} items + {stats['versions']} versions", err=True)
 
-    if list_items:
-        from .cli import print_pending_list
-        print_pending_list(kp)
-        kp.close()
-        return
 
     # Interactive mode: show status, ensure daemon running, tail log
     from .cli import print_pending_interactive

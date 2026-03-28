@@ -112,12 +112,6 @@ def _has_stdin_data() -> bool:
         return False
 
 
-# ---------------------------------------------------------------------------
-# Stdin JSON template expansion
-# ---------------------------------------------------------------------------
-# Hooks (e.g. Claude Code) pipe JSON on stdin.  Instead of requiring jq,
-
-
 def _tag_display_value(value) -> str:
     """Render scalar/list tag values for compact display."""
     if isinstance(value, list):
@@ -246,13 +240,6 @@ def _get_store_override() -> Optional[Path]:
     return _store_override
 
 
-app = typer.Typer(
-    name="keep",
-    help="Reflective memory with semantic search.",
-    no_args_is_help=False,
-    invoke_without_command=True,
-    rich_markup_mode=None,
-)
 
 
 # Shell-safe character set for IDs (no quoting needed)
@@ -996,49 +983,6 @@ def _format_versioned_id(item: Item) -> str:
     return f"{_shell_quote_id(base_id)}{version_suffix}"
 
 
-@app.callback(invoke_without_command=True)
-def main_callback(
-    ctx: typer.Context,
-    verbose: Annotated[bool, typer.Option(
-        "--verbose", "-v",
-        help="Enable debug-level logging to stderr",
-        callback=_verbose_callback,
-        is_eager=True,
-    )] = False,
-    output_json: Annotated[bool, typer.Option(
-        "--json", "-j",
-        help="Output as JSON",
-        callback=_json_callback,
-        is_eager=True,
-    )] = False,
-    ids_only: Annotated[bool, typer.Option(
-        "--ids", "-I",
-        help="Output only IDs (for piping to xargs)",
-        callback=_ids_callback,
-        is_eager=True,
-    )] = False,
-    full_output: Annotated[bool, typer.Option(
-        "--full", "-F",
-        help="Output full notes (overrides --ids)",
-        callback=_full_callback,
-        is_eager=True,
-    )] = False,
-    version: Annotated[Optional[bool], typer.Option(
-        "--version",
-        help="Show version and exit",
-        callback=_version_callback,
-        is_eager=True,
-    )] = None,
-    store: Annotated[Optional[Path], typer.Option(
-        "--store", "-s",
-        envvar="KEEP_STORE_PATH",
-        help="Path to the store directory",
-        callback=_store_callback,
-        is_eager=True,
-    )] = None,
-):
-    """Reflective memory with semantic search (delegated commands)."""
-    pass
 
 
 # -----------------------------------------------------------------------------
@@ -1483,7 +1427,6 @@ def _put_store(
         raise typer.Exit(1)
 
 
-@app.command("put")
 def put(
     source: Annotated[Optional[str], typer.Argument(
         help="URI to fetch, text content, or '-' for stdin"
@@ -1882,7 +1825,6 @@ def _format_config_with_defaults(cfg, store_path: Path) -> str:
 
 
 
-@app.command()
 def config(
     path: Annotated[Optional[str], typer.Argument(
         help="Config path to get (e.g., 'file', 'tool', 'store', 'providers.embedding')"
@@ -2040,10 +1982,17 @@ def run_pending_daemon(kp) -> None:
     _token_path.write_text(_daemon_server.auth_token)
     _daemon_logger.info("Query server on 127.0.0.1:%d", _actual_port)
 
+    from .shutdown import request_shutdown, is_shutting_down, wait_or_shutdown
+
     def handle_signal(signum, frame):
         nonlocal shutdown_requested
         shutdown_requested = True
-        _daemon_logger.info("Received signal %d, shutting down after current item", signum)
+        request_shutdown()
+        # Close the shared HTTP session to unblock any in-flight
+        # requests (ollama generate, embedding, etc.)
+        from .providers.http import close_http_session
+        close_http_session()
+        _daemon_logger.info("Received signal %d, shutting down", signum)
 
     def _is_shutdown():
         return shutdown_requested
@@ -2131,15 +2080,20 @@ def run_pending_daemon(kp) -> None:
         pid_path.write_text(str(os.getpid()))
         while not shutdown_requested:
             _check_version_restart()
+            _daemon_logger.debug("Tick: process_pending_work")
             flow_result = kp.process_pending_work(
                 limit=1, worker_id=flow_worker_id,
                 lease_seconds=180, shutdown_check=_is_shutdown,
             )
             if shutdown_requested:
                 break
+            _daemon_logger.debug("Tick: process_pending")
             result = kp.process_pending(limit=1, shutdown_check=_is_shutdown)
             delegated = result.get("delegated", 0)
+            if shutdown_requested:
+                break
 
+            _daemon_logger.debug("Tick: poll_watches")
             from .watches import poll_watches as _poll_watches, has_active_watches, next_check_delay, load_watches
             watch_result = _poll_watches(kp)
             if watch_result["checked"] > 0:
@@ -2149,8 +2103,12 @@ def run_pending_daemon(kp) -> None:
                     watch_result["stale"], watch_result["errors"],
                 )
 
+            if shutdown_requested:
+                break
             _cleanup_temp_files()
             _replenish_supernodes()
+            if shutdown_requested:
+                break
 
             _daemon_logger.info(
                 "Daemon batch: processed=%d failed=%d delegated=%d flow_processed=%d flow_failed=%d",
@@ -2170,15 +2128,15 @@ def run_pending_daemon(kp) -> None:
                 pending_remaining = kp._pending_queue.count()
                 if delegated_remaining > 0:
                     _daemon_logger.info("Waiting for %d delegated tasks", delegated_remaining)
-                    time.sleep(5)
+                    wait_or_shutdown(5)
                     continue
                 if flow_remaining > 0:
                     _daemon_logger.info("Waiting for %d flow work items", flow_remaining)
-                    time.sleep(1)
+                    wait_or_shutdown(1)
                     continue
                 if pending_remaining > 0:
                     _daemon_logger.info("Waiting for %d pending items (retry backoff)", pending_remaining)
-                    time.sleep(5)
+                    wait_or_shutdown(5)
                     continue
 
                 _has_timers = has_active_watches(kp)
@@ -2196,10 +2154,10 @@ def run_pending_daemon(kp) -> None:
                         delay = min(_time_to_replenish, 60.0)
                     delay = max(1.0, min(delay, 60.0))
                     _daemon_logger.debug("Sleeping %.1fs (timer events pending)", delay)
-                    time.sleep(delay)
+                    wait_or_shutdown(delay)
                     continue
 
-                time.sleep(1)
+                wait_or_shutdown(1)
                 if shutdown_requested:
                     break
                 flow_result = kp.process_pending_work(
@@ -2239,6 +2197,85 @@ def run_pending_daemon(kp) -> None:
                 pass
         kp.close()
         processor_lock.release()
+
+
+def print_pending_list_lightweight(store_path: "Path") -> None:
+    """Print pending work items without creating a Keeper.
+
+    Opens SQLite queues directly — no ChromaDB, no embedding models,
+    no lock contention with the running daemon.
+    """
+    from .pending_summaries import PendingSummaryQueue
+    from .work_queue import WorkQueue
+
+    pq = PendingSummaryQueue(store_path / "pending_summaries.db")
+    items = pq.list_pending()
+    failed = pq.list_failed()
+    try:
+        wq = WorkQueue(store_path / "work_queue.db")
+        flow_items = wq.list_pending(limit=-1)
+    except Exception:
+        wq = None
+        flow_items = []
+
+    if not items and not failed and not flow_items:
+        typer.echo("Nothing pending.")
+    else:
+        if items:
+            for item in items:
+                retry_str = f" (retry after {item['retry_after']})" if item.get("retry_after") else ""
+                typer.echo(f"  {item['task_type']:15s} {item['supersede_key'] or item['work_id']}{retry_str}")
+        if flow_items:
+            if items:
+                typer.echo()
+            if wq:
+                by_kind = wq.count_by_kind()
+                for kind, count in by_kind.items():
+                    if kind != "flow":
+                        typer.echo(f"  {kind:20s} {count}")
+            flow_by_state: dict[str, list] = {}
+            for fi in flow_items:
+                if fi.get("kind") != "flow":
+                    continue
+                inp = fi.get("input") or {}
+                state = inp.get("state", "unknown")
+                flow_by_state.setdefault(state, []).append(fi)
+            for state, state_items in sorted(flow_by_state.items()):
+                if len(state_items) <= 3:
+                    for si in state_items:
+                        inp = si.get("input") or {}
+                        target = inp.get("item_id") or inp.get("params", {}).get("item_id", "")
+                        if target:
+                            typer.echo(f"  flow:{state:16s} {target}")
+                        else:
+                            typer.echo(f"  flow:{state}")
+                else:
+                    typer.echo(f"  flow:{state:16s} ({len(state_items)} items)")
+        if failed:
+            typer.echo(f"\nFailed ({len(failed)}):")
+            for item in failed[:10]:
+                error = item.get("last_error", "unknown")
+                typer.echo(f"  {item['task_type']:15s} {item['id']}: {error}")
+
+    # Timer events
+    try:
+        from .timer_state import format_timer_events, KNOWN_TIMERS
+    except Exception:
+        format_timer_events = None
+        KNOWN_TIMERS = {}
+    if KNOWN_TIMERS:
+        typer.echo("\nTimer events:")
+        if format_timer_events:
+            try:
+                lines = format_timer_events(store_path)
+                for line in lines:
+                    typer.echo(line)
+            except Exception:
+                pass
+
+    pq.close()
+    if wq:
+        wq.close()
 
 
 def print_pending_list(kp) -> None:
@@ -2402,111 +2439,6 @@ def print_pending_interactive(kp) -> None:
     _tail_ops_log(log_path, kp)
 
 
-@app.command("pending")
-def pending_cmd(
-    store: StoreOption = None,
-    reindex: Annotated[bool, typer.Option(
-        "--reindex",
-        help="Enqueue all items for re-embedding, then process"
-    )] = False,
-    retry: Annotated[bool, typer.Option(
-        "--retry",
-        help="Reset failed items back to pending for retry"
-    )] = False,
-    list_items: Annotated[bool, typer.Option(
-        "--list", "-l",
-        help="List pending work items"
-    )] = False,
-    purge: Annotated[bool, typer.Option(
-        "--purge",
-        help="Delete all pending work items from the queue"
-    )] = False,
-    stop: Annotated[bool, typer.Option(
-        "--stop",
-        help="Stop the background processor"
-    )] = False,
-    daemon: Annotated[bool, typer.Option(
-        "--daemon",
-        hidden=True,
-        help="Run as background daemon (used internally)"
-    )] = False,
-):
-    """Process pending background tasks.
-
-    Starts a background processor (if not already running) and shows
-    progress. Ctrl-C detaches without stopping the processor.
-    Use --reindex to re-embed all items with the current embedding provider.
-    """
-    # --stop: send SIGTERM to the daemon (lightweight — no Keeper needed)
-    if stop:
-        from .model_lock import ModelLock
-        from ._daemon_client import resolve_store_path
-        store_path = resolve_store_path(str(store) if store else None)
-        pid_path = store_path / "processor.pid"
-        lock = ModelLock(store_path / ".processor.lock")
-        if not lock.is_locked():
-            typer.echo("No processor running.")
-            pid_path.unlink(missing_ok=True)
-            return
-        if pid_path.exists():
-            try:
-                pid = int(pid_path.read_text().strip())
-                os.kill(pid, signal.SIGTERM)
-                typer.echo(f"Sent stop signal to processor (pid {pid}).", err=True)
-            except (ProcessLookupError, ValueError):
-                typer.echo("Processor not running (stale PID file).", err=True)
-                pid_path.unlink(missing_ok=True)
-        else:
-            typer.echo("Processor running but no PID file found.", err=True)
-        # Clean up stale port file
-        (store_path / ".daemon.port").unlink(missing_ok=True)
-        return
-
-    # pending always needs a local Keeper (manages daemon, queues, etc.)
-    kp = _get_keeper(store, _force_local=True)
-
-    if daemon:
-        run_pending_daemon(kp)
-        return
-
-    if purge:
-        wq = kp._get_work_queue()
-        n = wq.purge()
-        typer.echo(f"Purged {n} pending work items.", err=True)
-        kp.close()
-        return
-
-    if retry:
-        n = kp._pending_queue.retry_failed()
-        if n:
-            typer.echo(f"Reset {n} failed items back to pending.", err=True)
-        else:
-            typer.echo("No failed items to retry.", err=True)
-            kp.close()
-            return
-
-    if reindex:
-        count = kp.count()
-        if count == 0:
-            typer.echo("No notes to reindex.")
-            kp.close()
-            raise typer.Exit(0)
-        typer.echo(f"Enqueuing {count} notes for reindex...", err=True)
-        stats = kp.enqueue_reindex()
-        typer.echo(
-            f"Enqueued {stats['enqueued']} items + {stats['versions']} versions",
-            err=True,
-        )
-
-    if list_items:
-        print_pending_list(kp)
-        kp.close()
-        return
-
-    print_pending_interactive(kp)
-    kp.close()
-
-
 def _queue_status_line(kp, queue_stats: dict) -> str:
     """Build a consistent queue status string like '2 queued, 1 processing (1 ocr)'."""
     pending = queue_stats.get("pending", 0)
@@ -2596,15 +2528,6 @@ def _tail_ops_log(log_path: Path, kp) -> None:
 # Data Management
 # -----------------------------------------------------------------------------
 
-data_app = typer.Typer(
-    name="data",
-    help="Data management — export, import.",
-    rich_markup_mode=None,
-)
-app.add_typer(data_app)
-
-
-@data_app.command("export")
 def data_export(
     output: Annotated[str, typer.Argument(
         help="Output file path (use '-' for stdout)"
@@ -2648,7 +2571,6 @@ def data_export(
         )
 
 
-@data_app.command("import")
 def data_import(
     file: Annotated[str, typer.Argument(help="JSON export file to import")],
     mode: Annotated[str, typer.Option(
@@ -2697,7 +2619,6 @@ def data_import(
 # -----------------------------------------------------------------------------
 
 
-@app.command(hidden=True)
 def doctor(
     store: StoreOption = None,
     log: Annotated[bool, typer.Option(
@@ -3057,13 +2978,3 @@ def doctor(
     typer.echo()
 
 
-# ---------------------------------------------------------------------------
-# Entry point (used by daemon subprocess: python -m keep.cli pending --daemon)
-# ---------------------------------------------------------------------------
-
-def main():
-    app()
-
-
-if __name__ == "__main__":
-    main()

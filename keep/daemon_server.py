@@ -105,6 +105,11 @@ class DaemonRequestHandler(BaseHTTPRequestHandler):
 
         from .tracing import get_tracer
         from opentelemetry.propagate import extract
+        from .shutdown import is_shutting_down
+
+        if is_shutting_down():
+            self._json(503, {"error": "shutting down"})
+            return
 
         path = urlparse(self.path).path
         for route_method, pattern, handler_name in _COMPILED_ROUTES:

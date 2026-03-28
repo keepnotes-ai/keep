@@ -1225,9 +1225,7 @@ class BackgroundProcessingMixin:
             # Spawn detached process
             # Use sys.executable to ensure we use the same Python
             cmd = [
-                sys.executable, "-m", "keep.cli",
-                "pending",
-                "--daemon",
+                sys.executable, "-m", "keep.daemon",
                 "--store", str(self._store_path),
             ]
 
