@@ -383,6 +383,55 @@ class ChromaStore:
                 )
                 self._bump_epoch()
 
+    def upsert_with_version(
+        self,
+        collection: str,
+        id: str,
+        embedding: list[float],
+        summary: str,
+        tags: dict[str, Any],
+        version_id: str,
+        version: int,
+        version_embedding: list[float],
+        version_summary: str,
+        version_tags: dict[str, Any],
+    ) -> None:
+        """Upsert a document and its archived version in one batch.
+
+        Single lock acquire, single ChromaDB write, single epoch bump.
+        """
+        with self._state_lock:
+            with self._write_guard():
+                self._check_freshness()
+                coll = self._get_collection(collection)
+
+                now = utc_now()
+                if "_updated" not in tags:
+                    tags = {**tags, "_updated": now}
+                if "_created" not in tags:
+                    existing = coll.get(ids=[id], include=["metadatas"])
+                    if existing["ids"]:
+                        old_created = existing["metadatas"][0].get("_created")
+                        tags = {**tags, "_created": old_created or now}
+                    else:
+                        tags = {**tags, "_created": now}
+                tags = {**tags, "_updated_date": now[:10]}
+
+                v_tags = dict(version_tags)
+                v_tags["_version"] = str(version)
+                v_tags["_base_id"] = id
+
+                coll.upsert(
+                    ids=[id, version_id],
+                    embeddings=[embedding, version_embedding],
+                    documents=[summary, version_summary],
+                    metadatas=[
+                        self._tags_to_metadata(tags),
+                        self._tags_to_metadata(v_tags),
+                    ],
+                )
+                self._bump_epoch()
+
     def upsert_part(
         self,
         collection: str,

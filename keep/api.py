@@ -1754,19 +1754,27 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
         _has_embeddings = self._config.embedding is not None
         embedding = None
         if _has_embeddings:
-            with _tracer.start_as_current_span("embed", attributes={"item_id": id}):
+            with _tracer.start_as_current_span("embed", attributes={"item_id": id}) as _embed_span:
+                _embed_source = "compute"
                 if content_unchanged:
                     embedding = self._store.get_embedding(chroma_coll, id)
+                    if embedding is not None:
+                        _embed_source = "existing"
                     if embedding is None:
                         embedding = self._try_dedup_embedding(
                             doc_coll, chroma_coll, new_hash, id, content,
                         )
+                        if embedding is not None:
+                            _embed_source = "dedup"
                     if embedding is None:
                         embedding = self._get_embedding_provider().embed(final_summary)
                 else:
                     embedding = self._try_dedup_embedding(doc_coll, chroma_coll, new_hash, id, content)
+                    if embedding is not None:
+                        _embed_source = "dedup"
                     if embedding is None:
                         embedding = self._get_embedding_provider().embed(final_summary)
+                _embed_span.set_attribute("source", _embed_source)
 
         # Detect _inverse changes on tagdocs BEFORE storage overwrites old state
         if id.startswith(".tag/"):
@@ -1793,30 +1801,37 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
             )
 
         if _has_embeddings:
-            with _tracer.start_as_current_span("chroma.upsert"):
-                self._store.upsert(
-                    collection=chroma_coll,
-                    id=id,
-                    embedding=embedding,
-                    summary=final_summary,
-                    tags=casefold_tags_for_index(merged_tags),
-                )
-
-            # If content changed and we archived a version, also store versioned embedding
-            if existing_doc is not None and content_changed:
-                with _tracer.start_as_current_span("chroma.upsert_version"):
-                    max_ver = self._document_store.max_version(doc_coll, id)
-                    if max_ver > 0:
-                        if old_embedding is None:
-                            old_embedding = self._get_embedding_provider().embed(existing_doc.summary)
-                        self._store.upsert_version(
-                            collection=chroma_coll,
-                            id=id,
-                            version=max_ver,
-                            embedding=old_embedding,
-                            summary=existing_doc.summary,
-                            tags=casefold_tags_for_index(existing_doc.tags),
-                        )
+            # If content changed and we have a version to archive, batch both
+            # ChromaDB writes into a single call (one lock, one epoch bump).
+            max_ver = (
+                self._document_store.max_version(doc_coll, id)
+                if existing_doc is not None and content_changed else 0
+            )
+            if max_ver > 0:
+                with _tracer.start_as_current_span("chroma.upsert_batch"):
+                    if old_embedding is None:
+                        old_embedding = self._get_embedding_provider().embed(existing_doc.summary)
+                    self._store.upsert_with_version(
+                        collection=chroma_coll,
+                        id=id,
+                        embedding=embedding,
+                        summary=final_summary,
+                        tags=casefold_tags_for_index(merged_tags),
+                        version_id=f"{id}@v{max_ver}",
+                        version=max_ver,
+                        version_embedding=old_embedding,
+                        version_summary=existing_doc.summary,
+                        version_tags=casefold_tags_for_index(existing_doc.tags),
+                    )
+            else:
+                with _tracer.start_as_current_span("chroma.upsert"):
+                    self._store.upsert(
+                        collection=chroma_coll,
+                        id=id,
+                        embedding=embedding,
+                        summary=final_summary,
+                        tags=casefold_tags_for_index(merged_tags),
+                    )
 
         with _tracer.start_as_current_span("edge_tags"):
             self._process_edge_tags(id, merged_tags, existing_tags, doc_coll)
