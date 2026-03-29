@@ -708,6 +708,7 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
         doc_tags: dict[str, str],
         *,
         item_id: str | None = None,
+        required: bool = False,
     ) -> str | None:
         """Find a .prompt/* doc matching the given tags and return its prompt text.
 
@@ -724,6 +725,7 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
             prefix: "analyze", "summarize", "supernode", etc.
             doc_tags: Tags of the document being processed
             item_id: Optional item ID for scope-glob matching
+            required: When True, raise if no matching prompt doc resolves.
 
         Returns:
             Prompt text from the best-matching doc, or None.
@@ -736,6 +738,8 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
             doc_coll, f".prompt/{prefix}/"
         )
         if not prompt_docs:
+            if required:
+                raise ValueError(f"missing prompt docs for .prompt/{prefix}/*")
             return None
 
         best_prompt = None
@@ -784,7 +788,31 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
                         best_prompt = prompt_text
                     break
 
+        if best_prompt is None and required:
+            raise ValueError(f"no matching prompt doc for .prompt/{prefix}/*")
         return best_prompt
+
+    def _load_prompt_doc(
+        self,
+        doc_id: str,
+        *,
+        required: bool = False,
+    ) -> str | None:
+        """Load a prompt doc by exact ID and return its ``## Prompt`` section."""
+        from .analyzers import extract_prompt_section
+
+        doc_coll = self._resolve_doc_collection()
+        rec = self._document_store.get(doc_coll, doc_id)
+        if rec is None or not getattr(rec, "summary", None):
+            if required:
+                raise ValueError(f"missing prompt doc: {doc_id}")
+            return None
+        prompt_text = extract_prompt_section(rec.summary)
+        if prompt_text:
+            return prompt_text
+        if required:
+            raise ValueError(f"prompt doc has no ## Prompt section: {doc_id}")
+        return None
 
     def _gather_context(
         self,
@@ -4115,12 +4143,10 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
         except Exception as e:
             logger.warning("Could not load tag specs: %s", e)
 
-        # Resolve analysis prompt from .prompt/analyze/* docs
-        analysis_prompt = None
-        try:
-            analysis_prompt = self._resolve_prompt_doc("analyze", doc_record.tags)
-        except Exception as e:
-            logger.debug("Prompt doc resolution failed: %s", e)
+        # Resolve analysis prompt from store-backed .prompt/analyze/* docs
+        analysis_prompt = self._resolve_prompt_doc(
+            "analyze", doc_record.tags, required=True,
+        )
 
         # Phase 2: Compute — pure processor (local or remote)
         # Wait for any background reconciliation to finish first — both
@@ -4142,17 +4168,9 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
                 extract_prompt_section,
             )
 
-            # Resolve incremental prompt from .prompt/analyze/incremental system doc
-            incremental_prompt = None
-            try:
-                doc_coll_prompt = self._resolve_doc_collection()
-                inc_doc = self._document_store.get(doc_coll_prompt, ".prompt/analyze/incremental")
-                if inc_doc and inc_doc.summary:
-                    extracted = extract_prompt_section(inc_doc.summary)
-                    if extracted:
-                        incremental_prompt = extracted
-            except Exception as e:
-                logger.debug("Incremental prompt doc resolution failed: %s", e)
+            incremental_prompt = self._load_prompt_doc(
+                ".prompt/analyze/incremental", required=True,
+            )
 
             total_tokens = sum(
                 _estimate_tokens(c["content"])
@@ -4189,7 +4207,7 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
                 if hasattr(raw_provider, '_provider') and raw_provider._provider is not None:
                     raw_provider = raw_provider._provider
 
-                prompt_text = incremental_prompt or INCREMENTAL_ANALYSIS_PROMPT
+                prompt_text = incremental_prompt
                 try:
                     result_text = raw_provider.generate(
                         prompt_text, user_prompt, max_tokens=4096,
@@ -4787,6 +4805,7 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
             run_flow,
         )
 
+        self._ensure_sysdocs()
         env = LocalFlowEnvironment(self)
         if query_embedding is not None:
             env._query_embedding = query_embedding
@@ -4869,12 +4888,15 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
                     "prompts": [{"name": pr.name, "summary": pr.summary} for pr in prompts],
                 }, ticks=1)
             # render mode
-            result = self.render_prompt(
-                name, p.get("text"),
-                id=p.get("id"), since=p.get("since"), until=p.get("until"),
-                tags=p.get("tags"), deep=p.get("deep", False),
-                scope=p.get("scope"), token_budget=p.get("token_budget"),
-            )
+            try:
+                result = self.render_prompt(
+                    name, p.get("text"),
+                    id=p.get("id"), since=p.get("since"), until=p.get("until"),
+                    tags=p.get("tags"), deep=p.get("deep", False),
+                    scope=p.get("scope"), token_budget=p.get("token_budget"),
+                )
+            except Exception as e:
+                return FlowResult(status="error", data={"error": str(e)})
             if result is None:
                 return FlowResult(status="error", data={"error": f"prompt not found: {name}"})
             from .cli import expand_prompt
@@ -4888,6 +4910,9 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
 
         if budget is None:
             budget = self._config.budget_per_flow
+
+        if state_doc_yaml is None and state != "prompt":
+            self._ensure_sysdocs()
 
         env = LocalFlowEnvironment(self)
         base_runner = make_action_runner(env, writable=writable)

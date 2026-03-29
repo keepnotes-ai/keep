@@ -20,6 +20,7 @@ from keep.thin_cli import (
     _display_tags,
     _truncate,
     _date,
+    put,
 )
 
 
@@ -241,6 +242,88 @@ def test_get_one_item_retries_after_connection_refused():
     assert "id: now" in result
     assert mock_http.call_args_list[0].args[1] == 5337
     assert mock_http.call_args_list[1].args[1] == 5338
+
+
+def test_get_now_uses_now_context_defaults():
+    """Bare `keep get now` should match `keep now` exactly."""
+    data = {
+        "item": {"id": "now", "summary": "Active context", "tags": {}},
+        "viewing_offset": 0,
+        "similar": [],
+        "meta": {},
+        "edges": {},
+        "parts": [],
+        "prev": [],
+        "next": [],
+    }
+    with patch("keep.thin_cli._get", return_value=data) as mock_get:
+        result = _get_one_item(
+            5337,
+            "now",
+            version=None,
+            limit=10,
+            similar=False,
+            meta=False,
+            parts=False,
+            history=False,
+            tag=None,
+            json_output=False,
+        )
+
+    mock_get.assert_called_once_with(5337, "/v1/notes/now/context")
+    assert "id: now" in result
+
+
+def test_put_id_now_inline_matches_now_output():
+    """Inline `keep put --id now ...` should use the same write+read path as `keep now`."""
+    data = {
+        "item": {"id": "now", "summary": "Working on CLI cleanup", "tags": {"topic": "cli"}},
+        "viewing_offset": 0,
+        "similar": [],
+        "meta": {},
+        "edges": {},
+        "parts": [],
+        "prev": [],
+        "next": [],
+    }
+    with (
+        patch("keep.thin_cli._get_port", return_value=5337),
+        patch("keep.thin_cli._post") as mock_post,
+        patch("keep.thin_cli._get", return_value=data) as mock_get,
+        patch("keep.thin_cli._render_context", return_value="rendered now") as mock_render,
+        patch("keep.thin_cli.typer.echo") as mock_echo,
+    ):
+        put(source="Working on CLI cleanup", id="now", tags=["topic=cli"])
+
+    mock_post.assert_called_once_with(
+        5337,
+        "/v1/notes",
+        {"content": "Working on CLI cleanup", "id": "now", "tags": {"topic": "cli"}},
+    )
+    mock_get.assert_called_once_with(5337, "/v1/notes/now/context")
+    mock_render.assert_called_once_with(data)
+    mock_echo.assert_called_once_with("rendered now")
+
+
+def test_put_id_now_file_keeps_put_semantics(tmp_path):
+    """`put --id now` only collapses for text/stdin input, not file mode."""
+    note = tmp_path / "note.md"
+    note.write_text("hello")
+    with (
+        patch("keep.thin_cli._get_port", return_value=5337),
+        patch("keep.thin_cli._post", return_value={"id": "now"}) as mock_post,
+        patch("keep.thin_cli._get") as mock_get,
+        patch("keep.thin_cli.typer.echo") as mock_echo,
+    ):
+        put(source=str(note), id="now")
+
+    mock_post.assert_called_once()
+    body = mock_post.call_args.args[2]
+    assert body["id"] == "now"
+    assert body["content"] is None
+    assert body["uri"] == f"file://{note.resolve()}"
+    mock_get.assert_not_called()
+    mock_echo.assert_called_once_with("now stored.")
 
 
 # ---------------------------------------------------------------------------

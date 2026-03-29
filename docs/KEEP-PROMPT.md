@@ -31,8 +31,8 @@ Prompt docs may contain placeholders that are expanded at render time:
 
 | Placeholder | Expands to |
 |-------------|------------|
-| `{get}` | Full context for `--id` target (default: `now`) — YAML frontmatter with similar items, meta sections, version history |
-| `{find}` | Search results for the text argument — summary lines matching the query with optional tag/time filters |
+| `{get}` | Full context for `--id` target (default: `now`) from the prompt's state-doc bindings |
+| `{find}` | Search results for the text argument from the prompt's state-doc bindings |
 | `{find:deep}` | Deep search — follows edges from results to discover related items |
 | `{find:deep:N}` | Deep search with explicit token budget N |
 | `{text}` | Raw query text passed as the text argument |
@@ -45,6 +45,8 @@ When no text argument is given, `{find}` and `{text}` expand to empty. When no `
 ## State-doc backed prompts
 
 A prompt doc can reference a state doc via a `state` tag. When present, the state doc flow runs and its **bindings** become `{binding_name}` placeholders in the template. This allows custom retrieval pipelines to be composed into prompts.
+
+Dynamic prompts are state-doc backed: a prompt that uses `{get}` or `{find}` but has no `state` tag is treated as invalid instead of falling back to a built-in Python retrieval path.
 
 ### Example
 

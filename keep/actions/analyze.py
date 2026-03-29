@@ -30,17 +30,23 @@ class Analyze:
     def run(self, params: dict[str, Any], context) -> dict[str, Any]:
         """Analyze content, classify parts, and build storage mutations."""
         item_id, _item, content = resolve_item_content(params, context)
+        item_tags = dict(getattr(_item, "tags", None) or {})
 
         if check_content_hash(params, context, item_id, "_analyzed_hash"):
             return {"skipped": True, "reason": "content unchanged"}
         guide_context = str(params.get("guide_context") or "")
+        prompt_text = params.get("prompt_override")
+        if prompt_text is None and hasattr(context, "resolve_prompt"):
+            prompt_text = context.resolve_prompt("analyze", item_tags)
+        if prompt_text is None:
+            raise ValueError("missing prompt doc for analyze")
 
         raw_parts: list[dict[str, Any]]
         analyzer = context.resolve_provider("analyzer")
         analyze_fn = getattr(analyzer, "analyze", None)
         if callable(analyze_fn):
             chunks = [AnalysisChunk(content=str(content), tags={}, index=0)]
-            result = analyze_fn(chunks, guide_context)
+            result = analyze_fn(chunks, guide_context, prompt_override=prompt_text)
             raw_parts = result if isinstance(result, list) else []
         else:
             summarizer = context.resolve_provider("summarization")
@@ -50,6 +56,7 @@ class Analyze:
                 None,
                 analyzer_provider=summarizer,
                 classifier_provider=summarizer,
+                prompt_override=prompt_text,
             )
             raw_parts = proc.parts or []
 

@@ -168,6 +168,53 @@ class TestExpandPromptFindBudget:
         assert "After" in output
         assert "{find}" not in output
 
+    def test_find_uses_flow_binding_alias(self):
+        """{find} expands from prompt flow bindings when no direct search results exist."""
+        from keep.cli import expand_prompt
+
+        result = PromptResult(
+            context=None,
+            search_results=None,
+            prompt="Context:\n{find}\nEnd.",
+            flow_bindings={
+                "find_results": {
+                    "results": [
+                        {"id": "alias-a", "summary": "Aliased result", "tags": {}, "score": 0.9},
+                    ],
+                },
+            },
+        )
+
+        output = expand_prompt(result)
+        assert "alias-a" in output
+        assert "{find}" not in output
+
+    def test_get_uses_flow_binding_alias(self):
+        """{get} expands from ``item`` and related flow bindings."""
+        from keep.cli import expand_prompt
+
+        result = PromptResult(
+            context=None,
+            search_results=None,
+            prompt="Review:\n{get}",
+            flow_bindings={
+                "item": {
+                    "id": "now",
+                    "summary": "Current focus",
+                    "tags": {"topic": "cache"},
+                },
+                "similar": {
+                    "results": [
+                        {"id": "doc-1", "summary": "Related note", "tags": {}, "score": 0.8},
+                    ],
+                },
+            },
+        )
+
+        output = expand_prompt(result)
+        assert "Current focus" in output
+        assert "doc-1" in output
+
 
 class TestDeepPrimaryCap:
     """Tests for deep_primary_cap — suppressing primaries in favor of deep items."""

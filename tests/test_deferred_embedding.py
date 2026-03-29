@@ -127,8 +127,8 @@ class TestDeferredEmbedding:
         # Injected stores → _is_local=False (cloud path)
         assert not kp._is_local
 
-        # Skip system doc migration — these tests focus on user doc embedding
-        kp._needs_sysdoc_migration = False
+        # Bootstrap store-backed state docs once, then clear any setup work.
+        kp._ensure_sysdocs()
 
         # Wire up the mock embedding provider and reset call counters
         # (Keeper init may trigger reconciliation that calls embed)
@@ -344,7 +344,7 @@ class TestEmbeddingDedup:
             vector_store=vector_store,
             pending_queue=queue,
         )
-        kp._needs_sysdoc_migration = False
+        kp._ensure_sysdocs()
         embed = mock_providers["embedding"]
         kp._embedding_provider = embed
         kp._embedding_provider_loaded = True
@@ -424,7 +424,7 @@ class TestEmbeddingDedup:
             vector_store=vector_store,
             pending_queue=queue,
         )
-        kp._needs_sysdoc_migration = False
+        kp._ensure_sysdocs()
         embed = mock_providers["embedding"]
         kp._embedding_provider = embed
         kp._embedding_provider_loaded = True

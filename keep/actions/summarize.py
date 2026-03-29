@@ -59,10 +59,9 @@ class Summarize:
                 item_tags = _enrich_content_type(item_id, item_tags)
             resolve_prompt = getattr(context, "resolve_prompt", None)
             if resolve_prompt is not None:
-                try:
-                    prompt_text = resolve_prompt("summarize", item_tags)
-                except Exception:
-                    pass
+                prompt_text = resolve_prompt("summarize", item_tags)
+        if prompt_text is None:
+            raise ValueError("missing prompt doc for summarize")
 
         try:
             summary = summarize(

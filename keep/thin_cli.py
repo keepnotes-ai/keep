@@ -156,6 +156,43 @@ def _delete(port: int, path: str) -> dict:
     return result
 
 
+def _emit_context(data: dict, json_output: bool) -> None:
+    if _is_json(json_output):
+        typer.echo(json.dumps(data, indent=2))
+    else:
+        typer.echo(_render_context(data))
+
+
+def _show_now(port: int, json_output: bool) -> None:
+    data = _get(port, f"/v1/notes/{_q('now')}/context")
+    _emit_context(data, json_output)
+
+
+def _should_use_now_put_path(
+    source: str | None,
+    *,
+    id: str | None,
+    summary: str | None,
+    watch: bool,
+    unwatch: bool,
+    interval: str | None,
+    force: bool,
+) -> bool:
+    """True when `put` should behave exactly like `now`.
+
+    Only plain text/stdin writes should collapse into the now command. File,
+    URI, directory, watch, and force/update semantics remain normal put mode.
+    """
+    if id != "now" or summary is not None or watch or unwatch or interval or force:
+        return False
+    if source == "-" or source is None:
+        return True
+    if source.startswith(("file://", "http://", "https://")):
+        return False
+    path = Path(source)
+    return not path.exists()
+
+
 def _daemon_request(method: str, port: int, path: str, body: dict | None = None) -> tuple[int, dict]:
     """Make one daemon request, retrying via fresh discovery on connection loss.
 
@@ -472,11 +509,7 @@ def default(
     if ctx.invoked_subcommand is None:
         # No subcommand → show "now"
         port = _get_port()
-        data = _get(port, f"/v1/notes/{_q('now')}/context")
-        if _is_json(json_output):
-            typer.echo(json.dumps(data, indent=2))
-        else:
-            typer.echo(_render_context(data))
+        _show_now(port, json_output)
 
 
 @app.command()
@@ -546,6 +579,21 @@ def _get_one_item(
     tag: Optional[list[str]], json_output: bool,
 ) -> Optional[str]:
     """Fetch and render a single item. Returns formatted string or None on error."""
+    if (
+        item_id == "now"
+        and version is None
+        and limit == 10
+        and not similar
+        and not meta
+        and not parts
+        and not history
+        and not tag
+    ):
+        data = _get(port, f"/v1/notes/{_q('now')}/context")
+        if _is_json(json_output):
+            return json.dumps(data, indent=2)
+        return _render_context(data)
+
     # --similar: flat list via search endpoint
     if similar:
         data = _post(port, "/v1/search", {
@@ -842,6 +890,16 @@ def put(
         elif existing != v:
             parsed_tags[key] = [existing, v]
 
+    use_now_put_path = _should_use_now_put_path(
+        source,
+        id=id,
+        summary=summary,
+        watch=watch,
+        unwatch=unwatch,
+        interval=interval,
+        force=force,
+    )
+
     # Stdin mode
     if source == "-" or (source is None and _has_stdin_data()):
         try:
@@ -861,6 +919,10 @@ def put(
             content = body_text
         else:
             merged = parsed_tags
+        if use_now_put_path:
+            _post(port, "/v1/notes", {"content": content, "id": "now", "tags": merged or None})
+            _show_now(port, json_output)
+            return
         body: dict = {"content": content, "id": id, "tags": merged or None, "force": force or None}
         data = _post(port, "/v1/notes", body)
     elif source is None:
@@ -899,6 +961,11 @@ def put(
             typer.echo("Error: --summary cannot be used with inline text (original content would be lost)", err=True)
             typer.echo("Hint: write to a file first, then: keep put file:///path/to/file --summary '...'", err=True)
             raise typer.Exit(1)
+
+        if use_now_put_path and content is not None and uri is None:
+            _post(port, "/v1/notes", {"content": content, "id": "now", "tags": parsed_tags or None})
+            _show_now(port, json_output)
+            return
 
         body = {
             "content": content,
@@ -1063,11 +1130,7 @@ def now(
                 content = content[:cfg.max_inline_length]
         parsed_tags, _ = _parse_tag_args(tags)
         _post(port, "/v1/notes", {"content": content, "id": "now", "tags": parsed_tags or None})
-    data = _get(port, f"/v1/notes/{_q('now')}/context")
-    if _is_json(json_output):
-        typer.echo(json.dumps(data, indent=2))
-    else:
-        typer.echo(_render_context(data))
+    _show_now(port, json_output)
 
 
 @app.command("list")

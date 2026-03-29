@@ -547,10 +547,7 @@ class LocalFlowEnvironment:
         self, prefix: str, doc_tags: dict[str, Any], *, item_id: str | None = None,
     ) -> str | None:
         """Resolve a prompt doc (e.g. .prompt/summarize/default) matching tags."""
-        try:
-            return self._keeper._resolve_prompt_doc(prefix, doc_tags, item_id=item_id)
-        except Exception:
-            return None
+        return self._keeper._resolve_prompt_doc(prefix, doc_tags, item_id=item_id)
 
     def get_default_summarization_provider(self) -> Any:
         return self._keeper._get_summarization_provider()

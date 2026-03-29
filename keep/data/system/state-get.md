@@ -16,6 +16,22 @@ tags:
 # agent turns instead of item similarity for CLI get).
 match: all
 rules:
+  - id: item
+    # The viewed note itself, for prompt rendering compatibility.
+    do: get
+    with:
+      id: "{params.item_id}"
+  - id: find_results
+    # Optional query-driven retrieval for prompt docs using {find}.
+    when: "has(params.query) && params.query != ''"
+    do: find
+    with:
+      query: "{params.query}"
+      tags: "{params.tags}"
+      since: "{params.since}"
+      until: "{params.until}"
+      scope: "{params.scope}"
+      limit: "{params.limit}"
   - id: similar
     # Semantically related items — skipped when a fragment provides query-based search
     when: "!has(params.prompt) || params.prompt == ''"

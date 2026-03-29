@@ -520,13 +520,8 @@ class BackgroundProcessingMixin:
                     context = self._gather_context(item.id, user_tags)
                     if context:
                         meta["context"] = context
-                # Resolve prompt from .prompt/summarize/* docs
-                try:
-                    prompt = self._resolve_prompt_doc("summarize", doc.tags)
-                    if prompt:
-                        meta["system_prompt_override"] = prompt
-                except Exception:
-                    pass  # Remote falls back to its default
+                prompt = self._resolve_prompt_doc("summarize", doc.tags, required=True)
+                meta["system_prompt_override"] = prompt
 
         elif item.task_type == "analyze":
             doc = self._document_store.get(item.collection, item.id)
@@ -548,13 +543,8 @@ class BackgroundProcessingMixin:
                     meta["tag_specs"] = specs
             except Exception as e:
                 logger.warning("Could not load tag specs for delegation: %s", e)
-            # Resolve prompt from .prompt/analyze/* docs
-            try:
-                prompt = self._resolve_prompt_doc("analyze", doc.tags)
-                if prompt:
-                    meta["prompt_override"] = prompt
-            except Exception:
-                pass  # Remote falls back to its default
+            prompt = self._resolve_prompt_doc("analyze", doc.tags, required=True)
+            meta["prompt_override"] = prompt
             content = ""  # content is in chunks, not top-level
 
         try:

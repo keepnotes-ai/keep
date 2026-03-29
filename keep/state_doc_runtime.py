@@ -488,11 +488,6 @@ def make_state_doc_loader(
     Loads ``.state/{name}`` notes from the store, parses their summary
     field as YAML state doc body.  State docs are seeded into the store
     by system doc migration from bundled ``.md`` files.
-
-    Falls back to compiled builtins (from ``builtin_state_docs.py``)
-    when the store has no entry — this covers test environments that
-    skip full migration, and the brief window before first migration
-    on a fresh store.
     """
     from .state_doc import load_state_doc as _load_state_doc
 

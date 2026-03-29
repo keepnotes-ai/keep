@@ -246,11 +246,9 @@ def _make_mock_doc(uri, content, content_type, tags=None, metadata=None):
     return mock_doc
 
 
-def _keeper_skip_migration(kp):
-    """Skip system docs migration for test Keepers."""
-    from keep.system_docs import _bundled_docs_hash
-    kp._config.system_docs_hash = _bundled_docs_hash()
-    kp._needs_sysdoc_migration = False
+def _keeper_bootstrap_sysdocs(kp):
+    """Ensure store-backed system docs exist for flow-backed APIs."""
+    kp._ensure_sysdocs()
 
 
 def _claimed_flow_items(kp, limit=20):
@@ -289,7 +287,7 @@ class TestAfterWriteDispatch:
         mock_providers["document"].fetch = lambda uri: mock_doc
 
         kp = Keeper(store_path=tmp_path)
-        _keeper_skip_migration(kp)
+        _keeper_bootstrap_sysdocs(kp)
         kp._config.media = ProviderConfig("ollama", {"model": "test"})
 
         kp.put(uri="file:///test.jpg")
@@ -313,7 +311,7 @@ class TestAfterWriteDispatch:
 
         with patch("keep.config._detect_ollama", return_value=None):
             kp = Keeper(store_path=tmp_path)
-        _keeper_skip_migration(kp)
+        _keeper_bootstrap_sysdocs(kp)
         assert kp._config.media is None
 
         kp.put(uri="file:///test.jpg")
@@ -336,7 +334,7 @@ class TestAfterWriteDispatch:
         mock_providers["document"].fetch = lambda uri: mock_doc
 
         kp = Keeper(store_path=tmp_path)
-        _keeper_skip_migration(kp)
+        _keeper_bootstrap_sysdocs(kp)
         kp._config.media = ProviderConfig("ollama", {"model": "test"})
 
         kp.put(uri="file:///test.mp3")
@@ -356,7 +354,7 @@ class TestAfterWriteDispatch:
         mock_providers["document"].fetch = lambda uri: mock_doc
 
         kp = Keeper(store_path=tmp_path)
-        _keeper_skip_migration(kp)
+        _keeper_bootstrap_sysdocs(kp)
         kp._config.media = ProviderConfig("ollama", {"model": "test"})
 
         kp.put(uri="file:///test.md")
@@ -372,7 +370,7 @@ class TestAfterWriteDispatch:
         from keep.api import Keeper
 
         kp = Keeper(store_path=tmp_path)
-        _keeper_skip_migration(kp)
+        _keeper_bootstrap_sysdocs(kp)
 
         kp.put("A note about architecture. " * 30, id="note1")  # >500 chars
 
@@ -388,7 +386,7 @@ class TestAfterWriteDispatch:
         from keep.api import Keeper
 
         kp = Keeper(store_path=tmp_path)
-        _keeper_skip_migration(kp)
+        _keeper_bootstrap_sysdocs(kp)
 
         kp.put("System data", id=".sys/test")
 
@@ -411,7 +409,7 @@ class TestDescribeTaskWorkflow:
         from keep.task_workflows import TaskRequest, run_local_task
 
         kp = Keeper(store_path=tmp_path)
-        _keeper_skip_migration(kp)
+        _keeper_bootstrap_sysdocs(kp)
 
         # Create item with initial summary
         kp.put("Dimensions: 100x100", id="img1")
@@ -451,7 +449,7 @@ class TestDescribeTaskWorkflow:
 
         with patch("keep.config._detect_ollama", return_value=None):
             kp = Keeper(store_path=tmp_path)
-        _keeper_skip_migration(kp)
+        _keeper_bootstrap_sysdocs(kp)
         kp.put("Dimensions: 100x100", id="img1")
 
         req = TaskRequest(
@@ -471,7 +469,7 @@ class TestDescribeTaskWorkflow:
         from keep.task_workflows import TaskRequest, run_local_task
 
         kp = Keeper(store_path=tmp_path)
-        _keeper_skip_migration(kp)
+        _keeper_bootstrap_sysdocs(kp)
         kp.put("Original summary", id="img1")
 
         mock_describer = MagicMock()

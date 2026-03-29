@@ -48,7 +48,9 @@ from .types import (
     EdgeRef,
     Item,
     ItemContext,
+    MetaRef,
     PartRef,
+    SimilarRef,
     VersionRef,
     local_date,
     tag_values,
@@ -898,6 +900,137 @@ def _render_binding(name: str, binding: dict, kp=None, token_budget: int = 4000)
     return ""
 
 
+def _render_context_from_flow_bindings(bindings: dict[str, dict], kp=None) -> str:
+    """Render a ``{get}`` compatibility view from prompt flow bindings."""
+    if not isinstance(bindings, dict):
+        return ""
+
+    item_binding = bindings.get("item")
+    if not isinstance(item_binding, dict):
+        return ""
+    if "id" not in item_binding or "summary" not in item_binding:
+        return ""
+
+    from ._context_resolution import ItemContext
+    from .types import Item
+
+    item = Item(
+        id=str(item_binding["id"]),
+        summary=str(item_binding.get("summary", "")),
+        tags=dict(item_binding.get("tags") or {}),
+    )
+
+    def _collect_similar() -> list[SimilarRef]:
+        binding = bindings.get("similar")
+        if not isinstance(binding, dict):
+            return []
+        results = binding.get("results")
+        if not isinstance(results, list):
+            return []
+        similar: list[SimilarRef] = []
+        for result in results:
+            if not isinstance(result, dict):
+                continue
+            tags = dict(result.get("tags") or {})
+            similar.append(
+                SimilarRef(
+                    id=str(result.get("id", "")),
+                    offset=0,
+                    score=result.get("score"),
+                    date=local_date(str(tags.get("_created") or tags.get("_updated") or "")),
+                    summary=str(result.get("summary", "")),
+                )
+            )
+        return similar
+
+    def _collect_parts() -> list[PartRef]:
+        binding = bindings.get("parts")
+        if not isinstance(binding, dict):
+            return []
+        results = binding.get("results")
+        if not isinstance(results, list):
+            return []
+        parts: list[PartRef] = []
+        for idx, result in enumerate(results, start=1):
+            if not isinstance(result, dict):
+                continue
+            tags = dict(result.get("tags") or {})
+            raw_part_num = tags.get("_part_num", idx)
+            try:
+                part_num = int(raw_part_num)
+            except (TypeError, ValueError):
+                part_num = idx
+            parts.append(
+                PartRef(
+                    part_num=part_num,
+                    summary=str(result.get("summary", "")),
+                    tags=tags,
+                )
+            )
+        return parts
+
+    meta: dict[str, list[MetaRef]] = {}
+    meta_binding = bindings.get("meta")
+    if isinstance(meta_binding, dict):
+        sections = meta_binding.get("sections")
+        if isinstance(sections, dict):
+            for key, results in sections.items():
+                if isinstance(results, list):
+                    meta[key] = [
+                        MetaRef(id=str(result.get("id", "")), summary=str(result.get("summary", "")))
+                        for result in results
+                        if isinstance(result, dict)
+                    ]
+
+    edges: dict[str, list[EdgeRef]] = {}
+    edge_binding = bindings.get("edges")
+    if isinstance(edge_binding, dict):
+        groups = edge_binding.get("edges")
+        if isinstance(groups, dict):
+            for key, results in groups.items():
+                if isinstance(results, list):
+                    rendered: list[EdgeRef] = []
+                    for result in results:
+                        if not isinstance(result, dict):
+                            continue
+                        tags = dict(result.get("tags") or {})
+                        rendered.append(
+                            EdgeRef(
+                                source_id=str(result.get("id", "")),
+                                date=local_date(str(tags.get("_created") or tags.get("_updated") or "")),
+                                summary=str(result.get("summary", "")),
+                            )
+                        )
+                    edges[key] = rendered
+
+    ctx = ItemContext(
+        item=item,
+        viewing_offset=0,
+        similar=_collect_similar(),
+        meta=meta,
+        edges=edges,
+        parts=_collect_parts(),
+        prev=[],
+        next=[],
+    )
+    return render_context(ctx)
+
+
+def _find_results_from_prompt_result(result: "PromptResult"):
+    """Return prompt search results from either direct retrieval or flow bindings."""
+    if result.search_results:
+        return result.search_results
+    bindings = result.flow_bindings or {}
+    for name in ("find_results", "search"):
+        binding = bindings.get(name)
+        if not isinstance(binding, dict):
+            continue
+        results = binding.get("results")
+        if isinstance(results, list) and results:
+            return _dicts_to_items(results, summary_limit=500)
+    return None
+
+
 def expand_prompt(result: "PromptResult", kp=None) -> str:
     """Expand placeholders in a prompt template.
 
@@ -912,6 +1045,8 @@ def expand_prompt(result: "PromptResult", kp=None) -> str:
     # Expand {get} with rendered context
     if result.context:
         get_rendered = render_context(result.context)
+    elif result.flow_bindings:
+        get_rendered = _render_context_from_flow_bindings(result.flow_bindings, kp=kp)
     else:
         get_rendered = ""
     output = output.replace("{get}", get_rendered)
@@ -921,7 +1056,8 @@ def expand_prompt(result: "PromptResult", kp=None) -> str:
     # When :deep is present, primary cap is applied automatically.
     _find_re = re.compile(r'\{find(?::(deep))?(?::(\d+))?\}')
     def _expand_find(m):
-        if not result.search_results:
+        search_results = _find_results_from_prompt_result(result)
+        if not search_results:
             return ""
         is_deep = m.group(1) is not None
         budget_str = m.group(2)
@@ -934,7 +1070,7 @@ def expand_prompt(result: "PromptResult", kp=None) -> str:
             budget = 4000
         cap = 3 if is_deep else None
         return render_find_context(
-            result.search_results, keeper=kp,
+            search_results, keeper=kp,
             token_budget=budget,
             deep_primary_cap=cap,
         )

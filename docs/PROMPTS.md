@@ -17,7 +17,9 @@ Each summarize/analyze prompt doc has two parts:
 1. **Match rules** — tag queries that determine when this prompt applies (same DSL as `.meta/*` docs)
 2. **`## Prompt` section** — the actual system prompt text sent to the LLM
 
-When a document is summarized or analyzed, keep scans the matching `.prompt/{type}/` docs, finds those whose match rules match the document's tags, and selects the most specific match (most rules matched). The `## Prompt` section from the winner replaces the default system prompt.
+When a document is summarized or analyzed, keep scans the matching `.prompt/{type}/` docs, finds those whose match rules match the document's tags, and selects the most specific match (most rules matched). The `## Prompt` section from the winner is the system prompt sent to the model.
+
+The prompt docs in the store are authoritative at runtime. Bundled prompt files are only the seed content used during system-doc migration. If the matching store prompt is missing or lacks a `## Prompt` section, the operation fails instead of silently falling back to Python defaults.
 
 ### Bundled
 
@@ -76,7 +78,7 @@ keep prompt --list                       # List available agent prompts
 
 ### State-doc backed prompts
 
-Agent prompts can reference a state doc via a `state` tag. The state doc flow runs and its bindings become `{binding_name}` placeholders in the template. This separates retrieval logic (state doc) from presentation (prompt template):
+Dynamic agent prompts must reference a state doc via a `state` tag. The state doc flow runs and its bindings become `{binding_name}` placeholders in the template. This separates retrieval logic (state doc) from presentation (prompt template). A prompt that uses `{get}` or `{find}` without a `state` tag is invalid and fails at render time.
 
 ```bash
 keep put "## Prompt

@@ -476,8 +476,8 @@ class TestMakeStateDocLoader:
         loader = make_state_doc_loader(FakeEnv())
         assert loader("nonexistent") is None
 
-    def test_falls_back_to_builtins(self):
-        """When store has no .state/* note, loader falls back to BUILTIN_STATE_DOCS."""
+    def test_missing_store_doc_returns_none(self):
+        """Runtime loader only uses store-backed .state/* docs."""
         from keep.state_doc_runtime import make_state_doc_loader
 
         class FakeEnv:
@@ -485,13 +485,10 @@ class TestMakeStateDocLoader:
                 return None
 
         loader = make_state_doc_loader(FakeEnv())
-        # find-deep is a builtin state doc
-        doc = loader("find-deep")
-        assert doc is not None
-        assert doc.name == "find-deep"
+        assert loader("find-deep") is None
 
-    def test_store_overrides_builtin(self):
-        """Store .state/* note takes precedence over builtin."""
+    def test_store_doc_loaded_without_builtin_fallback(self):
+        """Store .state/* note is the only runtime source of truth."""
         from keep.state_doc_runtime import make_state_doc_loader
 
         class FakeNote:
@@ -506,12 +503,11 @@ class TestMakeStateDocLoader:
                 return None
 
         loader = make_state_doc_loader(FakeEnv())
-        # Run a flow to verify we got the store version (error) not builtin (done)
         result = run_flow("find-deep", {}, load_state_doc=loader, run_action=_make_runner())
         assert result.status == "error"
 
-    def test_builtin_used_when_store_summary_empty(self):
-        """When store note exists but has empty summary, fall back to builtin."""
+    def test_empty_store_summary_returns_none(self):
+        """Empty store docs do not silently fall back to bundled YAML."""
         from keep.state_doc_runtime import make_state_doc_loader
 
         class FakeNote:
@@ -524,11 +520,10 @@ class TestMakeStateDocLoader:
                 return FakeNote()
 
         loader = make_state_doc_loader(FakeEnv())
-        doc = loader("find-deep")
-        assert doc is not None
+        assert loader("find-deep") is None
 
     def test_returns_none_for_empty_summary_no_builtin(self):
-        """When store note has empty summary and no builtin exists, returns None."""
+        """When store note has empty summary, returns None."""
         from keep.state_doc_runtime import make_state_doc_loader
 
         class FakeNote:
@@ -542,6 +537,22 @@ class TestMakeStateDocLoader:
 
         loader = make_state_doc_loader(FakeEnv())
         assert loader("custom-nonexistent") is None
+
+    def test_invalid_store_doc_returns_none(self):
+        """Broken store docs do not fall back to package defaults."""
+        from keep.state_doc_runtime import make_state_doc_loader
+
+        class FakeNote:
+            id = ".state/find-deep"
+            summary = "not: [valid"
+            tags = {}
+
+        class FakeEnv:
+            def get(self, id):
+                return FakeNote()
+
+        loader = make_state_doc_loader(FakeEnv())
+        assert loader("find-deep") is None
 
     def test_handles_dotstate_prefix(self):
         from keep.state_doc_runtime import make_state_doc_loader

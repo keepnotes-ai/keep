@@ -256,6 +256,7 @@ rules:
     def test_no_fragments_returns_base(self, mock_providers, tmp_path):
         """Without fragments, returns the base doc unchanged."""
         kp = Keeper(store_path=tmp_path)
+        kp._ensure_sysdocs()
         doc = kp._load_state_doc("after-write")
         # Should have the builtin rules
         rule_ids = [r.id for r in doc.rules]

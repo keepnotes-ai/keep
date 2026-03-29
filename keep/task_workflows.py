@@ -197,10 +197,7 @@ class _KeeperActionContext:
         return method()
 
     def resolve_prompt(self, prefix: str, doc_tags: dict[str, Any] | None = None) -> str | None:
-        try:
-            return self._keeper._resolve_prompt_doc(prefix, doc_tags or {})
-        except Exception:
-            return None
+        return self._keeper._resolve_prompt_doc(prefix, doc_tags or {})
 
     def traverse(self, source_ids: list[str], *, limit: int = 5) -> dict[str, list[Any]]:
         traverse = getattr(self._keeper, "traverse_related", None)

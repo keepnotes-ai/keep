@@ -408,12 +408,10 @@ def load_state_doc(
             child notes matching the prefix, each with ``.id``, ``.summary``,
             and ``.tags``.
     """
-    from .builtin_state_docs import BUILTIN_STATE_DOCS
-    from .state_doc_runtime import _get_compiled_builtin
-
     base: Optional[StateDoc] = None
 
-    # Try store first (allows user overrides)
+    # Load the authoritative store version. Bundled state docs are migrated
+    # into the store up front; runtime does not fall back to package copies.
     try:
         note = get_note(f".state/{name}")
         if note is not None:
@@ -426,18 +424,11 @@ def load_state_doc(
     except Exception:
         pass
 
-    # Fallback: compiled builtin
-    if base is None:
-        builtin_body = BUILTIN_STATE_DOCS.get(name)
-        if builtin_body:
-            base = _get_compiled_builtin(name, builtin_body)
-
     if base is None:
         return None
 
-    # Discover and merge child fragments (store + builtin fallbacks)
+    # Discover and merge child fragments from the store.
     fragments: list[StateDocFragment] = []
-    store_frag_names: set[str] = set()
 
     try:
         prefix = f".state/{name}/"
@@ -454,24 +445,12 @@ def load_state_doc(
                 frag_name = getattr(child, "id", "").removeprefix(prefix)
                 try:
                     fragments.append(parse_fragment(frag_name, body))
-                    store_frag_names.add(frag_name)
                 except (ValueError, RuntimeError) as exc:
                     logger.warning("Failed to parse fragment %s: %s",
                                    getattr(child, "id", ""), exc)
                     continue
     except Exception as exc:
         logger.debug("Fragment discovery for %s skipped: %s", name, exc)
-
-    # Builtin fragment fallbacks (for test envs / pre-migration)
-    from .builtin_state_docs import BUILTIN_STATE_FRAGMENTS
-    builtin_frags = BUILTIN_STATE_FRAGMENTS.get(name, {})
-    for frag_name in sorted(builtin_frags):
-        if frag_name not in store_frag_names:
-            try:
-                fragments.append(parse_fragment(frag_name, builtin_frags[frag_name]))
-            except (ValueError, RuntimeError) as exc:
-                logger.warning("Failed to parse builtin fragment %s/%s: %s",
-                               name, frag_name, exc)
 
     if fragments:
         # Sort by name for stable ordering before merging

@@ -358,11 +358,10 @@ class ContextResolutionMixin:
         """Render an agent prompt doc with injected context.
 
         Reads ``.prompt/agent/{name}`` from the store, extracts the
-        ``## Prompt`` section, and assembles context.  The prompt text
-        may contain ``{get}`` and ``{find}`` placeholders — the caller
-        expands them with the rendered context and search results.
-        Use ``{find:deep}`` to force deep tag-follow search regardless
-        of the caller's ``deep`` parameter.
+        ``## Prompt`` section, and optionally runs a state doc named in
+        the prompt's ``state`` tag to assemble bindings. Dynamic prompts
+        must use a state doc; runtime does not fall back to bespoke Python
+        retrieval paths.
 
         Args:
             name: Prompt name (e.g. "reflect")
@@ -377,11 +376,12 @@ class ContextResolutionMixin:
             token_budget: Explicit token budget (None = use template default)
 
         Returns:
-            PromptResult with context, search_results, and prompt template,
+            PromptResult with prompt template and optional flow bindings,
             or None if the prompt doc doesn't exist.
         """
         from .analyzers import extract_prompt_section
 
+        self._ensure_sysdocs()
         doc_id = f".prompt/agent/{name}"
         doc = self.get(doc_id)
         if doc is None:
@@ -392,49 +392,22 @@ class ContextResolutionMixin:
             # Fall back to full content if no ## Prompt section
             prompt_body = doc.summary
 
-        # Check for state-doc flow reference in prompt tags.
-        # When present, the flow's bindings replace the default get/find.
         state_doc = (doc.tags or {}).get("state")
         if state_doc:
             return self._render_prompt_via_flow(
                 prompt_body, state_doc, text=text, id=id,
                 since=since, until=until, tags=tags, scope=scope,
-                token_budget=token_budget,
+                token_budget=token_budget, limit=limit, deep=deep,
             )
 
-        # Default path: hardcoded get + find
-        context_id = id or "now"
-        if context_id == "now":
-            self.get_now()  # ensure now exists (auto-creates from bundled doc)
-        ctx = self.get_context(context_id)
-
-        # {find:deep} or {find:deep:N} in the template forces deep search
-        if "{find:deep" in prompt_body:
-            deep = True
-
-        # Ensure retrieval limit is high enough to fill the token budget.
-        # Deep items are rendered in a separate pass from leftover budget,
-        # so the primary fetch size doesn't need to shrink for deep mode.
-        tokens_per_item = 50
-        effective_budget = token_budget or 4000
-        fetch_limit = min(200, max(limit, effective_budget // tokens_per_item))
-
-        # Search: find similar items with available filters
-        search_results = None
-        if text:
-            search_results = self.find(
-                query=text, tags=tags, since=since, until=until, limit=fetch_limit,
-                deep=deep, scope=scope,
-            )
-        elif tags or since or until:
-            search_results = self.find(
-                similar_to=context_id, tags=tags, since=since, until=until,
-                limit=fetch_limit, deep=deep, scope=scope,
+        if "{get}" in prompt_body or "{find" in prompt_body:
+            raise ValueError(
+                f"prompt .prompt/agent/{name} uses dynamic placeholders but has no state tag"
             )
 
         return PromptResult(
-            context=ctx,
-            search_results=search_results,
+            context=None,
+            search_results=None,
             prompt=prompt_body,
             text=text,
             since=since,
@@ -454,14 +427,18 @@ class ContextResolutionMixin:
         tags: Optional[TagMap] = None,
         scope: Optional[str] = None,
         token_budget: Optional[int] = None,
+        limit: int = 10,
+        deep: bool = False,
     ) -> PromptResult:
         """Run a state-doc flow and return a PromptResult with bindings."""
         params: dict[str, Any] = {}
+        context_id = id or "now"
+        if context_id == "now":
+            self.get_now()
+        params["item_id"] = context_id
         if text:
             params["query"] = text
             params["prompt"] = text
-        if id:
-            params["item_id"] = id
         if since:
             params["since"] = since
         if until:
@@ -470,8 +447,22 @@ class ContextResolutionMixin:
             params["tags"] = tags
         if scope:
             params["scope"] = scope
+        if deep:
+            params["deep"] = True
+        if "{find:deep" in prompt_body and "deep" not in params:
+            params["deep"] = True
+        params["limit"] = max(int(limit), 1)
 
-        flow_result = self._run_read_flow(state_doc, params, budget=10)
+        flow_result = self.run_flow_command(
+            state_doc,
+            params=params,
+            budget=10,
+            writable=False,
+        )
+        if flow_result.status != "done":
+            raise ValueError(
+                f"prompt state flow {state_doc!r} failed: {flow_result.status}: {flow_result.data}"
+            )
 
         return PromptResult(
             context=None,
@@ -491,6 +482,7 @@ class ContextResolutionMixin:
             List of PromptInfo with name and summary for each
             ``.prompt/agent/*`` doc in the store.
         """
+        self._ensure_sysdocs()
         prefix = ".prompt/agent/"
         items = self.list_items(
             prefix=prefix, include_hidden=True, limit=100,

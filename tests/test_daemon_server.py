@@ -321,7 +321,11 @@ def test_remote_keeper_get_context_via_flow(daemon):
 
 def test_prompt_via_flow(daemon, http):
     _, kp, _ = daemon
-    kp.put(content="# Test\nA test.\n\n## Prompt\nHello {get}", id=".prompt/agent/test-render")
+    kp.put(
+        content="# Test\nA test.\n\n## Prompt\nHello {get}",
+        id=".prompt/agent/test-render",
+        tags={"state": "get"},
+    )
     r = http.post("/v1/flow", json={
         "state": "prompt", "params": {"name": "test-render"},
     })

@@ -2,6 +2,7 @@
 tags:
   category: system
   context: prompt
+  state: get
 ---
 # .prompt/agent/reflect
 

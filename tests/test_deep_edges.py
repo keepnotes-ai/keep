@@ -863,12 +863,12 @@ class TestMigrationRetry:
 
         kp._migrate_system_documents = failing_migrate
 
-        # First deep find — migration fails, but search still works
+        # First deep find — initial bootstrap fails, then is retried within
+        # the same request path and succeeds.
         kp.find("test", deep=True, limit=5)
-        assert call_count[0] == 1
+        assert call_count[0] == 2
+        assert kp._needs_sysdoc_migration is False
 
-        # Second deep find — should retry migration (not skip it)
+        # Second deep find — migration is already complete, so no extra retry.
         kp.find("test", deep=True, limit=5)
-        assert call_count[0] == 2, (
-            "Expected migration to be retried on second call"
-        )
+        assert call_count[0] == 2

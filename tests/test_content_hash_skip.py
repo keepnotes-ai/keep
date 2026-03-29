@@ -77,6 +77,7 @@ def _make_action_context(content_hash="h1", hash_tag="_analyzed_hash", tag_value
     ctx.get_document.return_value = doc
     ctx.item_id = None  # not set via context
     ctx.list_items.return_value = []  # no tag specs
+    ctx.resolve_prompt = MagicMock(return_value="Test system prompt")
     return ctx
 
 
@@ -139,7 +140,6 @@ class TestSummarizeSkip:
         provider = MagicMock()
         provider.summarize.return_value = "a summary"
         ctx.resolve_provider.return_value = provider
-        ctx.resolve_prompt = None
         result = Summarize().run({"item_id": "d1"}, ctx)
         assert "skipped" not in result
         assert result["summary"] == "a summary"
@@ -149,7 +149,6 @@ class TestSummarizeSkip:
         provider = MagicMock()
         provider.summarize.return_value = "a summary"
         ctx.resolve_provider.return_value = provider
-        ctx.resolve_prompt = None
         result = Summarize().run({"item_id": "d1"}, ctx)
         set_tags_muts = [m for m in result["mutations"] if m["op"] == "set_tags"]
         assert len(set_tags_muts) == 1
@@ -160,7 +159,6 @@ class TestSummarizeSkip:
         provider = MagicMock()
         provider.summarize.return_value = "a summary"
         ctx.resolve_provider.return_value = provider
-        ctx.resolve_prompt = None
         result = Summarize().run({"item_id": "d1", "force": True}, ctx)
         assert "skipped" not in result
 
