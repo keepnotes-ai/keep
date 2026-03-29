@@ -130,6 +130,29 @@ class TestProcessWorkBatch:
         assert stats["claimed"] == 2
         assert stats["processed"] == 2
 
+    def test_stopped_flow_is_requeued_with_cursor(self, mock_keeper, queue):
+        queue.enqueue(
+            "flow",
+            {"state": "query-resolve", "params": {"query": "test"}, "item_id": "doc1"},
+            supersede_key="flow:doc1",
+            priority=2,
+        )
+        with patch("keep.work_processor._execute_work_item", return_value={
+            "status": "stopped",
+            "cursor": "cursor-123",
+            "state": "query-resolve",
+            "details": {"data": {"reason": "shutdown"}},
+        }):
+            stats = process_work_batch(mock_keeper, queue, limit=5, worker_id="w1")
+
+        assert stats["processed"] == 1
+        resumed = queue.claim("w2", limit=5)
+        assert len(resumed) == 1
+        assert resumed[0].kind == "flow"
+        assert resumed[0].priority == 2
+        assert resumed[0].supersede_key == "flow:doc1"
+        assert resumed[0].input["cursor"] == "cursor-123"
+
 
 # ---------------------------------------------------------------------------
 # _execute_work_item

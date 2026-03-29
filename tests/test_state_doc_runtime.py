@@ -3,7 +3,7 @@
 import pytest
 
 from keep.state_doc import parse_state_doc
-from keep.state_doc_runtime import FlowResult, run_flow
+from keep.state_doc_runtime import FlowResult, decode_cursor, run_flow
 
 
 # ---------------------------------------------------------------------------
@@ -80,6 +80,34 @@ rules:
         )
         assert result.status == "error"
         assert "not found" in result.data["reason"]
+
+    def test_should_stop_returns_resumable_cursor(self):
+        loader = _make_loader({
+            "one": """\
+match: sequence
+rules:
+  - then: two
+""",
+            "two": """\
+match: sequence
+rules:
+  - return: done
+""",
+        })
+        calls = iter([False, True])
+        result = run_flow(
+            "one",
+            {},
+            load_state_doc=loader,
+            run_action=_make_runner(),
+            should_stop=lambda: next(calls),
+        )
+        assert result.status == "stopped"
+        assert result.data["reason"] == "shutdown"
+        assert result.cursor is not None
+        cursor = decode_cursor(result.cursor)
+        assert cursor is not None
+        assert cursor.state == "two"
 
 
 # ---------------------------------------------------------------------------

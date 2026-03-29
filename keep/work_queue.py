@@ -30,6 +30,7 @@ class WorkItem:
     kind: str
     input: dict[str, Any]
     attempt: int
+    priority: int = 5
     supersede_key: Optional[str] = None
     created_at: Optional[str] = None
 
@@ -235,7 +236,7 @@ class WorkQueue:
                 placeholders = ", ".join("?" for _ in work_ids)
                 claimed = self._conn.execute(
                     f"""
-                    SELECT work_id, kind, input_json, attempt, supersede_key, created_at
+                    SELECT work_id, kind, input_json, attempt, priority, supersede_key, created_at
                     FROM continue_work
                     WHERE work_id IN ({placeholders})
                     ORDER BY created_at ASC
@@ -259,6 +260,7 @@ class WorkQueue:
             kind=str(row["kind"]),
             input=input_data if isinstance(input_data, dict) else {},
             attempt=int(row["attempt"]),
+            priority=int(row["priority"]) if row["priority"] is not None else 5,
             supersede_key=(
                 str(row["supersede_key"]) if row["supersede_key"] is not None else None
             ),

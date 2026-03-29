@@ -27,7 +27,7 @@ import base64
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Optional, Protocol
+from typing import Any, Callable, Optional, Protocol
 
 from .result_stats import enrich_find_output
 from .state_doc import AsyncActionEncountered, StateDoc, evaluate_state_doc
@@ -143,6 +143,7 @@ def run_flow(
     run_action: ActionRunner,
     cursor: Optional[FlowCursor] = None,
     foreground: bool = True,
+    should_stop: Callable[[], bool] | None = None,
 ) -> FlowResult:
     """Run a state-doc flow synchronously to completion.
 
@@ -156,6 +157,8 @@ def run_flow(
         foreground: If True (default), async actions trigger delegation
             to the work queue via cursor.  If False (daemon context),
             all actions execute inline.
+        should_stop: Optional callback checked between flow ticks. When it
+            returns True, the flow stops with a resumable cursor.
 
     Returns:
         FlowResult with terminal status, accumulated bindings, and
@@ -187,6 +190,23 @@ def run_flow(
     def _record_flow() -> None:
         _perf.record("flow", initial_state, _time.monotonic() - _flow_t0)
 
+    def _stopped_flow(reason: str) -> FlowResult:
+        total_ticks = prior_ticks + ticks
+        cursor_token = encode_cursor(
+            current_state, total_ticks, accumulated_bindings, tried_queries,
+        )
+        logger.info("flow: %s -> stopped (%s, %d ticks)", current_state, reason, total_ticks)
+        _record_flow()
+        return FlowResult(
+            status="stopped",
+            bindings=accumulated_bindings,
+            data={"reason": reason},
+            ticks=total_ticks,
+            history=history,
+            cursor=cursor_token,
+            tried_queries=tried_queries,
+        )
+
     # Wrap run_action to enrich find output with statistics and track timing.
     # In foreground mode, async actions raise AsyncActionEncountered to
     # delegate the remainder of the flow to the work queue.
@@ -205,6 +225,8 @@ def run_flow(
         return output
 
     while ticks < budget:
+        if should_stop and should_stop():
+            return _stopped_flow("shutdown")
         doc = load_state_doc(current_state)
         if doc is None:
             logger.info("flow: %s -> error (state doc not found)", current_state)

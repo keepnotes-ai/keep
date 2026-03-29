@@ -1,4 +1,6 @@
 
+* review actions & hardcoded processing, available factoring
+
 * "skill install" (skill.md and _all the docs_) -> docs index, etc
     separate from "tool install"
 

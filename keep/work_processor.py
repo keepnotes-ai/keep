@@ -57,9 +57,31 @@ def process_work_batch(
         target = item.input.get("item_id") or item.input.get("id") or "?"
         try:
             logger.info("Processing %s %s", item.kind, target)
-            outcome = _execute_work_item(keeper, item.kind, item.input)
+            outcome = _execute_work_item(
+                keeper,
+                item.kind,
+                item.input,
+                shutdown_check=shutdown_check,
+            )
             status = outcome.get("status", "applied")
             details = outcome.get("details")
+            if item.kind == "flow" and status == "stopped" and outcome.get("cursor"):
+                resumed_input = dict(item.input)
+                resumed_input["cursor"] = outcome["cursor"]
+                resumed_input["state"] = outcome.get("state") or resumed_input.get("state", "")
+                queue.enqueue(
+                    "flow",
+                    resumed_input,
+                    supersede_key=item.supersede_key,
+                    priority=item.priority,
+                )
+                queue.complete(
+                    item.work_id,
+                    {"status": "rescheduled", "cursor": outcome["cursor"]},
+                )
+                logger.info("Paused flow %s for resume", target)
+                stats["processed"] += 1
+                continue
             queue.complete(item.work_id, outcome)
             if status == "skipped":
                 logger.info("Skipped %s %s: %s", item.kind, target, details or "")
@@ -92,6 +114,8 @@ def _execute_work_item(
     keeper: "Keeper",
     kind: str,
     input_data: dict[str, Any],
+    *,
+    shutdown_check: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     """Execute a single work item.
 
@@ -112,7 +136,7 @@ def _execute_work_item(
 
     # Flow resume: re-run the flow in daemon context (foreground=False)
     if kind == "flow":
-        return _execute_flow_item(keeper, input_data)
+        return _execute_flow_item(keeper, input_data, shutdown_check=shutdown_check)
 
     task_type = input_data.get("task_type") or kind
     item_id = str(input_data.get("item_id") or input_data.get("id") or "").strip()
@@ -142,6 +166,8 @@ def _execute_work_item(
 def _execute_flow_item(
     keeper: "Keeper",
     input_data: dict[str, Any],
+    *,
+    shutdown_check: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     """Run a state-doc flow in daemon context.
 
@@ -205,10 +231,13 @@ def _execute_flow_item(
         run_action=_mutation_runner,
         cursor=cursor,
         foreground=False,  # daemon context — execute async actions inline
+        should_stop=shutdown_check,
     )
 
     return {
         "status": result.status,
+        "cursor": result.cursor,
+        "state": state_name,
         "details": {
             "ticks": result.ticks,
             "history": result.history,
