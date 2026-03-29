@@ -7,6 +7,7 @@ This is the minimal working implementation focused on:
 """
 
 import json
+import inspect
 import logging
 import re
 import threading
@@ -499,11 +500,22 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
         _doc_store: Optional["DocumentStoreProtocol"] = None,
     ) -> None:
         """Run the legacy tag-marker migration check during startup."""
+        def _call_with_optional_doc_store(fn):
+            if _doc_store is None:
+                return fn(chroma_coll, doc_coll)
+            try:
+                params = inspect.signature(fn).parameters
+            except (TypeError, ValueError):
+                params = {}
+            if "_doc_store" in params:
+                return fn(chroma_coll, doc_coll, _doc_store=_doc_store)
+            return fn(chroma_coll, doc_coll)
+
         if self._config.chroma_tag_markers_verified:
             return
 
-        marker_migration_state = self._detect_chroma_tag_marker_migration_need(
-            chroma_coll, doc_coll, _doc_store=_doc_store,
+        marker_migration_state = _call_with_optional_doc_store(
+            self._detect_chroma_tag_marker_migration_need,
         )
         if marker_migration_state is True:
             import sys
@@ -515,8 +527,8 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
                     file=sys.stderr,
                     flush=True,
                 )
-                stats = self._migrate_chroma_tag_markers(
-                    chroma_coll, doc_coll, _doc_store=_doc_store,
+                stats = _call_with_optional_doc_store(
+                    self._migrate_chroma_tag_markers,
                 )
                 logger.info(
                     "Tag marker migration complete: %d docs, %d versions, %d parts",

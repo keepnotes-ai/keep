@@ -61,6 +61,45 @@ class _KeeperActionContext:
     def get(self, id: str) -> Any:
         return self._keeper.get(id)
 
+    def put(
+        self,
+        *,
+        content: str | None = None,
+        uri: str | None = None,
+        id: str | None = None,
+        tags: dict[str, Any] | None = None,
+        summary: str | None = None,
+        created_at: str | None = None,
+        force: bool = False,
+    ) -> Any:
+        return self._keeper._put_direct(
+            content=content,
+            uri=uri,
+            id=id,
+            tags=tags,
+            summary=summary,
+            created_at=created_at,
+            force=force,
+        )
+
+    def tag(
+        self,
+        id: str,
+        tags: dict[str, Any] | None = None,
+        *,
+        remove: list[str] | None = None,
+        remove_values: dict[str, Any] | None = None,
+    ) -> Any:
+        return self._keeper._tag_direct(
+            id,
+            tags=tags,
+            remove=remove,
+            remove_values=remove_values,
+        )
+
+    def delete(self, id: str, *, delete_versions: bool = True) -> None:
+        self._keeper._delete_direct(id, delete_versions=delete_versions)
+
     def find(
         self,
         query: str | None = None,
@@ -70,13 +109,15 @@ class _KeeperActionContext:
         limit: int = 10,
         since: str | None = None,
         until: str | None = None,
+        include_self: bool = False,
         include_hidden: bool = False,
+        deep: bool = False,
         scope: str | None = None,
     ) -> list[Any]:
         return self._keeper.find(
             query, tags=tags, similar_to=similar_to, limit=limit,
-            since=since, until=until, include_hidden=include_hidden,
-            scope=scope,
+            since=since, until=until, include_self=include_self,
+            include_hidden=include_hidden, deep=deep, scope=scope,
         )
 
     def list_items(

@@ -13,4 +13,6 @@ rules:
       id: "{params.id}"
       tags: "{params.tags}"
       summary: "{params.summary}"
+      created_at: "{params.created_at}"
+      force: "{params.force}"
   - return: done

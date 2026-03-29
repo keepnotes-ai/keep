@@ -95,6 +95,17 @@ class FlowRuntimeEnv(Protocol):
         capture_write_context: bool = False,
     ) -> Any: ...
 
+    def tag(
+        self,
+        id: str,
+        tags: dict[str, Any] | None = None,
+        *,
+        remove: list[str] | None = None,
+        remove_values: dict[str, Any] | None = None,
+    ) -> Any: ...
+
+    def delete(self, id: str, *, delete_versions: bool = True) -> None: ...
+
     def enqueue_task(
         self,
         *,
@@ -253,21 +264,43 @@ class LocalFlowEnvironment:
 
     def put(self, *, content: str | None = None, uri: str | None = None,
             id: str | None = None, tags: dict | None = None,
-            summary: str | None = None) -> Any:
+            summary: str | None = None, created_at: str | None = None,
+            force: bool = False) -> Any:
         putter = getattr(self._keeper, "_put_direct", None)
         if putter is None:
             putter = self._keeper.put
         if uri is not None:
-            return putter(uri=uri, id=id, tags=tags, summary=summary)
+            return putter(
+                uri=uri,
+                id=id,
+                tags=tags,
+                summary=summary,
+                created_at=created_at,
+                force=force,
+            )
         from .utils import _text_content_id
         doc_id = id or _text_content_id(content) if content else id
-        return putter(content, id=doc_id, tags=tags, summary=summary)
+        return putter(
+            content,
+            id=doc_id,
+            tags=tags,
+            summary=summary,
+            created_at=created_at,
+            force=force,
+        )
 
-    def tag(self, id: str, tags: dict) -> Any:
+    def tag(
+        self,
+        id: str,
+        tags: dict | None = None,
+        *,
+        remove: list[str] | None = None,
+        remove_values: dict[str, Any] | None = None,
+    ) -> Any:
         tagger = getattr(self._keeper, "_tag_direct", None)
         if tagger is None:
             tagger = self._keeper.tag
-        return tagger(id, tags)
+        return tagger(id, tags, remove=remove, remove_values=remove_values)
 
     def move(self, name: str, *, source_id: str = "now",
              tags: dict | None = None, only_current: bool = False) -> Any:
@@ -276,11 +309,11 @@ class LocalFlowEnvironment:
             mover = self._keeper.move
         return mover(name, source_id=source_id, tags=tags, only_current=only_current)
 
-    def delete(self, id: str) -> None:
+    def delete(self, id: str, *, delete_versions: bool = True) -> None:
         deleter = getattr(self._keeper, "_delete_direct", None)
         if deleter is None:
             deleter = self._keeper.delete
-        deleter(id)
+        deleter(id, delete_versions=delete_versions)
 
     def resolve_meta(self, id: str, *, limit_per_doc: int = 3) -> dict[str, list[Any]]:
         return self._keeper.resolve_meta(id, limit_per_doc=limit_per_doc)

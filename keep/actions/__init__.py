@@ -36,6 +36,29 @@ class ActionContext(Protocol):
 
     def get(self, id: str) -> Any | None: ...
 
+    def put(
+        self,
+        *,
+        content: str | None = None,
+        uri: str | None = None,
+        id: str | None = None,
+        tags: dict[str, Any] | None = None,
+        summary: str | None = None,
+        created_at: str | None = None,
+        force: bool = False,
+    ) -> Any: ...
+
+    def tag(
+        self,
+        id: str,
+        tags: dict[str, Any] | None = None,
+        *,
+        remove: list[str] | None = None,
+        remove_values: dict[str, Any] | None = None,
+    ) -> Any: ...
+
+    def delete(self, id: str, *, delete_versions: bool = True) -> Any: ...
+
     def find(
         self,
         query: str | None = None,

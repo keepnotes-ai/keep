@@ -19,6 +19,8 @@ class Put:
         normalized_tags = {str(k): v for k, v in tags.items()} if isinstance(tags, dict) else None
         summary = params.get("summary")
         item_id = params.get("id")
+        created_at = params.get("created_at")
+        force = bool(params.get("force", False))
 
         item = context.put(
             content=str(content) if content is not None else None,
@@ -26,6 +28,8 @@ class Put:
             id=str(item_id) if item_id is not None else None,
             tags=normalized_tags,
             summary=str(summary) if summary is not None else None,
+            created_at=str(created_at) if created_at is not None else None,
+            force=force,
         )
         return {
             "id": getattr(item, "id", None),

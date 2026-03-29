@@ -136,6 +136,8 @@ def get_item(host: FlowHostProtocol, id: str) -> Optional[Item]:
         writable=False,
         state_doc_yaml=_COMPAT_GET_ITEM,
     )
+    binding = getattr(result, "bindings", {}).get("item", {})
+    _raise_binding_error(binding, "compat-get-item")
     data = getattr(result, "data", None) or {}
     item = data.get("item")
     if item is None:
@@ -224,6 +226,7 @@ def find_items(
         )
         bindings = getattr(result, "bindings", {})
         results = bindings.get("results", {}) if isinstance(bindings, dict) else {}
+        _raise_binding_error(results, STATE_LIST)
         items = _coerce_item_list(results.get("results", []))
         deep_groups_raw = {}
     else:
@@ -245,6 +248,8 @@ def find_items(
             writable=False,
             state_doc_yaml=_COMPAT_FIND,
         )
+        binding = getattr(result, "bindings", {}).get("results", {})
+        _raise_binding_error(binding, "compat-find")
         data = getattr(result, "data", None) or {}
         items = _coerce_item_list(data.get("items", []))
         deep_groups_raw = data.get("deep_groups", {}) if deep else {}
@@ -269,12 +274,14 @@ def tag_item(
 ) -> Optional[Item]:
     if tags is None:
         return get_item(host, id)
-    _run(
+    result = _run(
         host,
         STATE_TAG,
         params={"id": id, "tags": tags},
         writable=True,
     )
+    binding = getattr(result, "bindings", {}).get("tagged", {})
+    _raise_binding_error(binding, STATE_TAG)
     return get_item(host, id)
 
 
@@ -291,6 +298,7 @@ def delete_item(
         writable=True,
     )
     binding = getattr(result, "bindings", {}).get("result", {})
+    _raise_binding_error(binding, STATE_DELETE)
     if isinstance(binding, dict) and binding.get("deleted"):
         return True
     data = getattr(result, "data", None) or {}
@@ -317,6 +325,7 @@ def move_item(
         writable=True,
     )
     binding = getattr(result, "bindings", {}).get("moved", {})
+    _raise_binding_error(binding, STATE_MOVE)
     if isinstance(binding, dict) and binding.get("id"):
         return _coerce_item(binding)
     data = getattr(result, "data", None) or {}

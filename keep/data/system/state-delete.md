@@ -9,4 +9,5 @@ rules:
     do: delete
     with:
       id: "{params.id}"
+      delete_versions: "{params.delete_versions}"
   - return: done

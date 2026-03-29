@@ -15,5 +15,6 @@ class Delete:
         item_id = params.get("id") or params.get("item_id")
         if not item_id:
             raise ValueError("delete requires id")
-        context.delete(str(item_id))
+        delete_versions = bool(params.get("delete_versions", True))
+        context.delete(str(item_id), delete_versions=delete_versions)
         return {"deleted": str(item_id)}

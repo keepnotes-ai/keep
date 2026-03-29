@@ -25,6 +25,8 @@ rules:
       id: "{params.id}"
       tags: "{params.tags}"
       summary: "{params.summary}"
+      created_at: "{params.created_at}"
+      force: "{params.force}"
   - return: done
 """,
 
@@ -37,6 +39,8 @@ rules:
       id: "{params.id}"
       items: "{params.items}"
       tags: "{params.tags}"
+      remove: "{params.remove}"
+      remove_values: "{params.remove_values}"
   - return: done
 """,
 
@@ -47,6 +51,7 @@ rules:
     do: delete
     with:
       id: "{params.id}"
+      delete_versions: "{params.delete_versions}"
   - return: done
 """,
 
