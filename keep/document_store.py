@@ -2960,6 +2960,7 @@ class DocumentStore:
         value: str,
         *,
         limit: int = 100,
+        offset: int = 0,
     ) -> list[DocumentRecord]:
         """Find documents where tag *key* contains *value*.
 
@@ -2986,8 +2987,9 @@ class DocumentStore:
               )
             ORDER BY updated_at DESC
             LIMIT ?
+            OFFSET ?
             """,
-            (collection, f"$.{key}", value, f"$.{key}", f"$.{key}", value, limit),
+            (collection, f"$.{key}", value, f"$.{key}", f"$.{key}", value, limit, offset),
         )
         results = []
         for row in cursor:

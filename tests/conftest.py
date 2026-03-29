@@ -466,6 +466,23 @@ class MockDocumentStore:
             results.append(self._make_record(collection, id, rec))
         return results[offset:offset + limit]
 
+    def query_by_tag_value(
+        self,
+        collection: str,
+        key: str,
+        value: str,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list:
+        if collection not in self._data:
+            return []
+        results = []
+        for id, rec in self._data[collection].items():
+            if value in tag_values(rec["tags"], key):
+                results.append(self._make_record(collection, id, rec))
+        return results[offset:offset + limit]
+
     def list_distinct_tag_keys(self, collection: str) -> list[str]:
         keys = set()
         for rec in self._data.get(collection, {}).values():

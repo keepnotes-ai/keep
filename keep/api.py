@@ -4404,24 +4404,28 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
             # Primary data source: pick the most selective query
             # --------------------------------------------------------------
             if tags:
-                # Key=value tags: use ChromaDB metadata query
-                where = self._build_tag_where(tags)
-                if where is None:
+                # Key=value tags: query the canonical document store so
+                # listing semantics do not depend on embedding/index state.
+                tag_pairs = list(iter_tag_pairs(tags))
+                if not tag_pairs:
                     batch = []
                     raw_count = 0
                 else:
-                    results = self._store.query_metadata(
-                        chroma_coll, where, limit=page_size, offset=offset,
+                    first_key, first_value = tag_pairs[0]
+                    docs = self._document_store.query_by_tag_value(
+                        doc_coll,
+                        first_key,
+                        first_value,
+                        limit=page_size,
+                        offset=offset,
                     )
-                    # Enrich from SQLite for original-case tag values
-                    batch = []
-                    for r in results:
-                        doc = self._document_store.get(doc_coll, r.id)
-                        if doc:
-                            batch.append(_record_to_item(doc))
-                        else:
-                            batch.append(r.to_item())
-                    raw_count = len(results)
+                    batch = [_record_to_item(doc) for doc in docs]
+                    raw_count = len(docs)
+                    for extra_key, extra_value in tag_pairs[1:]:
+                        batch = [
+                            item for item in batch
+                            if extra_value in tag_values(item.tags, extra_key)
+                        ]
 
             elif tag_keys:
                 # Key-only: use SQLite tag key query (first key as primary,

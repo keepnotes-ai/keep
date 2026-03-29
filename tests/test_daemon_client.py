@@ -104,3 +104,30 @@ class TestGetPortNoFileStranding:
             port = get_port(str(store))
 
         assert port == 5555
+
+
+class TestLoadTokenCacheScoping:
+    """Token cache must be scoped to the resolved store path."""
+
+    def test_load_token_switches_stores_without_force(self, tmp_path):
+        store_a = tmp_path / "store-a"
+        store_b = tmp_path / "store-b"
+        store_a.mkdir()
+        store_b.mkdir()
+        (store_a / DAEMON_TOKEN_FILE).write_text("token-a")
+        (store_b / DAEMON_TOKEN_FILE).write_text("token-b")
+
+        from keep import _daemon_client as client
+
+        client._auth_token = ""
+        client._auth_token_store = ""
+        try:
+            token_a = client._load_token(str(store_a))
+            token_b = client._load_token(str(store_b))
+
+            assert token_a == "token-a"
+            assert token_b == "token-b"
+            assert client._auth_token_store == str(store_b.resolve())
+        finally:
+            client._auth_token = ""
+            client._auth_token_store = ""
