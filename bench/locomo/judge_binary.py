@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 # Copyright (c) 2026 Inguz Outcomes LLC.
-"""
-LoCoMo benchmark — binary LLM-as-judge scoring.
+"""LoCoMo benchmark — binary LLM-as-judge scoring.
 
 Uses the prompt from the Memobase/Mem0 evaluation harness:
   https://github.com/memodb-io/memobase/blob/main/docs/experiments/locomo-benchmark/metrics/llm_judge.py

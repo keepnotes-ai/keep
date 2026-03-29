@@ -38,6 +38,8 @@ def _deep_key(deep_item: Item) -> str:
 
 @dataclass
 class FindContextSectionPlan:
+    """A rendered section candidate within one find-context block."""
+
     kind: str
     lines: list[str] = field(default_factory=list)
     phase: str = ""
@@ -49,6 +51,8 @@ class FindContextSectionPlan:
 
 @dataclass
 class FindContextBudgetDecision:
+    """A trace record describing how the allocator handled one section."""
+
     kind: str
     phase: str
     policy: str
@@ -61,12 +65,16 @@ class FindContextBudgetDecision:
 
 @dataclass
 class FindContextBlockPlan:
+    """The planned sections for one top-level result item."""
+
     item: Item
     sections: list[FindContextSectionPlan] = field(default_factory=list)
 
 
 @dataclass
 class FindContextRenderPlan:
+    """The full plan consumed by the find-context formatter."""
+
     blocks: list[FindContextBlockPlan]
     token_budget: int
     tokens_remaining: int
@@ -621,16 +629,21 @@ def plan_find_context_render(
                     versions = keeper.list_versions(item.id, limit=5)
                     versions = list(reversed(versions))
                 if versions:
+                    version_lines = []
+                    for version in versions:
+                        stamp = (
+                            version.tags.get("_created")
+                            or version.tags.get("_updated", "")
+                        )[:10]
+                        stamp_part = f"  [{stamp}]" if stamp else ""
+                        version_lines.append(
+                            f"  - @V{{{version.version}}}{stamp_part}  {version.summary}"
+                        )
                     section = budget.fit_section(
                         kind="versions",
                         phase="detail",
                         header="  Context:",
-                        lines=[
-                        f"  - @V{{{version.version}}}"
-                        f"{f'  [{((version.tags.get('_created') or version.tags.get('_updated', ''))[:10])}]' if ((version.tags.get('_created') or version.tags.get('_updated', ''))[:10]) else ''}  "
-                        f"{version.summary}"
-                        for version in versions
-                        ],
+                        lines=version_lines,
                         require_body=False,
                         header_cost=4,
                         policy="fit-section-legacy-header",

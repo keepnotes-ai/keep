@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 # Copyright (c) 2026 Inguz Outcomes LLC.
-"""
-LoCoMo-Plus benchmark — dataset preparation.
+"""LoCoMo-Plus benchmark — dataset preparation.
 
 Reads locomo10.json and locomo_plus.json, produces a ready-to-ingest dataset:
   - session_notes.json:  per-session markdown notes with frontmatter
@@ -83,8 +82,7 @@ def _parse_evidence(raw_evidence: list, conv: dict) -> str:
 # ── Session Notes ────────────────────────────────────────────────────────
 
 def build_session_notes(locomo: list) -> list[dict]:
-    """
-    Build per-session markdown notes from all 10 conversations.
+    """Build per-session markdown notes from all 10 conversations.
 
     Returns list of dicts:
       {id, content, tags}
@@ -135,8 +133,7 @@ def build_session_notes(locomo: list) -> list[dict]:
 # ── Turn Notes ───────────────────────────────────────────────────────────
 
 def build_turn_notes(locomo: list) -> list[dict]:
-    """
-    Build per-turn notes from all 10 conversations.
+    """Build per-turn notes from all 10 conversations.
 
     Each conversational turn becomes its own note.
     Image turns include the caption + URL inline.
@@ -187,8 +184,7 @@ def build_turn_notes(locomo: list) -> list[dict]:
 # ── Versioned Session Notes (turns as versions) ─────────────────────────
 
 def build_versioned_session_notes(locomo: list) -> list[dict]:
-    """
-    Build per-session documents where each turn is a version.
+    """Build per-session documents where each turn is a version.
 
     Returns list of dicts:
       {id, tags, versions: [{content, tags}, ...]}
@@ -246,8 +242,7 @@ def build_versioned_session_notes(locomo: list) -> list[dict]:
 # ── Image Notes ──────────────────────────────────────────────────────────
 
 def build_image_notes(locomo: list) -> list[dict]:
-    """
-    Build per-image notes from all conversations.
+    """Build per-image notes from all conversations.
 
     Only for turns that have img_url. Content = caption + query.
     ID = the URL itself.
@@ -308,8 +303,7 @@ def build_image_notes(locomo: list) -> list[dict]:
 # ── QA Dataset ───────────────────────────────────────────────────────────
 
 def build_qa_dataset(locomo: list) -> list[dict]:
-    """
-    Build QA dataset for query/judge phases.
+    """Build QA dataset for query/judge phases.
 
     Returns list of dicts:
       {conv, question, answer, evidence_refs, evidence_text, category}
@@ -339,8 +333,7 @@ def build_qa_dataset(locomo: list) -> list[dict]:
 # ── Cognitive Dataset ────────────────────────────────────────────────────
 
 def build_cognitive_dataset(plus: list) -> list[dict]:
-    """
-    Build cognitive dataset for Phase 2.
+    """Build cognitive dataset for Phase 2.
 
     Returns list of dicts with the raw fields needed for stitching + querying.
     """

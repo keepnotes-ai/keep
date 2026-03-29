@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-Run flow-based retrieval traces on LoCoMo QA items.
+"""Run flow-based retrieval traces on LoCoMo QA items.
 
 Writes a full per-step log with exact continue payloads and outputs so the
 interaction can be inspected post-run.

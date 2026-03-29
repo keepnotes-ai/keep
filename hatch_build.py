@@ -1,5 +1,4 @@
-"""
-Hatch build hook: builds the OpenClaw plugin before packaging.
+"""Hatch build hook: builds the OpenClaw plugin before packaging.
 
 Runs `npm install && npm run build` in keep/data/openclaw-plugin/
 to produce dist/index.js (bundled MCP SDK + plugin code).
@@ -14,6 +13,8 @@ from hatchling.builders.hooks.plugin.interface import BuildHookInterface
 
 
 class OpenClawPluginBuildHook(BuildHookInterface):
+    """Build hook that bundles the OpenClaw plugin for packaged releases."""
+
     PLUGIN_NAME = "openclaw-plugin-build"
 
     def initialize(self, version, build_data):

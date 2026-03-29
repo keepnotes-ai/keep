@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 # Copyright (c) 2026 Inguz Outcomes LLC.
-"""
-LoCoMo-Plus benchmark — ingest prepared data into an isolated keep store.
+"""LoCoMo-Plus benchmark — ingest prepared data into an isolated keep store.
 
 Requirements (turns-as-versions strategy — the correct one for benchmarking):
   - Each session is a vstring (item ID like conv0-session1)

@@ -128,6 +128,10 @@ ignore = [
 [tool.ruff.lint.pydocstyle]
 convention = "google"
 
+[tool.ruff.lint.per-file-ignores]
+"tests/*.py" = ["D101"]
+"tests/**/*.py" = ["D101"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 norecursedirs = [".venv", "dist", ".git"]

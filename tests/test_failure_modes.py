@@ -150,8 +150,8 @@ class TestDualWriteRecovery:
         kp._store = failing_store
         failing_store.fail_upsert = True
 
-        # put() should raise (ChromaDB failure propagates)
-        with pytest.raises(RuntimeError, match="ChromaDB simulated"):
+        # put() should raise via the flow wrapper's binding-error surface.
+        with pytest.raises(ValueError, match="ChromaDB simulated"):
             kp.put("important content", id="doc1")
 
         # Doc store should have the record (written first)
@@ -505,5 +505,4 @@ class TestConcurrentWriters:
         assert total == 10, f"Expected 10 total, got {total}: {results}"
 
         kp.close()
-
 

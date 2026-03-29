@@ -1,6 +1,5 @@
 # Copyright (c) 2026 Inguz Outcomes LLC.
-"""
-LLM backend for LoCoMo benchmark query answering.
+"""LLM backend for LoCoMo benchmark query answering.
 
 Only OpenAI is used in the published results (gpt-4o-mini for both
 query generation and judging). Embeddings and analysis use Ollama

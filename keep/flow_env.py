@@ -145,6 +145,10 @@ class LocalFlowEnvironment:
         self._query_embedding: Any = None  # set by caller for deep-find flows
 
     def get(self, id: str) -> Any | None:
+        # Public Keeper methods are now thin flow wrappers, so the runtime must
+        # prefer the private direct helpers when present. Otherwise a flow action
+        # like `get` would call back into `Keeper.get()`, recurse through
+        # `run_flow()`, and never reach the storage operation it is trying to run.
         getter = getattr(self._keeper, "_get_direct", None)
         if callable(getter):
             return getter(id)
@@ -168,6 +172,9 @@ class LocalFlowEnvironment:
         deep: bool = False,
         scope: str | None = None,
     ) -> list[Any]:
+        # See `get()` above: the runtime uses `_find_direct` when available so
+        # flow execution reaches the underlying search implementation instead of
+        # recursing back through the public flow-backed wrapper.
         finder = getattr(self._keeper, "_find_direct", None)
         if finder is None:
             finder = self._keeper.find

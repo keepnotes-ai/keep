@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 # Copyright (c) 2026 Inguz Outcomes LLC.
-"""
-LoCoMo-Plus benchmark — query keep and generate answers via LLM.
+"""LoCoMo-Plus benchmark — query keep and generate answers via LLM.
 
 Uses keep's built-in .prompt/agent/query template with token-budgeted
 context rendering.  The prompt, retrieval, and context assembly are all

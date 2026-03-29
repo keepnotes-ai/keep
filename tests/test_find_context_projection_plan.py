@@ -13,6 +13,8 @@ def _item(id="test", summary="Test summary", score=0.9, tags=None):
 
 
 class TestFindContextProjectionPlan:
+    """Plan-level regression coverage for find-context projection behavior."""
+
     def test_budget_trace_records_forced_summary_overspend(self):
         items = [
             _item(id="first", summary="A" * 200),
