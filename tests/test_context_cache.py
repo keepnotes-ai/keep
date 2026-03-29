@@ -1,30 +1,21 @@
-"""Tests for context component cache."""
+"""Tests for the flow action-result cache."""
 
 from __future__ import annotations
 
 import time
 
-import pytest
-
 from keep.context_cache import (
     ContextCache,
-    MetaCache,
+    FindCache,
     PartsCache,
     SimilarCache,
     _cache_key,
     _extract_ids_scores,
-    _extract_meta_sections,
     _hydrate_find_results,
-    _hydrate_meta_results,
 )
 
 
-# ---------------------------------------------------------------------------
-# _cache_key
-# ---------------------------------------------------------------------------
-
 class TestCacheKey:
-    """Tests for cache key generation."""
     def test_deterministic(self):
         k1 = _cache_key("find", {"similar_to": "abc", "limit": 3})
         k2 = _cache_key("find", {"similar_to": "abc", "limit": 3})
@@ -50,18 +41,12 @@ class TestCacheKey:
         k = _cache_key("find", {})
         assert len(k) == 16
 
-    def test_non_serializable_returns_empty(self):
+    def test_non_serializable_returns_key(self):
         k = _cache_key("find", {"obj": object()})
-        # default=str handles this, so key should still be valid
         assert len(k) == 16
 
 
-# ---------------------------------------------------------------------------
-# Extraction helpers
-# ---------------------------------------------------------------------------
-
 class TestExtraction:
-    """Tests for ID and score extraction."""
     def test_extract_ids_scores(self):
         result = {
             "results": [
@@ -70,32 +55,12 @@ class TestExtraction:
             ],
             "count": 2,
         }
-        ids = _extract_ids_scores(result)
-        assert ids == [("a", 0.9), ("b", 0.8)]
+        assert _extract_ids_scores(result) == [("a", 0.9), ("b", 0.8)]
 
     def test_extract_ids_scores_none_score(self):
         result = {"results": [{"id": "a", "summary": "x"}], "count": 1}
-        ids = _extract_ids_scores(result)
-        assert ids == [("a", None)]
+        assert _extract_ids_scores(result) == [("a", None)]
 
-    def test_extract_meta_sections(self):
-        result = {
-            "sections": {
-                "todo": [{"id": "t1", "score": 0.7}, {"id": "t2", "score": 0.6}],
-                "learnings": [{"id": "l1", "score": 0.5}],
-            },
-            "count": 3,
-        }
-        sections = _extract_meta_sections(result)
-        assert sections == {
-            "todo": [("t1", 0.7), ("t2", 0.6)],
-            "learnings": [("l1", 0.5)],
-        }
-
-
-# ---------------------------------------------------------------------------
-# Hydration helpers
-# ---------------------------------------------------------------------------
 
 class _FakeItem:
     def __init__(self, id, summary="", tags=None):
@@ -116,7 +81,6 @@ class _FakeCtx:
 
 
 class TestHydration:
-    """Tests for find result hydration."""
     def test_hydrate_find_results(self):
         ctx = _FakeCtx({
             "a": _FakeItem("a", "summary a", {"tag": "1"}),
@@ -135,158 +99,160 @@ class TestHydration:
         assert result["count"] == 1
         assert result["results"][0]["id"] == "a"
 
-    def test_hydrate_meta_results(self):
-        ctx = _FakeCtx({
-            "t1": _FakeItem("t1", "todo 1"),
-            "l1": _FakeItem("l1", "learning 1"),
-        })
-        sections = {
-            "todo": [("t1", 0.7)],
-            "learnings": [("l1", 0.5)],
-        }
-        result = _hydrate_meta_results(sections, ctx)
-        assert result["count"] == 2
-        assert "todo" in result["sections"]
-        assert result["sections"]["todo"][0]["summary"] == "todo 1"
 
-    def test_hydrate_meta_drops_empty_sections(self):
-        ctx = _FakeCtx({})  # all items gone
-        sections = {"todo": [("gone", 0.7)]}
-        result = _hydrate_meta_results(sections, ctx)
-        assert result["count"] == 0
-        assert result["sections"] == {}
+class TestFindCache:
+    def test_alias_still_points_to_find_cache(self):
+        assert SimilarCache is FindCache
 
-
-# ---------------------------------------------------------------------------
-# SimilarCache
-# ---------------------------------------------------------------------------
-
-class TestSimilarCache:
-    """Tests for similar-results cache."""
     def test_put_and_get(self):
-        c = SimilarCache()
-        c.put("k1", [("a", 0.9)], item_id="x")
-        assert c.get("k1") == [("a", 0.9)]
+        c = FindCache()
+        c.put("k1", [("a", 0.9)], params={"similar_to": "x"})
+        assert c.get("k1", limit=10) == [("a", 0.9)]
         assert c.hits == 1
         assert c.misses == 0
 
     def test_miss(self):
-        c = SimilarCache()
-        assert c.get("nonexistent") is None
+        c = FindCache()
+        assert c.get("nonexistent", limit=10) is None
         assert c.misses == 1
 
-    def test_generation_invalidation_within_ttl(self):
-        c = SimilarCache(ttl=60.0)
-        c.put("k1", [("a", 0.9)], item_id="x")
-        c.on_write("other", {})  # bumps generation
-        # Still served within TTL (bounded staleness)
-        assert c.get("k1") == [("a", 0.9)]
+    def test_non_precise_generation_invalidation_within_ttl(self):
+        c = FindCache(ttl=60.0)
+        c.put("k1", [("a", 0.9)], params={"similar_to": "x"})
+        c.on_write("other", old_tags={"act": "request"}, new_tags={"act": "request"})
+        assert c.get("k1", limit=10) == [("a", 0.9)]
 
-    def test_direct_eviction(self):
-        c = SimilarCache()
-        c.put("k1", [("a", 0.9)], item_id="target")
-        c.on_write("target", {})  # evicts k1 directly
-        assert c.get("k1") is None
+    def test_direct_anchor_eviction(self):
+        c = FindCache()
+        c.put("k1", [("a", 0.9)], params={"similar_to": "target"})
+        c.on_write("target", old_tags={}, new_tags={})
+        assert c.get("k1", limit=10) is None
 
-    def test_ttl_expiry(self):
-        c = SimilarCache(ttl=0.01)  # very short TTL
-        c.put("k1", [("a", 0.9)], item_id="x")
-        c.on_write("other", {})  # bumps generation
+    def test_ttl_expiry_for_non_precise_entry(self):
+        c = FindCache(ttl=0.01)
+        c.put("k1", [("a", 0.9)], params={"similar_to": "x"})
+        c.on_write("other", old_tags={}, new_tags={})
         time.sleep(0.02)
-        assert c.get("k1") is None  # TTL expired
+        assert c.get("k1", limit=10) is None
 
-    def test_fresh_entry_survives_generation_bump(self):
-        c = SimilarCache(ttl=60.0)
-        c.put("k1", [("a", 0.9)], item_id="x")
-        c.on_write("other", {})
-        # Entry is stale-generation but within TTL
-        result = c.get("k1")
-        assert result == [("a", 0.9)]
-        assert c.hits == 1
+    def test_precise_entry_survives_unrelated_writes(self):
+        c = FindCache(ttl=0.01)
+        c.put(
+            "k1",
+            [("a", 0.9)],
+            params={
+                "similar_to": "anchor",
+                "tags": {"act": "commitment", "status": "open"},
+            },
+        )
+        c.on_write(
+            "other",
+            old_tags={"act": "request", "status": "open"},
+            new_tags={"act": "request", "status": "open"},
+        )
+        time.sleep(0.02)
+        assert c.get("k1", limit=10) == [("a", 0.9)]
+
+    def test_precise_eviction_on_old_tag_match(self):
+        c = FindCache()
+        c.put(
+            "k1",
+            [("a", 0.9)],
+            params={
+                "similar_to": "anchor",
+                "tags": {"act": "commitment", "status": "open"},
+            },
+        )
+        c.on_write(
+            "other",
+            old_tags={"act": "commitment", "status": "open"},
+            new_tags={"act": "commitment", "status": "fulfilled"},
+        )
+        assert c.get("k1", limit=10) is None
+
+    def test_precise_eviction_on_new_tag_match(self):
+        c = FindCache()
+        c.put(
+            "k1",
+            [("a", 0.9)],
+            params={
+                "similar_to": "anchor",
+                "tags": {"act": "commitment", "status": "open"},
+            },
+        )
+        c.on_write(
+            "other",
+            old_tags={"act": "commitment", "status": "fulfilled"},
+            new_tags={"act": "commitment", "status": "open"},
+        )
+        assert c.get("k1", limit=10) is None
+
+    def test_precise_match_casefolds_keys(self):
+        c = FindCache()
+        c.put(
+            "k1",
+            [("a", 0.9)],
+            params={
+                "similar_to": "anchor",
+                "tags": {"User": "alice"},
+            },
+        )
+        c.on_write(
+            "other",
+            old_tags={"user": "alice"},
+            new_tags={"user": "alice"},
+        )
+        assert c.get("k1", limit=10) is None
+
+    def test_smaller_limit_reuses_larger_materialized_entry(self):
+        c = FindCache()
+        c.put(
+            "k1",
+            [("a", 0.9), ("b", 0.8), ("c", 0.7), ("d", 0.6), ("e", 0.5)],
+            params={"similar_to": "anchor", "limit": 5},
+        )
+        assert c.get("k1", limit=3) == [("a", 0.9), ("b", 0.8), ("c", 0.7)]
+
+    def test_larger_limit_misses_when_entry_was_truncated(self):
+        c = FindCache()
+        c.put(
+            "k1",
+            [("a", 0.9), ("b", 0.8), ("c", 0.7)],
+            params={"similar_to": "anchor", "limit": 3},
+        )
+        assert c.get("k1", limit=10) is None
+
+    def test_larger_limit_hits_when_entry_is_exhaustive(self):
+        c = FindCache()
+        c.put(
+            "k1",
+            [("a", 0.9), ("b", 0.8)],
+            params={"similar_to": "anchor", "limit": 3},
+        )
+        assert c.get("k1", limit=10) == [("a", 0.9), ("b", 0.8)]
 
     def test_lru_eviction(self):
-        c = SimilarCache(max_entries=3)
-        c.put("k1", [("a", 0.9)], item_id="x")
-        c.put("k2", [("b", 0.8)], item_id="y")
-        c.put("k3", [("c", 0.7)], item_id="z")
-        c.put("k4", [("d", 0.6)], item_id="w")  # evicts k1
-        assert c.get("k1") is None
-        assert c.get("k2") is not None
-
-    def test_on_delete(self):
-        c = SimilarCache()
-        c.put("k1", [("a", 0.9)], item_id="target")
-        c.on_delete("target")
-        assert c.get("k1") is None
+        c = FindCache(max_entries=3)
+        c.put("k1", [("a", 0.9)], params={"similar_to": "x"})
+        c.put("k2", [("b", 0.8)], params={"similar_to": "y"})
+        c.put("k3", [("c", 0.7)], params={"similar_to": "z"})
+        c.put("k4", [("d", 0.6)], params={"similar_to": "w"})
+        assert c.get("k1", limit=10) is None
+        assert c.get("k2", limit=10) is not None
 
     def test_clear(self):
-        c = SimilarCache()
-        c.put("k1", [("a", 0.9)], item_id="x")
+        c = FindCache()
+        c.put("k1", [("a", 0.9)], params={"similar_to": "x"})
         c.clear()
-        assert c.get("k1") is None
+        assert c.get("k1", limit=10) is None
 
     def test_empty_key_skipped(self):
-        c = SimilarCache()
-        c.put("", [("a", 0.9)], item_id="x")
-        assert c.get("") is None
+        c = FindCache()
+        c.put("", [("a", 0.9)], params={"similar_to": "x"})
+        assert c.get("", limit=10) is None
 
-
-# ---------------------------------------------------------------------------
-# MetaCache
-# ---------------------------------------------------------------------------
-
-class TestMetaCache:
-    """Tests for metadata cache."""
-    def test_put_and_get(self):
-        c = MetaCache()
-        sections = {"todo": [("t1", 0.7)]}
-        c.put("k1", sections, item_id="x")
-        assert c.get("k1") == sections
-
-    def test_miss(self):
-        c = MetaCache()
-        assert c.get("nope") is None
-
-    def test_direct_eviction(self):
-        c = MetaCache()
-        c.put("k1", {"todo": [("t1", 0.7)]}, item_id="target")
-        c.on_write("target", {})
-        assert c.get("k1") is None
-
-    def test_generation_eviction(self):
-        c = MetaCache()
-        c.put("k1", {"todo": [("t1", 0.7)]}, item_id="x")
-        c.on_write("other", {"act": "request"})  # bumps generation
-        # MetaCache has no TTL grace — stale entries are evicted
-        assert c.get("k1") is None
-
-    def test_lru_eviction(self):
-        c = MetaCache(max_entries=2)
-        c.put("k1", {"a": []}, item_id="x")
-        c.put("k2", {"b": []}, item_id="y")
-        c.put("k3", {"c": []}, item_id="z")  # evicts k1
-        assert c.get("k1") is None
-        assert c.get("k2") is not None
-
-    def test_on_delete(self):
-        c = MetaCache()
-        c.put("k1", {"todo": [("t1", 0.7)]}, item_id="target")
-        c.on_delete("target")
-        assert c.get("k1") is None
-
-    def test_clear(self):
-        c = MetaCache()
-        c.put("k1", {"todo": [("t1", 0.7)]}, item_id="x")
-        c.clear()
-        assert c.get("k1") is None
-
-
-# ---------------------------------------------------------------------------
-# PartsCache
-# ---------------------------------------------------------------------------
 
 class TestPartsCache:
-    """Tests for parts cache."""
     def test_put_and_get(self):
         c = PartsCache()
         result = {"results": [{"id": "x@p1"}], "count": 1}
@@ -306,7 +272,7 @@ class TestPartsCache:
     def test_evict_on_part_write(self):
         c = PartsCache()
         c.put("k1", {"results": [], "count": 0}, item_id="base")
-        c.on_write("base@p1", {})  # writing a part invalidates base
+        c.on_write("base@p1", {})
         assert c.get("k1") is None
 
     def test_unrelated_write_no_eviction(self):
@@ -319,7 +285,7 @@ class TestPartsCache:
         c = PartsCache(max_entries=2)
         c.put("k1", {"results": [], "count": 0}, item_id="a")
         c.put("k2", {"results": [], "count": 0}, item_id="b")
-        c.put("k3", {"results": [], "count": 0}, item_id="c")  # evicts k1
+        c.put("k3", {"results": [], "count": 0}, item_id="c")
         assert c.get("k1") is None
         assert c.get("k2") is not None
 
@@ -330,102 +296,178 @@ class TestPartsCache:
         assert c.get("k1") is None
 
 
-# ---------------------------------------------------------------------------
-# ContextCache (orchestrator)
-# ---------------------------------------------------------------------------
-
 class TestContextCache:
-    """Tests for context cache integration."""
     def _ctx(self, items=None):
         return _FakeCtx(items or {})
 
-    def test_routing_similar(self):
-        cc = ContextCache()
-        result = {"results": [{"id": "a", "score": 0.9}], "count": 1}
-        cc.store("find", {"similar_to": "x", "limit": 3}, result)
-        ctx = self._ctx({"a": _FakeItem("a", "sum")})
-        hydrated = cc.check("find", {"similar_to": "x", "limit": 3}, ctx)
-        assert hydrated is not None
-        assert hydrated["results"][0]["id"] == "a"
-
-    def test_routing_meta(self):
+    def test_routing_find(self):
         cc = ContextCache()
         result = {
-            "sections": {"todo": [{"id": "t1", "score": 0.7}]},
-            "count": 1,
+            "results": [
+                {"id": "a", "score": 0.9},
+                {"id": "b", "score": 0.8},
+                {"id": "c", "score": 0.7},
+            ],
+            "count": 3,
         }
-        cc.store("resolve_meta", {"item_id": "x", "limit": 3}, result)
-        ctx = self._ctx({"t1": _FakeItem("t1", "task")})
-        hydrated = cc.check("resolve_meta", {"item_id": "x", "limit": 3}, ctx)
+        cc.store("find", {"similar_to": "x", "limit": 3}, result)
+        ctx = self._ctx({
+            "a": _FakeItem("a", "sum a"),
+            "b": _FakeItem("b", "sum b"),
+            "c": _FakeItem("c", "sum c"),
+        })
+        hydrated = cc.check("find", {"similar_to": "x", "limit": 2}, ctx)
         assert hydrated is not None
-        assert hydrated["sections"]["todo"][0]["id"] == "t1"
+        assert hydrated["results"][0]["id"] == "a"
+        assert [r["id"] for r in hydrated["results"]] == ["a", "b"]
 
     def test_routing_parts(self):
         cc = ContextCache()
         result = {"results": [{"id": "x@p1"}], "count": 1}
         cc.store("find", {"prefix": "x@p", "limit": 10}, result)
         hydrated = cc.check("find", {"prefix": "x@p", "limit": 10}, self._ctx())
-        assert hydrated == result  # parts stored in full
+        assert hydrated == result
 
-    def test_routing_uncacheable(self):
+    def test_routing_resolve_meta_is_uncached(self):
         cc = ContextCache()
-        # Regular find (no similar_to, no @p prefix) — not cached
+        cc.store(
+            "resolve_meta",
+            {"item_id": "x", "limit": 3},
+            {"sections": {"todo": [{"id": "t1", "score": 0.7}]}, "count": 1},
+        )
+        assert cc.check("resolve_meta", {"item_id": "x", "limit": 3}, self._ctx()) is None
+
+    def test_routing_uncacheable_find_is_miss(self):
+        cc = ContextCache()
         assert cc.check("find", {"query": "test"}, self._ctx()) is None
-        # Unknown action
         assert cc.check("summarize", {}, self._ctx()) is None
 
     def test_notify_write_propagates(self):
         cc = ContextCache()
-        # Store in all three caches
-        cc.store("find", {"similar_to": "x", "limit": 3},
-                 {"results": [{"id": "a", "score": 0.9}], "count": 1})
-        cc.store("resolve_meta", {"item_id": "x", "limit": 3},
-                 {"sections": {"s": [{"id": "b", "score": 0.5}]}, "count": 1})
-        cc.store("find", {"prefix": "x@p", "limit": 10},
-                 {"results": [{"id": "x@p1"}], "count": 1})
+        cc.store(
+            "find",
+            {"similar_to": "x", "tags": {"act": "commitment", "status": "open"}},
+            {"results": [{"id": "a", "score": 0.9}], "count": 1},
+        )
+        cc.store(
+            "find",
+            {"prefix": "x@p", "limit": 10},
+            {"results": [{"id": "x@p1"}], "count": 1},
+        )
 
-        cc.notify_write("x", {"act": "test"})
+        cc.notify_write("x", old_tags={"act": "test"}, new_tags={"act": "test"})
 
-        ctx = self._ctx({"a": _FakeItem("a"), "b": _FakeItem("b")})
-        # Similar: item_id="x" directly evicted
-        assert cc.check("find", {"similar_to": "x", "limit": 3}, ctx) is None
-        # Meta: item_id="x" directly evicted
-        assert cc.check("resolve_meta", {"item_id": "x", "limit": 3}, ctx) is None
-        # Parts: item_id="x" directly evicted
+        ctx = self._ctx({"a": _FakeItem("a")})
+        assert cc.check(
+            "find",
+            {"similar_to": "x", "tags": {"act": "commitment", "status": "open"}},
+            ctx,
+        ) is None
         assert cc.check("find", {"prefix": "x@p", "limit": 10}, ctx) is None
 
-    def test_notify_delete_propagates(self):
+    def test_notify_delete_propagates_old_tags(self):
         cc = ContextCache()
-        cc.store("find", {"similar_to": "x", "limit": 3},
-                 {"results": [{"id": "a", "score": 0.9}], "count": 1})
-        cc.notify_delete("x")
+        cc.store(
+            "find",
+            {"similar_to": "anchor", "tags": {"act": "commitment", "status": "open"}},
+            {"results": [{"id": "a", "score": 0.9}], "count": 1},
+        )
+        cc.notify_delete(
+            "doc1",
+            old_tags={"act": "commitment", "status": "open"},
+        )
         ctx = self._ctx({"a": _FakeItem("a")})
-        assert cc.check("find", {"similar_to": "x", "limit": 3}, ctx) is None
+        assert cc.check(
+            "find",
+            {"similar_to": "anchor", "tags": {"act": "commitment", "status": "open"}},
+            ctx,
+        ) is None
+
+    def test_precise_find_survives_unrelated_write(self):
+        cc = ContextCache()
+        cc.store(
+            "find",
+            {"similar_to": "anchor", "tags": {"act": "commitment", "status": "open"}},
+            {"results": [{"id": "a", "score": 0.9}], "count": 1},
+        )
+        cc.notify_write(
+            "other",
+            old_tags={"act": "request", "status": "open"},
+            new_tags={"act": "request", "status": "open"},
+        )
+        ctx = self._ctx({"a": _FakeItem("a", "sum")})
+        assert cc.check(
+            "find",
+            {"similar_to": "anchor", "tags": {"act": "commitment", "status": "open"}},
+            ctx,
+        ) is not None
+
+    def test_larger_limit_recomputes_after_smaller_cached_result(self):
+        cc = ContextCache()
+        cc.store(
+            "find",
+            {"similar_to": "anchor", "limit": 3},
+            {
+                "results": [
+                    {"id": "a", "score": 0.9},
+                    {"id": "b", "score": 0.8},
+                    {"id": "c", "score": 0.7},
+                ],
+                "count": 3,
+            },
+        )
+        ctx = self._ctx({
+            "a": _FakeItem("a"),
+            "b": _FakeItem("b"),
+            "c": _FakeItem("c"),
+        })
+        assert cc.check("find", {"similar_to": "anchor", "limit": 10}, ctx) is None
+
+    def test_larger_limit_reuses_exhaustive_smaller_result(self):
+        cc = ContextCache()
+        cc.store(
+            "find",
+            {"similar_to": "anchor", "limit": 3},
+            {
+                "results": [
+                    {"id": "a", "score": 0.9},
+                    {"id": "b", "score": 0.8},
+                ],
+                "count": 2,
+            },
+        )
+        ctx = self._ctx({
+            "a": _FakeItem("a"),
+            "b": _FakeItem("b"),
+        })
+        hydrated = cc.check("find", {"similar_to": "anchor", "limit": 10}, ctx)
+        assert hydrated is not None
+        assert [r["id"] for r in hydrated["results"]] == ["a", "b"]
 
     def test_stats(self):
         cc = ContextCache()
-        cc.store("find", {"similar_to": "x", "limit": 3},
-                 {"results": [{"id": "a", "score": 0.9}], "count": 1})
+        cc.store("find", {"similar_to": "x", "limit": 3}, {"results": [{"id": "a"}], "count": 1})
         ctx = self._ctx({"a": _FakeItem("a")})
-        cc.check("find", {"similar_to": "x", "limit": 3}, ctx)  # hit
-        cc.check("find", {"similar_to": "y", "limit": 3}, ctx)  # miss
-        s = cc.stats()
-        assert s["similar"]["hits"] == 1
-        assert s["similar"]["misses"] == 1
+        cc.check("find", {"similar_to": "x", "limit": 3}, ctx)
+        cc.check("find", {"similar_to": "y", "limit": 3}, ctx)
+        stats = cc.stats()
+        assert stats["find"]["hits"] == 1
+        assert stats["find"]["misses"] == 1
 
     def test_clear(self):
         cc = ContextCache()
-        cc.store("find", {"similar_to": "x", "limit": 3},
-                 {"results": [{"id": "a", "score": 0.9}], "count": 1})
+        cc.store("find", {"similar_to": "x", "limit": 3}, {"results": [{"id": "a"}], "count": 1})
         cc.clear()
         ctx = self._ctx({"a": _FakeItem("a")})
         assert cc.check("find", {"similar_to": "x", "limit": 3}, ctx) is None
 
-    def test_similar_generation_does_not_affect_parts(self):
-        """Parts cache is unaffected by writes to unrelated items."""
+    def test_find_generation_does_not_affect_parts(self):
         cc = ContextCache()
-        cc.store("find", {"prefix": "base@p", "limit": 10},
-                 {"results": [{"id": "base@p1"}], "count": 1})
-        cc.notify_write("unrelated", {"act": "test"})
+        cc.store(
+            "find",
+            {"prefix": "base@p", "limit": 10},
+            {"results": [{"id": "base@p1"}], "count": 1},
+        )
+        cc.notify_write("unrelated", old_tags={"act": "test"}, new_tags={"act": "test"})
         result = cc.check("find", {"prefix": "base@p", "limit": 10}, self._ctx())
-        assert result is not None  # parts not evicted
+        assert result is not None

@@ -357,6 +357,63 @@ class TestMetaAsFlows:
             ids = [item.id for item in result["todo"]]
             assert len(ids) == len(set(ids)), "Duplicate IDs in meta results"
 
+    def test_resolve_meta_reuses_cached_inner_find_results(self, kp):
+        """Repeated resolve_meta() calls should hit the shared inner find cache."""
+        calls = 0
+        original = kp._find_direct
+
+        def _counting_find(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            return original(*args, **kwargs)
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(kp, "_find_direct", _counting_find)
+            first = kp.resolve_meta("anchor", limit_per_doc=20)
+            first_calls = calls
+            second = kp.resolve_meta("anchor", limit_per_doc=20)
+
+        assert first
+        assert second
+        assert first_calls > 0
+        assert calls == first_calls
+
+    def test_resolve_meta_invalidates_cached_find_when_item_enters_filter(self, kp):
+        """Tag changes that make an item match should evict the precise find cache."""
+        kp.put(
+            "Follow up on migration review",
+            id="todo:new-open",
+            tags={"act": "commitment", "status": "fulfilled", "project": "myapp"},
+        )
+
+        before = kp.resolve_meta("anchor", limit_per_doc=20)
+        before_summaries = [item.summary for item in before.get("todo", [])]
+        assert "Follow up on migration review" not in before_summaries
+
+        kp._tag_direct("todo:new-open", tags={"status": "open"})
+
+        after = kp.resolve_meta("anchor", limit_per_doc=20)
+        after_summaries = [item.summary for item in after.get("todo", [])]
+        assert "Follow up on migration review" in after_summaries
+
+    def test_resolve_meta_invalidates_cached_find_when_item_leaves_filter(self, kp):
+        """Tag changes that stop matching should evict the precise find cache."""
+        kp.put(
+            "Close the auth follow-up",
+            id="todo:close-me",
+            tags={"act": "commitment", "status": "open", "project": "myapp"},
+        )
+
+        before = kp.resolve_meta("anchor", limit_per_doc=20)
+        before_summaries = [item.summary for item in before.get("todo", [])]
+        assert "Close the auth follow-up" in before_summaries
+
+        kp._tag_direct("todo:close-me", tags={"status": "fulfilled"})
+
+        after = kp.resolve_meta("anchor", limit_per_doc=20)
+        after_summaries = [item.summary for item in after.get("todo", [])]
+        assert "Close the auth follow-up" not in after_summaries
+
     def test_inline_meta_uses_flow_path(self, kp):
         """resolve_inline_meta builds and runs a dynamic state doc."""
         items = kp.resolve_inline_meta(

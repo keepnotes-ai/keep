@@ -1983,7 +1983,11 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
         ):
             self._spawn_processor()
 
-        self._context_cache.notify_write(id, merged_tags)
+        self._context_cache.notify_write(
+            id,
+            old_tags=existing_tags,
+            new_tags=merged_tags,
+        )
 
         return _record_to_item(result, changed=not content_unchanged)
 
@@ -3260,6 +3264,9 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
             )
         doc_coll = self._resolve_doc_collection()
         chroma_coll = self._resolve_chroma_collection()
+        existing = self._get_direct(id)
+        old_tags = dict(existing.tags) if existing is not None else None
+
         # Delete from both stores (including versions)
         doc_deleted = self._document_store.delete(doc_coll, id, delete_versions=delete_versions)
         chroma_deleted = self._store.delete(chroma_coll, id, delete_versions=delete_versions)
@@ -3268,7 +3275,7 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
         self._document_store.delete_edges_for_target(doc_coll, id)
         self._document_store.delete_version_edges_for_source(doc_coll, id)
         self._document_store.delete_version_edges_for_target(doc_coll, id)
-        self._context_cache.notify_delete(id)
+        self._context_cache.notify_delete(id, old_tags=old_tags)
         return doc_deleted or chroma_deleted
 
     def delete(
@@ -3757,7 +3764,11 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
         self._store.update_tags(chroma_coll, id, casefold_tags_for_index(final_tags))
 
         # Tag changes can affect meta-doc resolution (tag-based queries)
-        self._context_cache.notify_write(id, final_tags)
+        self._context_cache.notify_write(
+            id,
+            old_tags=current_tags,
+            new_tags=final_tags,
+        )
 
         # Return updated item
         return self._get_direct(id)

@@ -659,7 +659,7 @@ class ContextResolutionMixin:
         from .state_doc_runtime import make_action_runner, make_state_doc_loader
         env = LocalFlowEnvironment(self)
         loader = make_state_doc_loader(env)
-        runner = make_action_runner(env)
+        runner = make_action_runner(env, context_cache=self._context_cache)
 
         result: dict[str, list[Item]] = {}
 
@@ -726,7 +726,7 @@ class ContextResolutionMixin:
             if loader is None:
                 loader = make_state_doc_loader(env)
             if runner is None:
-                runner = make_action_runner(env)
+                runner = make_action_runner(env, context_cache=self._context_cache)
 
         # Provide the parsed doc directly via an inline loader
         base_loader = loader
