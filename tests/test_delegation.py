@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from keep.pending_summaries import PendingSummaryQueue, PendingSummary
-from keep.processors import ProcessorResult, DELEGATABLE_TASK_TYPES
+from keep.processors import DELEGATABLE_TASK_TYPES
 from keep.task_client import TaskClient, TaskClientError
 
 
@@ -43,11 +43,51 @@ class TestDelegateTask:
         call_args = mock_tc.submit.call_args
         assert call_args[0][0] == "summarize"
         assert call_args[0][1] == "Long content to summarize"
+        assert call_args[1]["action_name"] == "summarize"
+        assert call_args[1]["action_params"]["item_id"] == "doc1"
 
         # Should be marked as delegated
         delegated = queue.list_delegated()
         assert len(delegated) == 1
         assert delegated[0].metadata["_remote_task_id"] == "remote-task-001"
+
+        queue.close()
+        kp.close()
+
+    def test_delegates_summarize_with_prepared_action_metadata(self, mock_providers, tmp_path):
+        """Delegation should use summarize action preparation for context and prompt."""
+        from keep import Keeper
+
+        kp = Keeper(store_path=tmp_path)
+
+        queue = PendingSummaryQueue(tmp_path / "pending.db")
+        kp._pending_queue = queue
+
+        mock_tc = MagicMock(spec=TaskClient)
+        mock_tc.submit.return_value = "remote-task-ctx"
+        kp._task_client = mock_tc
+
+        kp.put(content="Long content to summarize", id="doc1", tags={"topic": "auth"})
+        queue.clear()
+        queue.enqueue("doc1", "default", "Long content to summarize")
+        items = queue.dequeue(limit=1)
+
+        with (
+            patch.object(kp, "_gather_context", return_value="related auth context"),
+            patch.object(kp, "_resolve_prompt_doc", return_value="Summarize with auth framing"),
+        ):
+            kp._delegate_task(items[0])
+
+        mock_tc.submit.assert_called_once()
+        call_args = mock_tc.submit.call_args
+        assert call_args[0][0] == "summarize"
+        assert call_args[0][1] == "Long content to summarize"
+        meta = call_args[1].get("metadata") or call_args[0][2]
+        assert meta["context"] == "related auth context"
+        assert meta["system_prompt_override"] == "Summarize with auth framing"
+        assert call_args[1]["action_name"] == "summarize"
+        assert call_args[1]["action_params"]["context"] == "related auth context"
+        assert call_args[1]["action_params"]["system_prompt"] == "Summarize with auth framing"
 
         queue.close()
         kp.close()
@@ -190,12 +230,14 @@ class TestAnalyzeDelegation:
         assert call_args[0][0] == "analyze"
         meta = call_args[1].get("metadata") or call_args[0][2]
         assert "chunks" in meta
+        assert call_args[1]["action_name"] == "analyze"
+        assert "chunks" in call_args[1]["action_params"]
 
         queue.close()
         kp.close()
 
     def test_poll_applies_analyze_result(self, mock_providers, tmp_path):
-        """Completed analyze delegation applies parts to stores."""
+        """Completed analyze delegation applies action-output mutations."""
         from keep import Keeper
 
         kp = Keeper(store_path=tmp_path)
@@ -214,12 +256,36 @@ class TestAnalyzeDelegation:
         mock_tc = MagicMock(spec=TaskClient)
         mock_tc.poll.return_value = {
             "status": "completed",
-            "result": {
+            "output": {
                 "parts": [
                     {"summary": "Part 1: Introduction", "content": "Intro text", "tags": {}},
                     {"summary": "Part 2: Details", "content": "Detail text", "tags": {"topic": "tech"}},
                 ],
+                "mutations": [
+                    {"op": "delete_prefix", "prefix": "doc1@p"},
+                    {
+                        "op": "put_item",
+                        "id": "doc1@p1",
+                        "content": "Intro text",
+                        "summary": "Part 1: Introduction",
+                        "tags": {"_base_id": "doc1", "_part_num": "1"},
+                        "queue_background_tasks": False,
+                    },
+                    {
+                        "op": "put_item",
+                        "id": "doc1@p2",
+                        "content": "Detail text",
+                        "summary": "Part 2: Details",
+                        "tags": {
+                            "_base_id": "doc1",
+                            "_part_num": "2",
+                            "topic": "tech",
+                        },
+                        "queue_background_tasks": False,
+                    },
+                ],
             },
+            "result": None,
             "error": None,
             "task_type": "analyze",
         }
@@ -235,6 +301,40 @@ class TestAnalyzeDelegation:
         assert len(parts) == 2
         assert parts[0].summary == "Part 1: Introduction"
         assert parts[1].summary == "Part 2: Details"
+
+        queue.close()
+        kp.close()
+
+    def test_poll_translates_legacy_result(self, mock_providers, tmp_path):
+        """Legacy processor-shaped delegated results still apply during rollout."""
+        from keep import Keeper
+
+        kp = Keeper(store_path=tmp_path)
+
+        queue = PendingSummaryQueue(tmp_path / "pending.db")
+        kp._pending_queue = queue
+
+        kp.put(content="Original content", id="doc1")
+
+        queue.enqueue("doc1", "default", "content to summarize")
+        queue.dequeue(limit=1)
+        queue.mark_delegated("doc1", "default", "summarize", "rt-legacy-001")
+
+        mock_tc = MagicMock(spec=TaskClient)
+        mock_tc.poll.return_value = {
+            "status": "completed",
+            "output": None,
+            "result": {"summary": "Legacy remote summary"},
+            "error": None,
+            "task_type": "summarize",
+        }
+        kp._task_client = mock_tc
+
+        result = {"processed": 0, "failed": 0}
+        kp._poll_delegated(result)
+
+        assert result["processed"] == 1
+        assert kp.get("doc1").summary == "Legacy remote summary"
 
         queue.close()
         kp.close()
@@ -290,7 +390,13 @@ class TestPollDelegated:
         mock_tc = MagicMock(spec=TaskClient)
         mock_tc.poll.return_value = {
             "status": "completed",
-            "result": {"summary": "Remote summary result"},
+            "output": {
+                "summary": "Remote summary result",
+                "mutations": [
+                    {"op": "set_summary", "target": "doc1", "summary": "Remote summary result"},
+                ],
+            },
+            "result": None,
             "error": None,
             "task_type": "summarize",
         }

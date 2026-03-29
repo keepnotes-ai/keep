@@ -1,13 +1,7 @@
 
-* _daemon_client filename
-
-* review actions & hardcoded processing, available factoring
-
-* reranking (including a local provider)
-
 * more perf, cache
 
-* "keep now" versus "keep get now" / "keep put now"
+* reranking (including a local provider)
 
 * "skill install" (skill.md and _all the docs_) -> docs index, etc
     separate from "tool install"
@@ -53,13 +47,13 @@
 * chatgpt import (unzip -> jq -> data)
     ("use the flows, luke")
 
-* mbox import, including attachments
+* mbox import, including attachments (also .pst)
     ("use the flows, luke")
 
 * poc: "an append-only journal narrated in first person (experiences, not task logs)"
     (also: "with periodic consolidation that compresses episodes into thematic structures" - our `analyze`)
 
-* `keep put --no-version` for volatile items
+* `keep put --no-version` for volatile items?
 
 * edge migration over versioning and move
 
@@ -78,8 +72,6 @@
 
 * strengthen the practice: write a file with your findings; then store it.
 
-* remove "now" / hide it - just duplicates "put"/"get"?
-
 x Codex hooks
     https://developers.openai.com/codex/config-advanced/#notifications
     Notification - can just log the user prompts for the turn (better than nothing)
@@ -96,6 +88,7 @@ x Codex hooks
     - music (albums, artists, tracks, ...)
     - notes
     - health data
+    - mailfile
     (etc)...
     - want URLs for each of these so that we can represent them in our database with summaries and tags
 
@@ -340,3 +333,6 @@ x acp
 . OTel observability and initial cacheing strategy
 . when get a system doc, don't get_context, just return it.
 . remove hard-coded default docs, fix consistency:
+. "keep now" versus "keep get now" / "keep put now"
+. _daemon_client filename
+. review actions & hardcoded processing, available factoring

@@ -1,19 +1,15 @@
-"""Pure processing functions for keep.
+"""Pure processing helpers for keep.
 
 These functions encapsulate the "compute" portion of background processing
-(summarization, OCR) without any store reads or writes.  This separation
-allows the same processing logic to run locally or be delegated to a
-hosted service (Phase 1 of Hybrid Processing).
-
-Each function returns a ProcessorResult that the caller applies to the store
-via Keeper.apply_result().
+(summarization, OCR, analysis) without any store reads or writes. They return
+plain dicts so callers can compose them into action outputs without relying on
+an intermediate result object contract.
 """
 
 from __future__ import annotations
 
 import hashlib
 import logging
-from dataclasses import dataclass
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -47,19 +43,6 @@ MIME_TO_EXTENSION = {
     "image/tiff": ".tiff",
     "image/webp": ".webp",
 }
-
-
-@dataclass
-class ProcessorResult:
-    """Result of processing a task.  Caller applies to store."""
-
-    task_type: str  # "summarize" | "ocr" | "analyze"
-    summary: str | None = None
-    content: str | None = None            # ocr: full extracted text
-    content_hash: str | None = None       # ocr: short hash
-    content_hash_full: str | None = None  # ocr: full SHA256
-    parts: list | None = None             # analyze: PartInfo list (Phase 2)
-
 
 def _llm_summarize(
     content: str,
@@ -99,7 +82,7 @@ def process_summarize(
     context: str | None = None,
     summarization_provider,
     system_prompt_override: str | None = None,
-) -> ProcessorResult:
+) -> dict[str, str]:
     """Summarize content.  Pure function — no store access."""
     summary = _llm_summarize(
         content, summarization_provider,
@@ -108,7 +91,7 @@ def process_summarize(
     if summary is None:
         # Non-LLM fallback (truncate, first_paragraph)
         summary = summarization_provider.summarize(content, context=context)
-    return ProcessorResult(task_type="summarize", summary=summary)
+    return {"summary": summary}
 
 
 def ocr_image(path: Path, content_type: str, extractor) -> str | None:
@@ -158,7 +141,7 @@ def process_ocr(
     max_summary_length: int,
     context: str | None = None,
     summarization_provider=None,
-) -> ProcessorResult:
+) -> dict[str, str]:
     """Process OCR'd text: summarize if needed, compute hashes.
 
     Pure function — no store access.
@@ -172,13 +155,12 @@ def process_ocr(
     else:
         summary = full_content[:max_summary_length] + "..."
 
-    return ProcessorResult(
-        task_type="ocr",
-        summary=summary,
-        content=full_content,
-        content_hash=_content_hash(full_content),
-        content_hash_full=_content_hash_full(full_content),
-    )
+    return {
+        "summary": summary,
+        "content": full_content,
+        "content_hash": _content_hash(full_content),
+        "content_hash_full": _content_hash_full(full_content),
+    }
 
 
 def process_analyze(
@@ -189,7 +171,7 @@ def process_analyze(
     analyzer_provider=None,
     classifier_provider=None,
     prompt_override: str | None = None,
-) -> ProcessorResult:
+) -> dict[str, list[dict]]:
     """Analyze + classify content into parts.  Pure function — no store access.
 
     Args:
@@ -202,7 +184,7 @@ def process_analyze(
         prompt_override: Analysis prompt text from .prompt/analyze/* docs.
 
     Returns:
-        ProcessorResult with parts=[{"summary": str, "content": str, "tags": dict}, ...]
+        Dict with parts=[{"summary": str, "content": str, "tags": dict}, ...]
     """
     from .analyzers import SlidingWindowAnalyzer, TagClassifier
     from .providers.base import AnalysisChunk
@@ -233,4 +215,4 @@ def process_analyze(
         except Exception as e:
             logger.warning("Tag classification skipped: %s", e)
 
-    return ProcessorResult(task_type="analyze", parts=raw_parts)
+    return {"parts": raw_parts}

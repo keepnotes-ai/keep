@@ -15,8 +15,8 @@ from urllib.parse import quote
 
 import typer
 
-from ._daemon_client import get_port as _daemon_get_port
-from ._daemon_client import http_request as _http
+from .daemon_client import get_port as _daemon_get_port
+from .daemon_client import http_request as _http
 from .const import DAEMON_PORT_FILE, DAEMON_TOKEN_FILE
 
 app = typer.Typer(
@@ -209,7 +209,7 @@ def _daemon_request(method: str, port: int, path: str, body: dict | None = None)
 
 
 # ---------------------------------------------------------------------------
-# Daemon port resolution (delegates to _daemon_client)
+# Daemon port resolution (delegates to daemon_client)
 # ---------------------------------------------------------------------------
 
 def _get_port() -> int:
@@ -1482,7 +1482,7 @@ def pending(
         import signal
         import time as _time
 
-        from ._daemon_client import resolve_store_path
+        from .daemon_client import resolve_store_path
         store_path = resolve_store_path(_global_store)
         pid_file = store_path / "processor.pid"
         if not pid_file.exists():
@@ -1520,7 +1520,7 @@ def pending(
         return
 
     if list_items:
-        from ._daemon_client import get_port, resolve_store_path
+        from .daemon_client import get_port, resolve_store_path
         from .cli import print_pending_list_lightweight
         store_path = resolve_store_path(_global_store)
         print_pending_list_lightweight(store_path)
@@ -1528,7 +1528,7 @@ def pending(
         get_port(_global_store)
         return
 
-    from ._daemon_client import resolve_store_path
+    from .daemon_client import resolve_store_path
     from .api import Keeper
     kp = Keeper(store_path=resolve_store_path(_global_store))
 
@@ -1619,7 +1619,7 @@ def config(
         return
 
     if setup:
-        from ._daemon_client import resolve_store_path
+        from .daemon_client import resolve_store_path
         from .paths import get_config_dir
         from .setup_wizard import run_wizard
         store_path = resolve_store_path(_global_store)
@@ -1711,7 +1711,7 @@ def data_export(
     exclude_system: Annotated[bool, typer.Option("--exclude-system", help="Exclude system documents")] = False,
 ):
     """Export the store to JSON for backup or migration."""
-    from ._daemon_client import resolve_store_path
+    from .daemon_client import resolve_store_path
     from .api import Keeper
     kp = Keeper(store_path=resolve_store_path(_global_store))
     it = kp.export_iter(include_system=not exclude_system)
@@ -1771,7 +1771,7 @@ def data_import(
         ):
             raise SystemExit(0)
 
-    from ._daemon_client import resolve_store_path
+    from .daemon_client import resolve_store_path
     from .api import Keeper
     kp = Keeper(store_path=resolve_store_path(_global_store))
     stats = kp.import_data(data, mode=mode)

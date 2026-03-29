@@ -10,7 +10,6 @@ import logging
 from typing import TYPE_CHECKING, Any, Optional, Protocol
 
 from .actions import coerce_item_id
-from .processors import ProcessorResult
 
 logger = logging.getLogger(__name__)
 
@@ -130,7 +129,12 @@ class FlowRuntimeEnv(Protocol):
         candidates: list[str] | None = None,
     ) -> dict[str, Any]: ...
 
-    def resolve_prompt(self, prefix: str, doc_tags: dict[str, Any]) -> str | None: ...
+    def resolve_prompt(
+        self, prefix: str, doc_tags: dict[str, Any], *, item_id: str | None = None,
+    ) -> str | None: ...
+    def gather_context(self, item_id: str, tags: dict[str, Any]) -> str: ...
+    def gather_analyze_chunks(self, item_id: str, item: Any) -> Any: ...
+    def gather_guide_context(self, tags: list[str]) -> str: ...
 
     def get_default_summarization_provider(self) -> Any: ...
     def get_default_analyzer_provider(self) -> Any: ...
@@ -517,19 +521,26 @@ class LocalFlowEnvironment:
         self._keeper.tag(target, tags=tags)
 
     def set_summary(self, target: str, summary: str) -> None:
+        from .task_workflows import _apply_mutations
+
         existing = self._keeper.get(target)
         if existing is None:
             raise ValueError(f"Target note not found: {target}")
         if existing.summary == summary:
             return
 
-        doc_coll = self.resolve_doc_collection()
-        result = ProcessorResult(task_type="summarize", summary=summary)
-        self._keeper.apply_result(
-            target,
-            doc_coll,
-            result,
-            existing_tags=dict(existing.tags),
+        _apply_mutations(
+            self._keeper,
+            self.resolve_doc_collection(),
+            {
+                "mutations": [
+                    {
+                        "op": "set_summary",
+                        "target": target,
+                        "summary": summary,
+                    }
+                ]
+            },
         )
 
     def get_planner_priors(
@@ -542,6 +553,15 @@ class LocalFlowEnvironment:
             scope_key=scope_key,
             candidates=candidates,
         )
+
+    def gather_context(self, item_id: str, tags: dict[str, Any]) -> str:
+        return self._keeper._gather_context(item_id, tags)
+
+    def gather_analyze_chunks(self, item_id: str, item: Any) -> Any:
+        return self._keeper._gather_analyze_chunks(item_id, item)
+
+    def gather_guide_context(self, tags: list[str]) -> str:
+        return self._keeper._gather_guide_context(tags)
 
     def resolve_prompt(
         self, prefix: str, doc_tags: dict[str, Any], *, item_id: str | None = None,

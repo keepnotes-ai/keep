@@ -239,6 +239,69 @@ class TestRunLocalTask:
         result = run_local_task(kp, req)
         assert result.status == "applied"
 
+    def test_summarize_uses_prepared_context_and_prompt(self):
+        """run_local_task should use summarize.prepare() inputs before execution."""
+        kp = MagicMock()
+        mock_item = MagicMock(
+            content="Long content for summary",
+            summary="",
+            tags={"topic": "auth", "_source": "inline"},
+        )
+        kp.get.return_value = mock_item
+        kp._gather_context.return_value = "related auth context"
+        kp._resolve_prompt_doc.return_value = "Summarize with auth framing"
+        provider = MagicMock()
+        provider.summarize.return_value = "summary result"
+        kp._get_summarization_provider.return_value = provider
+        kp._document_store.get.return_value = None
+
+        req = TaskRequest(task_type="summarize", id="d1", collection="c", content="Long content for summary")
+        result = run_local_task(kp, req)
+
+        assert result.status == "applied"
+        provider.summarize.assert_called_once_with(
+            "Long content for summary",
+            max_length=500,
+            context="related auth context",
+            system_prompt="Summarize with auth framing",
+        )
+
+    def test_analyze_uses_prepared_chunks_and_guide_context(self):
+        """run_local_task should use analyze.prepare() inputs before execution."""
+        kp = MagicMock()
+        mock_item = MagicMock(content="", summary="Current summary", tags={"type": "note"})
+        kp.get.return_value = mock_item
+        kp._gather_analyze_chunks.return_value = [
+            {"content": "context chunk", "tags": {"kind": "context"}, "index": 0},
+            {"content": "target chunk", "tags": {"kind": "target"}, "index": 1},
+        ]
+        kp._gather_guide_context.return_value = "guide text"
+        kp._resolve_prompt_doc.return_value = "Analyze with prompt"
+        kp.list_items.return_value = []
+        kp._document_store.get.return_value = None
+        mock_analyzer = MagicMock()
+        mock_analyzer.analyze.return_value = [
+            {"summary": "Part 1", "content": "content 1", "tags": {}},
+        ]
+        kp._get_analyzer.return_value = mock_analyzer
+
+        req = TaskRequest(
+            task_type="analyze",
+            id="d1",
+            collection="c",
+            content="ignored",
+            metadata={"tags": ["topic"]},
+        )
+        result = run_local_task(kp, req)
+
+        assert result.status == "applied"
+        kp._gather_analyze_chunks.assert_called_once_with("d1", mock_item)
+        kp._gather_guide_context.assert_called_once_with(["topic"])
+        analyze_args = mock_analyzer.analyze.call_args.args
+        assert len(analyze_args[0]) == 2
+        assert analyze_args[1] == "guide text"
+        assert mock_analyzer.analyze.call_args.kwargs["prompt_override"] == "Analyze with prompt"
+
     def test_dispatches_to_tag(self):
         """Auto-tag action runs through run_local_task."""
         kp = MagicMock()

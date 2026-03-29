@@ -33,6 +33,13 @@ from .types import (
 logger = logging.getLogger(__name__)
 
 
+def _is_action_output(value: Any) -> bool:
+    """Return whether a completed remote payload already looks like action output."""
+    if not isinstance(value, dict):
+        return False
+    return "mutations" in value or bool(value.get("skipped"))
+
+
 
 def _size_priority_bump(content_len: int) -> int:
     """Return a priority bump based on content length.
@@ -507,49 +514,33 @@ class BackgroundProcessingMixin:
     def _delegate_task(self, item) -> None:
         """Submit a task to the hosted service and mark as delegated."""
         from .task_client import TaskClientError
+        from .actions import build_delegated_payload, prepare_action_params
+        from .task_workflows import _KeeperActionContext
 
-        content = item.content
-        # For summarize tasks, gather context to include in metadata
-        meta = dict(item.metadata or {})
-
-        if item.task_type == "summarize":
-            doc = self._document_store.get(item.collection, item.id)
-            if doc:
-                user_tags = filter_non_system_tags(doc.tags)
-                if user_tags:
-                    context = self._gather_context(item.id, user_tags)
-                    if context:
-                        meta["context"] = context
-                prompt = self._resolve_prompt_doc("summarize", doc.tags, required=True)
-                meta["system_prompt_override"] = prompt
-
-        elif item.task_type == "analyze":
-            doc = self._document_store.get(item.collection, item.id)
-            if not doc:
+        ctx = _KeeperActionContext(
+            self,
+            collection=item.collection,
+            item_id=item.id,
+            item_content=item.content or None,
+        )
+        params: dict[str, Any] = {"item_id": item.id}
+        params.update(item.metadata or {})
+        try:
+            _action, prepared = prepare_action_params(item.task_type, params, ctx)
+        except ValueError as exc:
+            if "target item not found" in str(exc):
                 logger.info("Skipping delegation for deleted doc: %s", item.id)
                 return
-            # Gather chunks, guide context, and tag specs locally
-            meta["chunks"] = self._gather_analyze_chunks(item.id, doc)
-            guidance_tags = (item.metadata or {}).get("tags")
-            if guidance_tags:
-                meta["guide_context"] = self._gather_guide_context(guidance_tags)
-            try:
-                from .analyzers import TagClassifier
-                classifier = TagClassifier(
-                    provider=self._get_summarization_provider(),
-                )
-                specs = classifier.load_specs(self)
-                if specs:
-                    meta["tag_specs"] = specs
-            except Exception as e:
-                logger.warning("Could not load tag specs for delegation: %s", e)
-            prompt = self._resolve_prompt_doc("analyze", doc.tags, required=True)
-            meta["prompt_override"] = prompt
-            content = ""  # content is in chunks, not top-level
+            raise
+        content, meta = build_delegated_payload(item.task_type, prepared, item.content)
 
         try:
             remote_task_id = self._task_client.submit(
-                item.task_type, content, meta or None,
+                item.task_type,
+                content,
+                meta or None,
+                action_name=item.task_type,
+                action_params=prepared,
             )
         except TaskClientError:
             raise  # Let caller handle fallback
@@ -567,8 +558,8 @@ class BackgroundProcessingMixin:
 
     def _poll_delegated(self, result: dict) -> None:
         """Poll for results of delegated tasks and apply them."""
-        from .processors import ProcessorResult
         from .task_client import TaskClientError
+        from .task_workflows import _apply_mutations
 
         delegated = self._pending_queue.list_delegated()
         if not delegated:
@@ -592,22 +583,33 @@ class BackgroundProcessingMixin:
                 continue
 
             if resp["status"] == "completed":
-                task_result = resp.get("result") or {}
-                proc_result = ProcessorResult(
-                    task_type=item.task_type,
-                    summary=task_result.get("summary"),
-                    content=task_result.get("content"),
-                    content_hash=task_result.get("content_hash"),
-                    content_hash_full=task_result.get("content_hash_full"),
-                    parts=task_result.get("parts"),
-                )
-                # Get existing doc tags for apply_result
                 doc = self._document_store.get(item.collection, item.id)
                 existing_tags = doc.tags if doc else None
-                self.apply_result(
-                    item.id, item.collection, proc_result,
+                output = self._coerce_delegated_output(
+                    item.id,
+                    item.collection,
+                    item.task_type,
+                    resp.get("output"),
+                    resp.get("result"),
                     existing_tags=existing_tags,
                 )
+
+                if output is None:
+                    self._pending_queue.fail(
+                        item.id,
+                        item.collection,
+                        item.task_type,
+                        error="Remote completed without usable action output",
+                    )
+                    result["failed"] = result.get("failed", 0) + 1
+                    logger.warning(
+                        "Delegated %s %s returned unusable completion payload",
+                        item.task_type, item.id,
+                    )
+                    continue
+
+                if output.get("mutations"):
+                    _apply_mutations(self, item.collection, output)
                 self._pending_queue.complete(item.id, item.collection, item.task_type)
                 try:
                     self._task_client.acknowledge(remote_task_id)
@@ -663,42 +665,88 @@ class BackgroundProcessingMixin:
             item.task_type, item.id, reason,
         )
 
-    def apply_result(self, item_id, collection, result, *, existing_tags=None):
-        """Apply a ProcessorResult to the local store.
+    def _coerce_delegated_output(
+        self,
+        item_id: str,
+        collection: str,
+        task_type: str,
+        output: Any,
+        legacy_result: Any,
+        *,
+        existing_tags: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """Normalize remote completion payloads to action output dicts."""
+        if _is_action_output(output):
+            return dict(output)
+        if _is_action_output(legacy_result):
+            return dict(legacy_result)
+        if isinstance(legacy_result, dict):
+            translated = self._task_result_to_output(
+                item_id,
+                collection,
+                task_type,
+                legacy_result,
+                existing_tags=existing_tags,
+            )
+            if translated is not None:
+                return translated
+        return None
 
-        Converts the legacy ProcessorResult into a mutation list and
-        delegates to the generic ``_apply_mutations`` applier.
-        """
-        from .task_workflows import _apply_mutations
-
+    def _task_result_to_output(
+        self,
+        item_id: str,
+        collection: str,
+        task_type: str,
+        result: dict[str, Any],
+        *,
+        existing_tags: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """Normalize raw task results into action outputs."""
+        output: dict[str, Any] = {}
         mutations: list[dict[str, Any]] = []
 
-        if result.task_type == "summarize":
+        if task_type == "summarize":
+            output["summary"] = str(result.get("summary") or "")
             mutations.append({
-                "op": "set_summary", "target": item_id,
-                "summary": result.summary or "",
+                "op": "set_summary",
+                "target": item_id,
+                "summary": output["summary"],
             })
 
-        elif result.task_type == "ocr":
+        elif task_type == "ocr":
+            content = str(result.get("content") or "")
+            summary = str(result.get("summary") or "")
+            output.update({
+                "text": content,
+                "summary": summary,
+            })
             mutations.append({
-                "op": "set_content", "target": item_id,
-                "content": result.content or "",
-                "summary": result.summary or "",
-                "content_hash": result.content_hash or "",
-                "content_hash_full": result.content_hash_full or "",
+                "op": "set_content",
+                "target": item_id,
+                "content": content,
+                "summary": summary,
+                "content_hash": str(result.get("content_hash") or ""),
+                "content_hash_full": str(result.get("content_hash_full") or ""),
             })
 
-        elif result.task_type == "describe":
+        elif task_type == "describe":
+            output["summary"] = str(result.get("summary") or "")
             mutations.append({
-                "op": "set_summary", "target": item_id,
-                "summary": result.summary or "",
+                "op": "set_summary",
+                "target": item_id,
+                "summary": output["summary"],
                 "embed": True,
             })
 
-        elif result.task_type == "analyze":
+        elif task_type == "analyze":
             doc = self._document_store.get(collection, item_id)
             if not doc:
-                return
+                return {"parts": [], "skipped": True, "reason": "missing_item"}
+
+            raw_parts = result.get("parts") or []
+            if not isinstance(raw_parts, list):
+                raw_parts = []
+            output["parts"] = raw_parts
 
             mutations.append({"op": "delete_prefix", "prefix": f"{item_id}@p"})
 
@@ -706,9 +754,11 @@ class BackgroundProcessingMixin:
                 k: v for k, v in (existing_tags or {}).items()
                 if not k.startswith(SYSTEM_TAG_PREFIX)
             }
-            for i, raw in enumerate(result.parts or [], 1):
+            for i, raw in enumerate(raw_parts, 1):
+                if not isinstance(raw, dict):
+                    continue
                 part_tags = dict(parent_user_tags)
-                if raw.get("tags"):
+                if isinstance(raw.get("tags"), dict):
                     part_tags.update(raw["tags"])
                 part_tags["_base_id"] = item_id
                 part_tags["_part_num"] = str(i)
@@ -728,12 +778,53 @@ class BackgroundProcessingMixin:
                 if versions:
                     updated_tags["_analyzed_version"] = str(versions[0].version)
                 mutations.append({
-                    "op": "set_tags", "target": item_id,
+                    "op": "set_tags",
+                    "target": item_id,
                     "tags": updated_tags,
                 })
 
+        else:
+            return None
+
         if mutations:
-            _apply_mutations(self, collection, {"mutations": mutations})
+            output["mutations"] = mutations
+        return output
+
+    def apply_result(self, item_id, collection, result, *, existing_tags=None):
+        """Apply either action output or a raw task result dict to the local store."""
+        from .task_workflows import _apply_mutations
+        output: dict[str, Any] | None = None
+        if isinstance(result, dict):
+            if _is_action_output(result):
+                output = dict(result)
+            else:
+                task_type = str(result.get("task_type") or "")
+                if task_type:
+                    output = self._task_result_to_output(
+                        item_id,
+                        collection,
+                        task_type,
+                        result,
+                        existing_tags=existing_tags,
+                    )
+        else:
+            task_type = str(getattr(result, "task_type", "") or "")
+            if task_type:
+                output = self._task_result_to_output(
+                    item_id,
+                    collection,
+                    task_type,
+                    {
+                        "summary": getattr(result, "summary", None),
+                        "content": getattr(result, "content", None),
+                        "content_hash": getattr(result, "content_hash", None),
+                        "content_hash_full": getattr(result, "content_hash_full", None),
+                        "parts": getattr(result, "parts", None),
+                    },
+                    existing_tags=existing_tags,
+                )
+        if output and output.get("mutations"):
+            _apply_mutations(self, collection, output)
 
     def _run_local_task_workflow(
         self,
@@ -1112,43 +1203,52 @@ class BackgroundProcessingMixin:
             if has_supernode:
                 return 0
 
-        # Find candidates
+        # Find candidates via the shared action implementation so daemon
+        # replenishment and flow execution use identical selection logic.
         try:
-            doc_coll = self._resolve_doc_collection()
-            candidates = self._document_store.find_supernode_candidates(
-                doc_coll, min_fan_in=min_fan_in, limit=limit,
+            from .flow_env import LocalFlowEnvironment
+            from .state_doc_runtime import make_action_runner
+
+            env = LocalFlowEnvironment(self)
+            run_action = make_action_runner(env, writable=False)
+            output = run_action(
+                "find_supernodes",
+                {
+                    "min_fan_in": min_fan_in,
+                    "limit": limit,
+                },
             )
         except Exception as exc:
             logger.debug("Supernode candidate search failed: %s", exc)
             return 0
 
-        if not candidates:
+        candidates = output.get("results") if isinstance(output, dict) else None
+        if not isinstance(candidates, list):
             return 0
-
-        # Filter: only stubs or previously-reviewed items
-        _STUB_SOURCES = {"link", "auto-vivify"}
-        eligible = [
-            c for c in candidates
-            if c.get("source") in _STUB_SOURCES or c.get("last_reviewed")
-        ]
-
-        if not eligible:
+        if not candidates:
             return 0
 
         # Enqueue each candidate as a flow work item
         enqueued = 0
-        for c in eligible:
+        for c in candidates:
+            if not isinstance(c, dict):
+                continue
+            candidate_id = c.get("id")
+            fan_in = c.get("fan_in")
+            new_refs = c.get("new_refs")
+            if not isinstance(candidate_id, str) or not candidate_id:
+                continue
             wq.enqueue(
                 "flow",
                 {
                     "state": "review-supernodes",
                     "params": {
-                        "item_id": c["id"],
-                        "fan_in": c["fan_in"],
-                        "new_refs": c["new_refs"],
+                        "item_id": candidate_id,
+                        "fan_in": fan_in,
+                        "new_refs": new_refs,
                     },
                 },
-                supersede_key=f"supernode:{c['id']}",
+                supersede_key=f"supernode:{candidate_id}",
                 priority=8,
             )
             enqueued += 1

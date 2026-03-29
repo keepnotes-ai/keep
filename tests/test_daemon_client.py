@@ -36,12 +36,12 @@ class TestGetPortNoFileStranding:
             return len(health_calls) > 1
 
         with (
-            patch("keep._daemon_client.resolve_store_path", return_value=store),
-            patch("keep._daemon_client.check_health", side_effect=mock_health),
-            patch("keep._daemon_client.start_daemon"),
-            patch("keep._daemon_client._load_token"),
+            patch("keep.daemon_client.resolve_store_path", return_value=store),
+            patch("keep.daemon_client.check_health", side_effect=mock_health),
+            patch("keep.daemon_client.start_daemon"),
+            patch("keep.daemon_client._load_token"),
         ):
-            from keep._daemon_client import get_port
+            from keep.daemon_client import get_port
             port = get_port(str(store))
 
         assert port == 9999
@@ -72,12 +72,12 @@ class TestGetPortNoFileStranding:
             token_file.write_text("new-token")
 
         with (
-            patch("keep._daemon_client.resolve_store_path", return_value=store),
-            patch("keep._daemon_client.check_health", side_effect=mock_health),
-            patch("keep._daemon_client.start_daemon", side_effect=mock_start),
-            patch("keep._daemon_client._load_token"),
+            patch("keep.daemon_client.resolve_store_path", return_value=store),
+            patch("keep.daemon_client.check_health", side_effect=mock_health),
+            patch("keep.daemon_client.start_daemon", side_effect=mock_start),
+            patch("keep.daemon_client._load_token"),
         ):
-            from keep._daemon_client import get_port
+            from keep.daemon_client import get_port
             port = get_port(str(store))
 
         assert port == 7777
@@ -95,12 +95,12 @@ class TestGetPortNoFileStranding:
             return port == 5555
 
         with (
-            patch("keep._daemon_client.resolve_store_path", return_value=store),
-            patch("keep._daemon_client.check_health", side_effect=mock_health),
-            patch("keep._daemon_client.start_daemon", side_effect=mock_start),
-            patch("keep._daemon_client._load_token"),
+            patch("keep.daemon_client.resolve_store_path", return_value=store),
+            patch("keep.daemon_client.check_health", side_effect=mock_health),
+            patch("keep.daemon_client.start_daemon", side_effect=mock_start),
+            patch("keep.daemon_client._load_token"),
         ):
-            from keep._daemon_client import get_port
+            from keep.daemon_client import get_port
             port = get_port(str(store))
 
         assert port == 5555
@@ -117,7 +117,7 @@ class TestLoadTokenCacheScoping:
         (store_a / DAEMON_TOKEN_FILE).write_text("token-a")
         (store_b / DAEMON_TOKEN_FILE).write_text("token-b")
 
-        from keep import _daemon_client as client
+        from keep import daemon_client as client
 
         client._auth_token = ""
         client._auth_token_store = ""

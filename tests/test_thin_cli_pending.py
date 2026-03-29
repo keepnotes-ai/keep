@@ -12,7 +12,7 @@ def test_pending_stop_cleans_stale_discovery_files_without_pid(tmp_path, capsys)
     (store / DAEMON_PORT_FILE).write_text("5337")
     (store / DAEMON_TOKEN_FILE).write_text("token")
 
-    with patch("keep._daemon_client.resolve_store_path", return_value=store):
+    with patch("keep.daemon_client.resolve_store_path", return_value=store):
         thin_cli.pending(stop=True)
 
     captured = capsys.readouterr()

@@ -5,7 +5,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from keep.processors import (
-    ProcessorResult,
     process_summarize,
     process_analyze,
     process_ocr,
@@ -34,9 +33,7 @@ class TestProcessSummarize:
 
         result = process_summarize("long content here", summarization_provider=provider)
 
-        assert isinstance(result, ProcessorResult)
-        assert result.task_type == "summarize"
-        assert result.summary == "A brief summary"
+        assert result["summary"] == "A brief summary"
         provider.generate.assert_called_once()
         provider.summarize.assert_not_called()
 
@@ -48,7 +45,7 @@ class TestProcessSummarize:
 
         result = process_summarize("long content here", summarization_provider=provider)
 
-        assert result.summary == "truncated summary"
+        assert result["summary"] == "truncated summary"
         provider.summarize.assert_called_once_with("long content here", context=None)
 
     def test_passes_context(self):
@@ -60,7 +57,7 @@ class TestProcessSummarize:
             "content", context="related notes", summarization_provider=provider,
         )
 
-        assert result.summary == "contextual summary"
+        assert result["summary"] == "contextual summary"
         provider.generate.assert_called_once()
 
     def test_no_side_fields(self):
@@ -70,10 +67,7 @@ class TestProcessSummarize:
 
         result = process_summarize("x", summarization_provider=provider)
 
-        assert result.content is None
-        assert result.content_hash is None
-        assert result.content_hash_full is None
-        assert result.parts is None
+        assert result == {"summary": "sum"}
 
 
 # ---------------------------------------------------------------------------
@@ -88,9 +82,8 @@ class TestProcessOcr:
         """Content shorter than max_summary_length is the summary itself."""
         result = process_ocr("short text", max_summary_length=100)
 
-        assert result.task_type == "ocr"
-        assert result.summary == "short text"
-        assert result.content == "short text"
+        assert result["summary"] == "short text"
+        assert result["content"] == "short text"
 
     def test_long_content_summarized(self):
         """Provider is called when content exceeds max_summary_length."""
@@ -103,8 +96,8 @@ class TestProcessOcr:
             summarization_provider=provider,
         )
 
-        assert result.summary == "summarized"
-        assert result.content == long_text
+        assert result["summary"] == "summarized"
+        assert result["content"] == long_text
         provider.generate.assert_called_once()
 
     def test_no_provider_truncates(self):
@@ -113,17 +106,17 @@ class TestProcessOcr:
 
         result = process_ocr(long_text, max_summary_length=20)
 
-        assert result.summary == long_text[:20] + "..."
-        assert result.content == long_text
+        assert result["summary"] == long_text[:20] + "..."
+        assert result["content"] == long_text
 
     def test_computes_hashes(self):
         """content_hash and content_hash_full are set."""
         result = process_ocr("hello world", max_summary_length=1000)
 
-        assert result.content_hash is not None
-        assert len(result.content_hash) == 10  # short hash
-        assert result.content_hash_full is not None
-        assert len(result.content_hash_full) == 64  # full SHA256
+        assert result["content_hash"] is not None
+        assert len(result["content_hash"]) == 10  # short hash
+        assert result["content_hash_full"] is not None
+        assert len(result["content_hash_full"]) == 64  # full SHA256
 
     def test_context_forwarded_to_provider(self):
         """Context is passed through to the summarization provider."""
@@ -321,9 +314,8 @@ class TestConstants:
         assert "analyze" in DELEGATABLE_TASK_TYPES
 
     def test_exports_from_init(self):
-        """ProcessorResult and DELEGATABLE_TASK_TYPES are exported from keep."""
-        from keep import ProcessorResult as PR, DELEGATABLE_TASK_TYPES as DT
-        assert PR is ProcessorResult
+        """DELEGATABLE_TASK_TYPES is exported from keep."""
+        from keep import DELEGATABLE_TASK_TYPES as DT
         assert DT is DELEGATABLE_TASK_TYPES
 
 
@@ -336,7 +328,7 @@ class TestProcessAnalyze:
     """Tests for the process_analyze pure function."""
 
     def test_returns_parts(self):
-        """Analyzer output is returned as ProcessorResult.parts."""
+        """Analyzer output is returned in the result dict."""
         raw_parts = [
             {"summary": "Part 1 summary", "content": "Section A"},
             {"summary": "Part 2 summary", "content": "Section B"},
@@ -350,8 +342,7 @@ class TestProcessAnalyze:
             MockAnalyzer.return_value.analyze.return_value = raw_parts
             result = process_analyze(chunks, analyzer_provider=MagicMock())
 
-        assert result.task_type == "analyze"
-        assert result.parts == raw_parts
+        assert result["parts"] == raw_parts
 
     def test_single_part_returned(self):
         """Single-part result is returned (caller decides to skip)."""
@@ -362,8 +353,7 @@ class TestProcessAnalyze:
             MockAnalyzer.return_value.analyze.return_value = raw_parts
             result = process_analyze(chunks, analyzer_provider=MagicMock())
 
-        assert result.task_type == "analyze"
-        assert len(result.parts) == 1
+        assert len(result["parts"]) == 1
 
     def test_passes_guide_context(self):
         """Guide context is forwarded to the analyzer."""
@@ -411,8 +401,7 @@ class TestProcessAnalyze:
             # Classifier should be called with parts and specs
             MockClassifier.return_value.classify.assert_called_once_with(raw_parts, tag_specs)
 
-        assert result.task_type == "analyze"
-        assert len(result.parts) == 2
+        assert len(result["parts"]) == 2
 
     def test_classification_failure_is_non_fatal(self):
         """If classifier fails, parts are returned without tags."""
@@ -432,8 +421,7 @@ class TestProcessAnalyze:
                 classifier_provider=MagicMock(),
             )
 
-        assert result.task_type == "analyze"
-        assert len(result.parts) == 2
+        assert len(result["parts"]) == 2
 
     def test_no_classification_without_specs(self):
         """Without tag_specs, classifier is not invoked."""
@@ -448,7 +436,7 @@ class TestProcessAnalyze:
 
             MockClassifier.return_value.classify.assert_not_called()
 
-        assert len(result.parts) == 2
+        assert len(result["parts"]) == 2
 
     def test_reconstructs_analysis_chunks(self):
         """Input dicts are converted to AnalysisChunk objects."""

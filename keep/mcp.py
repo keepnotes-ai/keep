@@ -21,7 +21,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from ._daemon_client import get_port, http_request
+from .daemon_client import get_port, http_request
 
 # ---------------------------------------------------------------------------
 # Server setup

@@ -117,6 +117,27 @@ class TestSubmit:
         payload = http.post.call_args[1]["json"]
         assert payload["metadata"] == {"context": "receipt"}
 
+    def test_submit_with_action_contract(self, mock_client):
+        tc, http = mock_client
+        http.post.return_value = FakeResponse(
+            status_code=202,
+            json_data={"task_id": "task-action"},
+        )
+
+        tc.submit(
+            "summarize",
+            "some content",
+            metadata={"context": "receipt"},
+            action_name="summarize",
+            action_params={"item_id": "doc1", "context": "receipt"},
+        )
+
+        payload = http.post.call_args[1]["json"]
+        assert payload["action"] == {
+            "name": "summarize",
+            "params": {"item_id": "doc1", "context": "receipt"},
+        }
+
     def test_submit_retries_on_5xx(self, mock_client):
         tc, http = mock_client
 
@@ -201,6 +222,27 @@ class TestPoll:
 
         assert result["status"] == "completed"
         assert result["result"]["summary"] == "A brief summary"
+        assert result["output"] is None
+
+    def test_poll_completed_with_action_output(self, mock_client):
+        tc, http = mock_client
+        http.get.return_value = FakeResponse(json_data={
+            "task_id": "task-123",
+            "status": "completed",
+            "task_type": "summarize",
+            "output": {
+                "summary": "A brief summary",
+                "mutations": [
+                    {"op": "set_summary", "target": "doc1", "summary": "A brief summary"},
+                ],
+            },
+        })
+
+        result = tc.poll("task-123")
+
+        assert result["status"] == "completed"
+        assert result["output"]["summary"] == "A brief summary"
+        assert result["result"] is None
 
     def test_poll_processing(self, mock_client):
         tc, http = mock_client

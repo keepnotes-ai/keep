@@ -139,8 +139,41 @@ class _KeeperActionContext:
     def list_parts(self, id: str) -> list[Any]:
         return self._keeper.list_parts(id)
 
+    def list_versions(self, id: str, *, limit: int = 3) -> list[Any]:
+        return self._keeper.list_versions(id, limit=limit)
+
+    def resolve_edges(self, id: str, *, limit: int = 5) -> dict[str, Any]:
+        item = self._keeper.get(id)
+        if item is None:
+            return {"edges": {}, "count": 0}
+        edge_refs = self._keeper._resolve_edge_refs(item, id)
+        result: dict[str, list[dict[str, Any]]] = {}
+        total = 0
+        for key, refs in edge_refs.items():
+            entries = []
+            for ref in refs[:limit]:
+                entries.append({
+                    "id": ref.source_id,
+                    "summary": ref.summary or "",
+                    "predicate": key,
+                    "date": ref.date or "",
+                })
+                total += 1
+            if entries:
+                result[key] = entries
+        return {"edges": result, "count": total}
+
     def get_document(self, id: str) -> Any:
         return self._keeper._document_store.get(self._collection, id)
+
+    def get_document_store(self) -> Any:
+        return self._keeper._document_store
+
+    def get_collection(self) -> str:
+        return self._collection
+
+    def get_db_connection(self) -> Any:
+        return self._keeper._document_store._conn
 
     def find_by_name(self, stem: str, *, vault: str | None = None) -> Any:
         results = self._keeper._document_store.find_by_name(
@@ -184,6 +217,15 @@ class _KeeperActionContext:
     def resolve_meta(self, id: str, limit_per_doc: int = 3) -> dict[str, list[Any]]:
         return self._keeper.resolve_meta(item_id=id, limit_per_doc=limit_per_doc)
 
+    def gather_context(self, item_id: str, tags: dict[str, Any]) -> str:
+        return self._keeper._gather_context(item_id, tags)
+
+    def gather_analyze_chunks(self, item_id: str, item: Any) -> Any:
+        return self._keeper._gather_analyze_chunks(item_id, item)
+
+    def gather_guide_context(self, tags: list[str]) -> str:
+        return self._keeper._gather_guide_context(tags)
+
     def resolve_provider(self, kind: str, name: str | None = None) -> Any:
         _PROVIDER_MAP = {
             "summarization": self._keeper._get_summarization_provider,
@@ -196,8 +238,18 @@ class _KeeperActionContext:
             raise ValueError(f"unknown provider kind: {kind!r}")
         return method()
 
-    def resolve_prompt(self, prefix: str, doc_tags: dict[str, Any] | None = None) -> str | None:
-        return self._keeper._resolve_prompt_doc(prefix, doc_tags or {})
+    def resolve_prompt(
+        self, prefix: str, doc_tags: dict[str, Any] | None = None, *, item_id: str | None = None,
+    ) -> str | None:
+        return self._keeper._resolve_prompt_doc(prefix, doc_tags or {}, item_id=item_id)
+
+    def move(
+        self, name: str, *, source_id: str = "now",
+        tags: dict[str, Any] | None = None, only_current: bool = False,
+    ) -> Any:
+        return self._keeper._move_direct(
+            name, source_id=source_id, tags=tags, only_current=only_current,
+        )
 
     def traverse(self, source_ids: list[str], *, limit: int = 5) -> dict[str, list[Any]]:
         traverse = getattr(self._keeper, "traverse_related", None)
@@ -349,11 +401,10 @@ def _apply_mutations(
 
 def run_local_task(keeper: "Keeper", req: TaskRequest) -> TaskRunResult:
     """Run a background task by calling the action's ``run()`` method."""
-    from .actions import get_action
+    from .actions import prepare_action_params
     from .perf_stats import perf
 
     task_type = str(req.task_type or "").strip()
-    action = get_action(task_type)
 
     ctx = _KeeperActionContext(
         keeper,
@@ -364,6 +415,7 @@ def run_local_task(keeper: "Keeper", req: TaskRequest) -> TaskRunResult:
 
     params: dict[str, Any] = {"item_id": req.id}
     params.update(req.metadata)
+    action, params = prepare_action_params(task_type, params, ctx)
 
     with perf.timer("action", task_type, context_id=req.id):
         output = action.run(params, ctx)

@@ -88,6 +88,9 @@ class TaskClient:
         task_type: str,
         content: str,
         metadata: dict | None = None,
+        *,
+        action_name: str | None = None,
+        action_params: dict | None = None,
     ) -> str:
         """POST /v1/tasks -> task_id.
 
@@ -97,6 +100,11 @@ class TaskClient:
         payload: dict = {"task_type": task_type, "content": content}
         if metadata:
             payload["metadata"] = metadata
+        if action_name or action_params is not None:
+            payload["action"] = {
+                "name": action_name or task_type,
+                "params": dict(action_params or {}),
+            }
 
         last_error: Exception | None = None
         for attempt in range(MAX_RETRIES):
@@ -149,13 +157,19 @@ class TaskClient:
             data = resp.json()
             return {
                 "status": data.get("status", "unknown"),
+                "output": data.get("output"),
                 "result": data.get("result"),
                 "error": data.get("error"),
                 "task_type": data.get("task_type"),
             }
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 404:
-                return {"status": "not_found", "result": None, "error": "Task not found"}
+                return {
+                    "status": "not_found",
+                    "output": None,
+                    "result": None,
+                    "error": "Task not found",
+                }
             raise TaskClientError(
                 f"Poll failed: {e.response.status_code}"
             ) from e

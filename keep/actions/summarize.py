@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..types import filter_non_system_tags
 from . import action
-from ._item_scope import check_content_hash, resolve_item_content
+from ._item_scope import check_content_hash, resolve_item, resolve_item_content
 
 
 def _enrich_content_type(item_id: str, tags: dict) -> dict:
@@ -35,6 +36,47 @@ def _enrich_content_type(item_id: str, tags: dict) -> dict:
 class Summarize:
     """Generate and return a summary for the target item."""
 
+    def prepare(self, params: dict[str, Any], context) -> dict[str, Any]:
+        """Populate summarize inputs shared by local and delegated execution."""
+        prepared = dict(params)
+        try:
+            item_id, item = resolve_item(prepared, context)
+        except ValueError:
+            return prepared
+        item_tags = dict(getattr(item, "tags", None) or {})
+
+        if prepared.get("context") is None:
+            user_tags = filter_non_system_tags(item_tags)
+            gather = getattr(context, "gather_context", None)
+            if user_tags and callable(gather):
+                context_text = gather(item_id, user_tags)
+                if context_text:
+                    prepared["context"] = context_text
+
+        if prepared.get("system_prompt") is None:
+            prompt_tags = item_tags
+            if "_content_type" not in prompt_tags and item_id:
+                prompt_tags = _enrich_content_type(item_id, prompt_tags)
+            resolve_prompt = getattr(context, "resolve_prompt", None)
+            if resolve_prompt is not None:
+                prompt_text = resolve_prompt("summarize", prompt_tags)
+                if prompt_text is not None:
+                    prepared["system_prompt"] = prompt_text
+
+        return prepared
+
+    def build_delegated_payload(
+        self, params: dict[str, Any], content: str,
+    ) -> tuple[str, dict[str, Any] | None]:
+        metadata: dict[str, Any] = {}
+        context_text = params.get("context")
+        if context_text:
+            metadata["context"] = context_text
+        prompt_text = params.get("system_prompt")
+        if prompt_text:
+            metadata["system_prompt_override"] = prompt_text
+        return content, metadata or None
+
     def run(self, params: dict[str, Any], context) -> dict[str, Any]:
         """Summarize item content and emit a `set_summary` mutation."""
         item_id, item, content = resolve_item_content(params, context)
@@ -53,13 +95,9 @@ class Summarize:
         # Resolve prompt doc (.prompt/summarize/*) matching item tags
         prompt_text = params.get("system_prompt")
         if prompt_text is None:
-            item_tags = dict(getattr(item, "tags", None) or {})
-            # Infer _content_type from URI-style ID if not already set
-            if "_content_type" not in item_tags and item_id:
-                item_tags = _enrich_content_type(item_id, item_tags)
-            resolve_prompt = getattr(context, "resolve_prompt", None)
-            if resolve_prompt is not None:
-                prompt_text = resolve_prompt("summarize", item_tags)
+            prepared = self.prepare(params, context)
+            prompt_text = prepared.get("system_prompt")
+            context_text = prepared.get("context", context_text)
         if prompt_text is None:
             raise ValueError("missing prompt doc for summarize")
 

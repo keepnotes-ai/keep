@@ -276,6 +276,36 @@ class TestSupernodeReplenishment:
             ]
             assert len(supernode_flows) > 0
 
+    def test_replenish_uses_find_supernodes_action(self, kp_real_store):
+        """Replenishment should consume the shared action, not duplicate its logic."""
+        from unittest.mock import patch
+
+        queue = kp_real_store._get_work_queue()
+        queue.claim("drain", limit=200)
+
+        with patch(
+            "keep.actions.find_supernodes.FindSupernodes.run",
+            return_value={
+                "results": [
+                    {"id": "custom-supernode", "fan_in": 9, "new_refs": 4, "score": 99.0},
+                ],
+                "count": 1,
+            },
+        ) as mock_run:
+            enqueued = kp_real_store.replenish_supernode_queue(min_fan_in=7, limit=2)
+
+        assert enqueued == 1
+        mock_run.assert_called_once()
+        claimed = queue.claim("test", limit=20)
+        flow_items = [i for i in claimed if i.kind == "flow"]
+        assert any(
+            i.input.get("state") == "review-supernodes"
+            and i.input.get("params", {}).get("item_id") == "custom-supernode"
+            and i.input.get("params", {}).get("fan_in") == 9
+            and i.input.get("params", {}).get("new_refs") == 4
+            for i in flow_items
+        )
+
 
 class TestMetaSupernodes:
     """Tests for .meta/supernodes context surfacing."""

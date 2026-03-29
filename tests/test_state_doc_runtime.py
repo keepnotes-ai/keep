@@ -1,6 +1,6 @@
 """Tests for the synchronous state-doc flow runtime."""
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -617,6 +617,38 @@ class TestMakeActionRunner:
         runner = make_action_runner(FakeEnv())
         with pytest.raises(ValueError, match="unknown action"):
             runner("nonexistent_action_xyz", {})
+
+    def test_runner_uses_prepared_params(self):
+        from keep.state_doc_runtime import make_action_runner
+
+        class FakeEnv:
+            def get(self, id):
+                return None
+            def find(self, query=None, **kw):
+                return []
+            def list_items(self, **kw):
+                return []
+            def get_document(self, id):
+                return None
+            def resolve_meta(self, id, **kw):
+                return {}
+            def traverse_related(self, source_ids, **kw):
+                return {}
+
+        action = MagicMock()
+        action.run.return_value = {"results": [], "count": 0}
+
+        with patch(
+            "keep.actions.prepare_action_params",
+            return_value=(action, {"query": "prepared"}),
+        ) as mock_prepare:
+            runner = make_action_runner(FakeEnv())
+            result = runner("find", {"query": "raw"})
+
+        assert result["count"] == 0
+        mock_prepare.assert_called_once()
+        action.run.assert_called_once()
+        assert action.run.call_args.args[0] == {"query": "prepared"}
 
 
 # ---------------------------------------------------------------------------

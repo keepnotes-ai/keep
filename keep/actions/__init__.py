@@ -10,13 +10,17 @@ from typing import Any, Protocol, runtime_checkable
 __all__ = [
     "Action",
     "ActionContext",
+    "PreparedAction",
+    "DelegatableAction",
     "action",
+    "build_delegated_payload",
     "get_action",
     "get_action_priority",
     "is_async_action",
     "list_actions",
     "item_to_result",
     "coerce_item_id",
+    "prepare_action_params",
 ]
 
 # Default action priority (0 = highest, 9 = lowest).
@@ -28,6 +32,22 @@ class Action(Protocol):
     """Protocol for a named action that transforms params into results."""
 
     def run(self, params: dict[str, Any], context: "ActionContext") -> dict[str, Any]: ...
+
+
+@runtime_checkable
+class PreparedAction(Protocol):
+    """Optional hook for action-owned parameter preparation."""
+
+    def prepare(self, params: dict[str, Any], context: "ActionContext") -> dict[str, Any]: ...
+
+
+@runtime_checkable
+class DelegatableAction(Protocol):
+    """Optional hook for action-owned remote payload shaping."""
+
+    def build_delegated_payload(
+        self, params: dict[str, Any], content: str,
+    ) -> tuple[str, dict[str, Any] | None]: ...
 
 
 @runtime_checkable
@@ -86,10 +106,31 @@ class ActionContext(Protocol):
         limit: int = 10,
     ) -> list[Any]: ...
 
+    def list_parts(self, id: str) -> list[Any]: ...
+    def list_versions(self, id: str, *, limit: int = 3) -> list[Any]: ...
+    def resolve_edges(self, id: str, *, limit: int = 5) -> dict[str, Any]: ...
+
     def get_document(self, id: str) -> Any | None: ...
+    def get_document_store(self) -> Any: ...
+    def get_collection(self) -> str: ...
+    def get_db_connection(self) -> Any: ...
     def find_by_name(self, stem: str, *, vault: str | None = None) -> Any | None: ...
+    def find_by_content_hash(
+        self, content_hash: str, *, content_hash_full: str = "",
+        exclude_id: str = "", limit: int = 20,
+    ) -> list[Any]: ...
     def resolve_meta(self, id: str, limit_per_doc: int = 3) -> dict[str, list[Any]]: ...
+    def resolve_prompt(
+        self, prefix: str, doc_tags: dict[str, Any] | None = None, *, item_id: str | None = None,
+    ) -> str | None: ...
     def resolve_provider(self, kind: str, name: str | None = None) -> Any: ...
+    def gather_context(self, item_id: str, tags: dict[str, Any]) -> str: ...
+    def gather_analyze_chunks(self, item_id: str, item: Any) -> Any: ...
+    def gather_guide_context(self, tags: list[str]) -> str: ...
+    def move(
+        self, name: str, *, source_id: str = "now",
+        tags: dict[str, Any] | None = None, only_current: bool = False,
+    ) -> Any: ...
 
 
 _ACTION_REGISTRY: dict[str, type] = {}
@@ -185,6 +226,42 @@ def is_async_action(name: str) -> bool:
 def list_actions() -> list[str]:
     _discover_actions()
     return sorted(_ACTION_REGISTRY.keys())
+
+
+def prepare_action_params(
+    name: str,
+    params: dict[str, Any],
+    context: Any,
+) -> tuple[Action, dict[str, Any]]:
+    """Return action instance plus prepared params for local/remote execution."""
+    act = get_action(name)
+    prepared = dict(params)
+    if isinstance(act, PreparedAction):
+        updated = act.prepare(dict(prepared), context)
+        if isinstance(updated, dict):
+            prepared = updated
+    return act, prepared
+
+
+def build_delegated_payload(
+    action_name: str,
+    params: dict[str, Any],
+    content: str,
+) -> tuple[str, dict[str, Any] | None]:
+    """Return ``(content, metadata)`` for the current hosted task API."""
+    act = get_action(action_name)
+    if isinstance(act, DelegatableAction):
+        built = act.build_delegated_payload(dict(params), content)
+        if (
+            isinstance(built, tuple)
+            and len(built) == 2
+            and (built[1] is None or isinstance(built[1], dict))
+        ):
+            delegated_content = built[0]
+            return str(delegated_content or ""), built[1]
+    metadata = dict(params)
+    metadata.pop("item_id", None)
+    return content, metadata or None
 
 
 def coerce_item_id(value: Any) -> str | None:

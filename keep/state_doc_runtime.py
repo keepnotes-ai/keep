@@ -528,7 +528,7 @@ def make_action_runner(
         context_cache: Optional action-result cache that deduplicates
             repeated action calls within a single flow execution.
     """
-    from .actions import get_action
+    from .actions import prepare_action_params
 
     ctx = _EnvActionContext(
         env, writable=writable, item_id=item_id, item_content=item_content,
@@ -538,17 +538,17 @@ def make_action_runner(
         from .tracing import get_tracer
         _tracer = get_tracer("flow")
         with _tracer.start_as_current_span(f"action:{action_name}") as _span:
+            act, prepared = prepare_action_params(action_name, params, ctx)
             if context_cache is not None:
-                cached = context_cache.check(action_name, params, ctx)
+                cached = context_cache.check(action_name, prepared, ctx)
                 if cached is not None:
                     _span.set_attribute("cache", "hit")
                     return cached
                 _span.set_attribute("cache", "miss")
-            act = get_action(action_name)
-            output = act.run(params, ctx)
+            output = act.run(prepared, ctx)
             result = dict(output) if isinstance(output, dict) else {}
             if context_cache is not None:
-                context_cache.store(action_name, params, result)
+                context_cache.store(action_name, prepared, result)
             return result
 
     return _run
@@ -756,3 +756,21 @@ class _EnvActionContext:
         if method is None:
             raise NotImplementedError(f"environment does not support provider kind: {kind!r}")
         return method()
+
+    def gather_context(self, item_id: str, tags: dict[str, Any]) -> str:
+        gather = getattr(self._env, "gather_context", None)
+        if gather is None:
+            return ""
+        return str(gather(item_id, tags) or "")
+
+    def gather_analyze_chunks(self, item_id: str, item: Any) -> Any:
+        gather = getattr(self._env, "gather_analyze_chunks", None)
+        if gather is None:
+            return []
+        return gather(item_id, item)
+
+    def gather_guide_context(self, tags: list[str]) -> str:
+        gather = getattr(self._env, "gather_guide_context", None)
+        if gather is None:
+            return ""
+        return str(gather(tags) or "")

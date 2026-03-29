@@ -4036,7 +4036,8 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
         Returns:
             List of PartInfo for the created parts (empty list if skipped)
         """
-        from .processors import ProcessorResult, process_analyze
+        from .processors import process_analyze
+        from .task_workflows import _apply_mutations
 
         id = normalize_id(id)
         doc_coll = self._resolve_doc_collection()
@@ -4253,9 +4254,9 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
                     classifier.classify(raw_parts, tag_specs)
                 except Exception as e:
                     logger.warning("Tag classification skipped: %s", e)
-            proc_result = ProcessorResult(task_type="analyze", parts=raw_parts)
+            analyze_result = {"parts": raw_parts}
         else:
-            proc_result = process_analyze(
+            analyze_result = process_analyze(
                 chunk_dicts, guide_context, tag_specs,
                 analyzer_provider=analyzer_provider,
                 prompt_override=analysis_prompt,
@@ -4263,32 +4264,39 @@ class Keeper(ProviderLifecycleMixin, BackgroundProcessingMixin, SearchAugmentati
             )
 
         # Extract line ranges for URI-sourced documents
-        if (proc_result.parts 
+        raw_parts = analyze_result.get("parts") or []
+        if (raw_parts 
             and doc_record.tags.get("_source") == "uri" 
             and chunk_dicts 
             and len(chunk_dicts) == 1):
             try:
                 from .analyzers import _extract_line_ranges
                 source_content = chunk_dicts[0]["content"]
-                proc_result.parts = _extract_line_ranges(source_content, proc_result.parts)
+                raw_parts = _extract_line_ranges(source_content, raw_parts)
+                analyze_result["parts"] = raw_parts
             except Exception as e:
                 logger.warning("Line range extraction failed: %s", e)
 
         # Content not decomposable — single section is redundant with the note
-        if not proc_result.parts or len(proc_result.parts) <= 1:
+        if not raw_parts or len(raw_parts) <= 1:
             logger.info("Content not decomposable into multiple parts: %s", id)
             self._record_analyzed_tags(doc_coll, id, doc_record)
             return []
 
         # Phase 3: Apply — write parts + embeddings to stores (local)
-        # apply_result records _analyzed_hash and _analyzed_version via mutations
-        self.apply_result(
-            id, doc_coll, proc_result,
+        # Build action-style output and apply via the shared mutation path.
+        output = self._task_result_to_output(
+            id,
+            doc_coll,
+            "analyze",
+            analyze_result,
             existing_tags=doc_record.tags,
         )
+        if output and output.get("mutations"):
+            _apply_mutations(self, doc_coll, output)
 
         # Phase 4: Generate vstring overview as @P{0}
-        if len(chunk_dicts) >= 2 and proc_result.parts:
+        if len(chunk_dicts) >= 2 and raw_parts:
             overview_provider = analyzer_provider or self._get_summarization_provider()
             overview = self._generate_vstring_overview(
                 chunk_dicts, overview_provider,
